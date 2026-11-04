@@ -275,12 +275,9 @@
       more.className = "rl-row more";
       list.appendChild(more);
     }
-    var others = lobby.players.length - 1;
     build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
     build().querySelector(".rl-count").textContent = (count + 1) + " contestants";
-    build().querySelector(".rl-note").textContent = others > 0
-      ? others + (others === 1 ? " other player" : " other players") + " from this lobby start their own match. " + (lobby.note || "")
-      : (lobby.note || "");
+    build().querySelector(".rl-note").textContent = lobby.note || "";
   }
 
   function render(lobby) {

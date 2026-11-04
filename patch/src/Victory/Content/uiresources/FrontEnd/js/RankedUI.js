@@ -54,7 +54,7 @@
       '</div></div>' +
       '<div class="rp-cols"><div><h3>RECENT</h3><ul class="rp-recent">' + recent + '</ul></div>' +
       '<div><h3>RANK REWARDS</h3><ul class="rp-tiers">' + tiers + '</ul></div></div>' +
-      '<p class="rp-note">Opponents are bots. Rating moves on placement, never kills. ' +
+      '<p class="rp-note">Rating moves on placement, never kills. ' +
       'Leaving a ranked match counts as last place.</p>');
   }
 
