@@ -14,6 +14,8 @@ const DEFAULTS = {
   // Footer links; an empty one is hidden.
   links: { website: "https://xplab.shop/", discord: "", support: "https://xplab.shop/faq.html" },
   closeOnLaunch: false,
+  // The in-game name chosen before PLAY (lib/playername.js writes it into the game).
+  playerName: "",
   playIntro: true
 };
 

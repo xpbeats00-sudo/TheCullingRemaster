@@ -135,6 +135,19 @@
       <p class="motto">Survive. Fight. Be the last.</p>
     </footer>
 
+    <!-- The player's in-game name: chosen first, right before PLAY. -->
+    <section class="player-name" id="player-name" aria-labelledby="name-label">
+      <label class="name-label" id="name-label" for="name-input">Player name</label>
+      <div class="name-row">
+        <svg class="name-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+        <input id="name-input" type="text" maxlength="32" autocomplete="off" spellcheck="false" placeholder="Choose your name" aria-describedby="name-hint">
+        <button class="name-save" id="name-save" type="button" aria-label="Save name">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+        </button>
+      </div>
+      <span class="name-hint" id="name-hint">Shown to everyone in game</span>
+    </section>
+
     <button class="play" id="play">
       <span class="play-label" id="play-label">Play</span>
       <svg class="play-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l10 7-10 7z"/></svg>

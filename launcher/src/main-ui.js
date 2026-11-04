@@ -161,13 +161,58 @@
     else if (!state.game.ok && state.game.installable) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
     else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
     else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
+    else if (nameNeeded()) { label = "Set your name"; btn.classList.add("secondary"); }
     $("#play-label").textContent = label;
+  }
+
+  // ---------------------------------------------------------------- player name
+  // The same rules as lib/playername.js (it checks again before saving).
+  function checkName(raw) {
+    const name = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!name) return { error: "Enter a name" };
+    if ([...name].length > 32) return { error: "Names are at most 32 characters" };
+    if (!/^[\p{L}\p{N} _.\-[\]()!?'#]+$/u.test(name)) return { error: "Use letters, numbers, spaces and _ . - [ ] ( ) ! ? ' #" };
+    return { name };
+  }
+  const nameNeeded = () => state.nameSupported && !state.settings.playerName;
+
+  function renderName(message, kind) {
+    const box = $("#player-name");
+    const input = $("#name-input");
+    box.hidden = !state.nameSupported;
+    if (document.activeElement !== input) input.value = state.settings.playerName || "";
+    const typed = checkName(input.value);
+    const changed = typed.name !== (state.settings.playerName || "");
+    box.classList.toggle("needed", nameNeeded() && document.activeElement !== input);
+    box.classList.toggle("invalid", kind === "error" || (input.value !== "" && !!typed.error));
+    box.classList.toggle("saved", kind === "saved");
+    $("#name-save").disabled = !!typed.error || !changed;
+    $("#name-hint").textContent = message ||
+      (input.value !== "" && typed.error ? typed.error : nameNeeded() ? "Choose the name everyone sees in game" : "Shown to everyone in game");
+  }
+
+  async function saveName() {
+    const input = $("#name-input");
+    const typed = checkName(input.value);
+    if (typed.error) { renderName(typed.error, "error"); return false; }
+    if (typed.name === state.settings.playerName) { renderName(); return true; }
+    try {
+      state = await api.setPlayerName(typed.name);
+      input.value = state.settings.playerName;
+      render();
+      renderName("Saved: this is your name in game", "saved");
+      return true;
+    } catch (e) {
+      renderName(errorText(e), "error");
+      return false;
+    }
   }
 
   function render() {
     renderServers();
     renderStatus();
     renderSync();
+    renderName();
     renderPlay();
   }
 
@@ -241,6 +286,11 @@
     if (!state.game.ok && state.game.installable) return runSync();
     if (!state.game.ok) { selectTab("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();
+    // The name comes first: an unsaved edit is saved, a missing name asked for.
+    const input = $("#name-input");
+    if (state.nameSupported && (nameNeeded() || input.value.trim() !== state.settings.playerName)) {
+      if (!(await saveName()) || nameNeeded()) { input.focus(); return; }
+    }
     const btn = $("#play");
     btn.disabled = true;
     btn.classList.add("working");
@@ -269,6 +319,12 @@
   }
 
   function wire() {
+    const nameInput = $("#name-input");
+    nameInput.addEventListener("input", () => renderName());
+    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveName(); } });
+    nameInput.addEventListener("blur", () => { if (nameInput.value.trim() && !checkName(nameInput.value).error) saveName(); else renderName(); });
+    $("#name-save").addEventListener("mousedown", (e) => e.preventDefault());   // keep focus: save once, not on blur too
+    $("#name-save").addEventListener("click", saveName);
     $("#refresh-servers").addEventListener("click", refreshPings);
     $("#region-select").addEventListener("change", (e) => chooseServer(e.target.value));
     $("#choose-folder").addEventListener("click", chooseFolder);

@@ -236,3 +236,36 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---- player name (first, right above PLAY) ---- */
+.player-name {
+  position: absolute; right: 30px; bottom: 186px; width: 330px;
+  padding: 12px 14px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  border-left: 3px solid var(--blood);
+  border-radius: var(--radius);
+  backdrop-filter: blur(6px);
+}
+.player-name[hidden] { display: none; }
+.name-label { display: block; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+.name-row { display: flex; align-items: center; gap: 10px; }
+.name-icon { width: 22px; height: 22px; color: var(--ink-dim); flex: none; }
+#name-input {
+  flex: 1; min-width: 0; height: 38px; padding: 0 12px;
+  border-radius: 6px; border: 1px solid var(--panel-line); background: rgba(0, 0, 0, 0.4);
+  font-size: 18px; font-weight: 600; letter-spacing: 0.02em; color: var(--ink);
+  user-select: text; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+}
+#name-input::placeholder { color: var(--ink-faint); font-weight: 400; }
+#name-input:focus { border-color: var(--blood-hot); box-shadow: 0 0 0 3px rgba(255, 59, 47, 0.18); }
+.player-name.invalid #name-input { border-color: var(--warn); }
+.name-save { width: 38px; height: 38px; border-radius: 6px; display: grid; place-items: center; color: var(--ink-dim); background: rgba(255, 255, 255, 0.06); transition: background 0.15s, color 0.15s; }
+.name-save svg { width: 20px; height: 20px; stroke-width: 2.4; }
+.name-save:hover { color: #fff; background: var(--blood); }
+.name-save:disabled { opacity: 0.35; cursor: default; background: rgba(255, 255, 255, 0.06); color: var(--ink-dim); }
+.name-hint { display: block; margin-top: 7px; font-size: 13px; color: var(--ink-dim); min-height: 1.2em; }
+.player-name.invalid .name-hint { color: var(--warn); }
+.player-name.saved .name-hint { color: var(--ok); }
+.player-name.needed { animation: nudge 1.6s ease-in-out infinite; }
+@keyframes nudge { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 59, 47, 0); } 50% { box-shadow: 0 0 0 4px rgba(255, 59, 47, 0.25); } }

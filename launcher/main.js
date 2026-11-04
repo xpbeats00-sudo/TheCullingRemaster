@@ -12,6 +12,7 @@ const config = require("./lib/config");
 const game = require("./lib/game");
 const sync = require("./lib/sync");
 const clientdll = require("./lib/clientdll");
+const playername = require("./lib/playername");
 const build = require("./lib/build");
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
@@ -71,6 +72,11 @@ async function boot() {
     const gamePath = game.detect() || game.defaultInstallDir();
     settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
   }
+  // An install that already has a name (the game's own setting) starts with it.
+  if (!settings.playerName && game.check(settings.gamePath).ok) {
+    const existing = playername.read(settings.gamePath);
+    if (existing) settings = config.save(SETTINGS(), Object.assign(settings, { playerName: existing }));
+  }
   progress(0.25, "Contacting xplab.shop");
   try {
     manifest = await sync.fetchManifest(settings.manifestUrl);
@@ -105,6 +111,8 @@ function state() {
     pending: todo ? { files: todo.length, bytes: todo.reduce((s, f) => s + f.size, 0) } : null,
     freeBytes: (() => { try { return sync.freeBytes(settings.gamePath); } catch { return null; } })(),
     servers: (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers,
+    // The name can be set unless the installed game uses a real Steam name.
+    nameSupported: !check.ok || playername.supported(settings.gamePath),
     busy
   };
 }
@@ -158,6 +166,14 @@ function registerIpc() {
     return state();
   });
 
+  handle("set-player-name", (raw) => {
+    const v = playername.validate(raw);
+    if (v.error) throw new Error(v.error);
+    settings = config.save(SETTINGS(), Object.assign(settings, { playerName: v.name }));
+    if (game.check(settings.gamePath).ok && playername.supported(settings.gamePath)) playername.write(settings.gamePath, v.name);
+    return state();
+  });
+
   handle("check-updates", async () => {
     manifest = await sync.fetchManifest(settings.manifestUrl);
     bootResult = { online: true, error: null };
@@ -194,6 +210,11 @@ function registerIpc() {
     if (busy) throw new Error("Wait for Game Sync to finish");
     const check = game.check(settings.gamePath);
     if (!check.ok) throw new Error(check.reason);
+    // The name chosen in the launcher is the one the game shows.
+    if (playername.supported(settings.gamePath)) {
+      if (!settings.playerName) throw new Error("Choose your player name first");
+      playername.write(settings.gamePath, settings.playerName);
+    }
     // The player's own Func client, pointed at the chosen server.
     const servers = state().servers;
     const server = servers.find((s) => s.id === settings.serverId) || servers[0];

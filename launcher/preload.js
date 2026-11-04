@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("launcher", {
   play: () => ipcRenderer.invoke("play"),
   chooseGameFolder: () => ipcRenderer.invoke("choose-game-folder"),
   setSetting: (key, value) => ipcRenderer.invoke("set-setting", key, value),
+  setPlayerName: (name) => ipcRenderer.invoke("set-player-name", name),
   openLink: (name) => ipcRenderer.invoke("open-link", name),
   window: (action) => ipcRenderer.invoke("window", action),
   onSyncProgress: on("sync-progress"),
