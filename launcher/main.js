@@ -23,6 +23,7 @@ let settings = null;
 let manifest = null;           // last fetched release manifest
 let todo = null;               // files Game Sync still has to download
 let busy = false;              // a sync is running
+let syncAbort = null;          // aborts the running sync (Pause)
 let bootResult = { online: false, error: null };
 
 function send(channel, payload) {
@@ -108,7 +109,14 @@ function state() {
     error: bootResult.error,
     release: manifest ? manifest.version : null,
     installed: check.ok ? sync.installedVersion(settings.gamePath) : null,
-    pending: todo ? { files: todo.length, bytes: todo.reduce((s, f) => s + f.size, 0) } : null,
+    // partial: bytes of the planned files already downloaded (a paused or
+    // interrupted sync); releaseBytes: the whole release, for "x of y".
+    pending: todo ? {
+      files: todo.length,
+      bytes: todo.reduce((s, f) => s + f.size, 0),
+      partial: busy ? 0 : sync.partialBytes(todo, settings.gamePath),
+      releaseBytes: manifest.files.reduce((s, f) => s + f.size, 0)
+    } : null,
     freeBytes: (() => { try { return sync.freeBytes(settings.gamePath); } catch { return null; } })(),
     servers: (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers,
     // The name can be set unless the installed game uses a real Steam name.
@@ -181,11 +189,19 @@ function registerIpc() {
     return state();
   });
 
+  // Pause: in-flight downloads stop; finished files and partial ones stay, and
+  // the next sync (also after a restart) continues from them.
+  handle("pause-sync", () => {
+    if (syncAbort) syncAbort.abort();
+    return true;
+  });
+
   handle("sync", async () => {
     if (busy) throw new Error("Game Sync is already running");
     const check = game.check(settings.gamePath);
     if (!(check.ok || check.installable)) throw new Error(check.reason + ": choose another folder in Settings");
     busy = true;
+    syncAbort = new AbortController();
     try {
       if (!manifest) manifest = await sync.fetchManifest(settings.manifestUrl);
       await refreshPlan((done, total) => send("sync-progress", { phase: "verify", done, total }));
@@ -196,11 +212,17 @@ function registerIpc() {
         if (now - lastSent < 100 && p.doneBytes < p.totalBytes) return;
         lastSent = now;
         send("sync-progress", Object.assign({ phase: "download" }, p));
-      });
+      }, { signal: syncAbort.signal });
       todo = [];
       return Object.assign(state(), { synced: r });
+    } catch (e) {
+      if (!(e instanceof sync.SyncPaused)) throw e;
+      busy = false;
+      await refreshPlan();
+      return Object.assign(state(), { paused: true });
     } finally {
       busy = false;
+      syncAbort = null;
     }
   });
 
@@ -250,4 +272,16 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
   });
   app.on("window-all-closed", () => app.quit());
+  // Quitting mid-download pauses first, so the progress file is written.
+  let quitting = false;
+  app.on("before-quit", (e) => {
+    if (!busy || !syncAbort || quitting) return;
+    e.preventDefault();
+    quitting = true;
+    syncAbort.abort();
+    const started = Date.now();
+    const wait = setInterval(() => {
+      if (!busy || Date.now() - started > 5000) { clearInterval(wait); app.quit(); }
+    }, 100);
+  });
 }

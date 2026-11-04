@@ -231,6 +231,104 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(await sync.fetchManifest(base + "/manifest.json", TEST_PUB));
     });
 
+    await test("pausing keeps finished and partial files, and resuming continues from them", async () => {
+      // Six 1 MB files; the server sends them slowly enough to pause mid-way.
+      const files = [], blobs = {};
+      const fetched = {}, ranges = [];
+      for (let i = 0; i < 6; i++) {
+        const b = Buffer.alloc(1 << 20, i + 1);
+        blobs["/pause/f" + i] = b;
+        files.push({ path: `Victory/p${i}.bin`, size: b.length, sha256: crypto.createHash("sha256").update(b).digest("hex"), url: "f" + i });
+      }
+      signedManifest("/pause/manifest.json", { version: "4", files });
+      for (const [route, b] of Object.entries(blobs)) {
+        routes[route] = (req, res) => {
+          fetched[route] = (fetched[route] || 0) + 1;
+          const from = req.headers.range ? Number(/bytes=(\d+)-/.exec(req.headers.range)[1]) : 0;
+          if (req.headers.range) ranges.push(route + ":" + from);
+          res.writeHead(from ? 206 : 200, { "Content-Length": b.length - from });
+          let at = from;
+          const tick = setInterval(() => {               // 64 KB every 10 ms
+            if (res.destroyed) return clearInterval(tick);
+            const end = Math.min(b.length, at + 65536);
+            res.write(b.subarray(at, end));
+            at = end;
+            if (at >= b.length) { clearInterval(tick); res.end(); }
+          }, 10);
+          res.on("close", () => clearInterval(tick));
+        };
+      }
+      const target = path.join(tmp, "pause-game");
+      const m = await sync.fetchManifest(base + "/pause/manifest.json", TEST_PUB);
+      const ctl = new AbortController();
+      let seen = 0;
+      const first = sync.apply(m, await sync.plan(m, target), target, (p) => {
+        seen = p.doneBytes;
+        if (p.doneBytes > 2.5 * (1 << 20) && !ctl.signal.aborted) ctl.abort();
+      }, { parallel: 2, signal: ctl.signal, retryDelayMs: 10 });
+      await assert.rejects(first, (e) => e instanceof sync.SyncPaused);
+      const done = fs.readdirSync(path.join(target, "Victory")).filter((n) => n.endsWith(".bin"));
+      const parts = fs.readdirSync(path.join(target, "Victory")).filter((n) => n.endsWith(".part"));
+      assert.ok(done.length >= 2, "finished files kept: " + done);
+      assert.ok(parts.length >= 1, "partial files kept: " + parts);
+      assert.strictEqual(sync.installedVersion(target), null, "not marked installed while paused");
+
+      // A new launcher run: only what's missing is planned, partial files resume by Range.
+      const m2 = await sync.fetchManifest(base + "/pause/manifest.json", TEST_PUB);
+      const todo = await sync.plan(m2, target);
+      assert.strictEqual(todo.length, 6 - done.length, "finished files aren't planned again");
+      assert.ok(sync.partialBytes(todo, target) > 0, "partial progress is counted");
+      const before = Object.assign({}, fetched);
+      let last = null;
+      await sync.apply(m2, todo, target, (p) => { last = p; }, { parallel: 2, retryDelayMs: 10 });
+      for (const n of done) assert.strictEqual(fetched["/pause/f" + n.slice(1, 2)], before["/pause/f" + n.slice(1, 2)], n + " not fetched again");
+      assert.ok(ranges.length >= 1, "resumed with a Range: " + ranges);
+      for (let i = 0; i < 6; i++) assert.ok(fs.readFileSync(path.join(target, `Victory/p${i}.bin`)).equals(blobs["/pause/f" + i]));
+      assert.strictEqual(sync.installedVersion(target), "4");
+      assert.strictEqual(last.doneBytes, last.totalBytes);
+      assert.ok(seen > 0);
+    });
+
+    await test("a stalled connection is dropped and the file resumes", async () => {
+      const data = Buffer.alloc(200000, 5);
+      let calls = 0;
+      signedManifest("/stall/manifest.json", { version: "5", files: [
+        { path: "Victory/s.bin", size: data.length, sha256: crypto.createHash("sha256").update(data).digest("hex"), url: "s.bin" }] });
+      routes["/stall/s.bin"] = (req, res) => {
+        calls++;
+        const from = req.headers.range ? Number(/bytes=(\d+)-/.exec(req.headers.range)[1]) : 0;
+        res.writeHead(from ? 206 : 200, { "Content-Length": data.length - from });
+        if (calls === 1) { res.write(data.subarray(0, 50000)); return; }   // then goes silent, never ends
+        res.end(data.subarray(from));
+      };
+      const target = path.join(tmp, "stall-game");
+      const m = await sync.fetchManifest(base + "/stall/manifest.json", TEST_PUB);
+      const t0 = Date.now();
+      await sync.apply(m, await sync.plan(m, target), target, () => {}, { stallMs: 300, retryDelayMs: 10 });
+      assert.ok(fs.readFileSync(path.join(target, "Victory/s.bin")).equals(data));
+      assert.strictEqual(calls, 2, "one stalled request, one resumed");
+      assert.ok(Date.now() - t0 < 5000, "didn't hang");
+    });
+
+    await test("files download in parallel", async () => {
+      let now = 0, most = 0;
+      const files = [];
+      for (let i = 0; i < 24; i++) {
+        const b = Buffer.from("small file " + i);
+        routes["/par/f" + i] = (req, res) => {
+          now++; most = Math.max(most, now);
+          setTimeout(() => { now--; res.end(b); }, 40);
+        };
+        files.push({ path: `Victory/a/f${i}.txt`, size: b.length, sha256: crypto.createHash("sha256").update(b).digest("hex"), url: "f" + i });
+      }
+      signedManifest("/par/manifest.json", { version: "6", files });
+      const target = path.join(tmp, "par-game");
+      const m = await sync.fetchManifest(base + "/par/manifest.json", TEST_PUB);
+      await sync.apply(m, await sync.plan(m, target), target);
+      assert.strictEqual(most, sync.PARALLEL, "requests at once");
+      assert.strictEqual((await sync.plan(m, target)).length, 0, "all verified");
+    });
+
     console.log("all %d sync tests passed", passed);
   } finally {
     server.close();

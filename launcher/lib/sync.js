@@ -27,11 +27,26 @@ const RELEASE_KEY = require("./releasekey");
 
 const STATE_DIR = ".remaster";
 const STATE_FILE = "sync-state.json";
-const ATTEMPTS = 3;
+const ATTEMPTS = 5;
+// Files downloaded at once: one connection already fills a typical line on a
+// big file, but most of the game is thousands of tiny files, each costing a
+// full round trip when fetched one at a time (measured against the VPS: the
+// 3,517 files under 1 MB took 54 s 8 at a time and 28 s 16 at a time, about
+// 7 min one by one; a big file runs at full line speed either way).
+const PARALLEL = 16;
+// A connection that delivers nothing for this long is dropped and resumed.
+const STALL_MS = 30000;
+// Progress (sync-state.json) is written at most this often while downloading.
+const SAVE_EVERY_MS = 2000;
 // Windows device names can't be file names, with or without an extension.
 const DEVICE_RX = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 class SyncError extends Error {}
+// apply() was paused (its signal aborted): finished files, and every partial
+// one, are kept for the next run to continue from.
+class SyncPaused extends SyncError {
+  constructor() { super("Game Sync paused"); this.paused = true; }
+}
 
 function checkUrl(u) {
   const url = new URL(u);
@@ -158,30 +173,49 @@ async function plan(manifest, gameRoot, onProgress = () => {}) {
 
 // One attempt at a file: resumes from its .part when the server allows it.
 // onBytes(n) reports bytes written (negative when a partial file is dropped).
-async function attempt(url, f, part, onBytes) {
+// Stops when `signal` aborts (a pause) or no data arrives for stallMs.
+async function attempt(url, f, part, onBytes, signal, stallMs) {
   let have = 0;
   try { have = fs.statSync(part).size; } catch { /* no partial download */ }
   if (have > f.size) { fs.rmSync(part, { force: true }); onBytes(-have); have = 0; }
-  const res = await fetch(url, { cache: "no-store", headers: have > 0 ? { Range: `bytes=${have}-` } : {} });
-  // Bytes are counted by a step inside the pipeline, never by a "data"
-  // listener beside it: work done in such a listener (the launcher sends
-  // progress to the window from there) could let later chunks reach the file
-  // first, scrambling it.
-  const count = () => new Transform({ transform(chunk, _enc, done) { onBytes(chunk.length); done(null, chunk); } });
-  if (res.status === 416 && have === f.size) {
-    await res.body?.cancel();                    // already complete
-  } else if (res.status === 206 && have > 0) {
-    await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part, { flags: "a" }));
-  } else if (res.ok && res.body) {
-    if (have > 0) onBytes(-have);                // no range support: the file starts over
-    await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part));
-  } else {
-    await res.body?.cancel();
-    throw new SyncError(`download failed for ${f.path}: HTTP ${res.status}`);
+  if (signal && signal.aborted) throw new SyncPaused();
+  const ctl = new AbortController();
+  const stop = () => ctl.abort();
+  if (signal) signal.addEventListener("abort", stop, { once: true });
+  let stalled = false;
+  let timer = null;
+  const arm = () => { clearTimeout(timer); timer = setTimeout(() => { stalled = true; ctl.abort(); }, stallMs); };
+  try {
+    arm();
+    const res = await fetch(url, { cache: "no-store", headers: have > 0 ? { Range: `bytes=${have}-` } : {}, signal: ctl.signal });
+    // Bytes are counted by a step inside the pipeline, never by a "data"
+    // listener beside it: work done in such a listener (the launcher sends
+    // progress to the window from there) could let later chunks reach the file
+    // first, scrambling it. Each chunk also re-arms the stall timer.
+    const count = () => new Transform({ transform(chunk, _enc, done) { arm(); onBytes(chunk.length); done(null, chunk); } });
+    if (res.status === 416 && have === f.size) {
+      await res.body?.cancel();                  // already complete
+    } else if (res.status === 206 && have > 0) {
+      await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part, { flags: "a" }));
+    } else if (res.ok && res.body) {
+      if (have > 0) onBytes(-have);              // no range support: the file starts over
+      await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part));
+    } else {
+      await res.body?.cancel();
+      throw new SyncError(`download failed for ${f.path}: HTTP ${res.status}`);
+    }
+  } catch (e) {
+    if (signal && signal.aborted) throw new SyncPaused();
+    if (stalled) throw new Error(`${f.path}: no data for ${Math.round(stallMs / 1000)} s`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", stop);
   }
 }
 
-async function download(manifest, f, gameRoot, onBytes, retryDelayMs) {
+// opts: retryDelayMs (wait before a retry, growing per attempt), stallMs, signal.
+async function download(manifest, f, gameRoot, onBytes, opts) {
   const target = targetPath(gameRoot, f.path);
   const url = checkUrl(new URL(f.url, manifest.baseUrl).href);
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -193,13 +227,15 @@ async function download(manifest, f, gameRoot, onBytes, retryDelayMs) {
   let lastError = null;
   for (let i = 0; i < ATTEMPTS; i++) {
     try {
-      await attempt(url, f, part, count);
+      await attempt(url, f, part, count, opts.signal, opts.stallMs);
       lastError = null;
       break;
     } catch (e) {
+      if (e instanceof SyncPaused) throw e;      // the .part stays for the resume
       lastError = e;
       if (e instanceof SyncError && /HTTP 4\d\d/.test(e.message)) break;   // not worth retrying
-      if (i < ATTEMPTS - 1) await new Promise((r) => setTimeout(r, retryDelayMs * (i + 1)));
+      if (i < ATTEMPTS - 1) await new Promise((r) => setTimeout(r, opts.retryDelayMs * (i + 1)));
+      if (opts.signal && opts.signal.aborted) throw new SyncPaused();
     }
   }
   if (lastError) { onBytes(-counted); throw lastError; }
@@ -216,30 +252,76 @@ async function download(manifest, f, gameRoot, onBytes, retryDelayMs) {
   return { size: stat.size, mtimeMs: stat.mtimeMs, sha256: f.sha256 };
 }
 
-// Download every planned file. onProgress({ file, doneBytes, totalBytes }).
-// opts.retryDelayMs: wait before a retry (grows per attempt).
+// Download every planned file, PARALLEL at a time. onProgress({ file,
+// doneBytes, totalBytes, active }). opts: signal (abort = pause: throws
+// SyncPaused, keeping finished files and partial ones), parallel, stallMs,
+// retryDelayMs. One file failing for good stops the others, keeping theirs too.
 async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {}) {
   const totalBytes = todo.reduce((s, f) => s + f.size, 0);
-  checkSpace(gameRoot, totalBytes);
+  checkSpace(gameRoot, totalBytes - partialBytes(todo, gameRoot));
+  if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   let doneBytes = 0;
   fs.mkdirSync(gameRoot, { recursive: true });
   const state = loadState(gameRoot);
-  for (const f of todo) {
-    onProgress({ file: f.path, doneBytes, totalBytes });
-    state[f.path] = await download(manifest, f, gameRoot, (n) => {
-      doneBytes += n;
-      onProgress({ file: f.path, doneBytes, totalBytes });
-    }, opts.retryDelayMs == null ? 2000 : opts.retryDelayMs);
+  const stopAll = new AbortController();
+  const onPause = () => stopAll.abort();
+  if (opts.signal) opts.signal.addEventListener("abort", onPause, { once: true });
+  const dl = {
+    signal: stopAll.signal,
+    stallMs: opts.stallMs || STALL_MS,
+    retryDelayMs: opts.retryDelayMs == null ? 2000 : opts.retryDelayMs
+  };
+  let lastSave = Date.now();
+  const save = (force) => {
+    if (!force && Date.now() - lastSave < SAVE_EVERY_MS) return;
     saveState(gameRoot, state);
+    lastSave = Date.now();
+  };
+  const queue = todo.slice();
+  const active = new Set();
+  let failure = null;
+  const report = (file) => onProgress({ file, doneBytes, totalBytes, active: active.size });
+  async function worker() {
+    while (queue.length && !stopAll.signal.aborted) {
+      const f = queue.shift();
+      active.add(f.path);
+      report(f.path);
+      try {
+        state[f.path] = await download(manifest, f, gameRoot, (n) => { doneBytes += n; report(f.path); }, dl);
+        save(false);
+      } catch (e) {
+        if (!failure && !(e instanceof SyncPaused)) failure = e;
+        stopAll.abort();
+      } finally {
+        active.delete(f.path);
+      }
+    }
   }
+  try {
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(opts.parallel || PARALLEL, queue.length)) }, worker));
+  } finally {
+    save(true);
+    if (opts.signal) opts.signal.removeEventListener("abort", onPause);
+  }
+  if (failure) throw failure;
+  if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   state.version = manifest.version;
   saveState(gameRoot, state);
   return { files: todo.length, bytes: totalBytes };
+}
+
+// Bytes of planned files already downloaded in part (.part files).
+function partialBytes(todo, gameRoot) {
+  let n = 0;
+  for (const f of todo) {
+    try { n += Math.min(fs.statSync(targetPath(gameRoot, f.path) + ".part").size, f.size); } catch { /* none */ }
+  }
+  return n;
 }
 
 function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
 
-module.exports = { fetchManifest, validateManifest, plan, apply, targetPath, checkUrl, sha256File, installedVersion,
-  freeBytes, checkSpace, SyncError, STATE_DIR };
+module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion,
+  freeBytes, checkSpace, SyncError, SyncPaused, STATE_DIR, PARALLEL };
