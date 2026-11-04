@@ -20,3 +20,5 @@ server/data/profiles*.json
 __pycache__/
 backups/
 .claude/
+server/data/sessions.json*
+releases/

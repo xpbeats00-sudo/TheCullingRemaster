@@ -32,7 +32,7 @@ npm start
    `release/Victory/Content/Paks/LocalServer-WindowsClient_P.pak`, `release/Victory/Binaries/Win64/Func.Client.Local.dll`.
    Optionally put `servers.json` (the server list) next to `release/`.
 2. `node tools/make_manifest.js release 1.0.1 publish`
-3. Upload `publish/` so that `https://xplab.shop/remaster/manifest.json` and `.../remaster/files/...` are served.
+3. Copy the contents of `publish/` to `C:\culling\updates` on the VPS. They're served as `https://xplab.shop:8443/remaster/manifest.json` and `.../remaster/files/...` (see `deploy/install_vps.ps1`).
 
 Launchers pick it up on their next start or on **Check for updates**. Every file is verified by SHA-256 before it replaces anything, and a manifest can only write inside the game's `Victory` folder.
 

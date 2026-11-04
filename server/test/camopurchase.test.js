@@ -27,6 +27,18 @@ function waitUp() {
   });
 }
 
+function request(method, url, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: PORT, path: url, method, headers: { 'Content-Type': 'application/json' } }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => resolve(JSON.parse(data)));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+}
+
 function next(socket, event) {
   return new Promise((resolve) => socket.once(event, resolve));
 }
@@ -61,7 +73,8 @@ function credits() {
   try {
     await waitUp();
     await next(socket, 'login_ready');
-    socket.emit('login', { userID: USER });
+    const login = await request('POST', '/api/login', { userid: USER });
+    socket.emit('login', { token: login.token });
     await next(socket, 'auth-response');
 
     let have = await owned(socket);
