@@ -1,7 +1,8 @@
 """Gameplay tuning for local matches: more bots, shorter matches, bots that
 head for the middle. Extracts the original assets from the game's paks,
-patches fixed-size values in place, and writes them under src/ so
-make_pak.py ships them in the patch pak.
+patches fixed-size values in place (and lists that grow, with
+ue_package.py), and writes them under src/ so make_pak.py ships them in the
+patch pak.
 
 usage: python patch_assets.py <Paks dir>
 """
@@ -12,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_catalog import pak_entries, read_entry  # noqa: E402
 from uasset import Package, Reader  # noqa: E402
+from ue_package import UPackage  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "src")
@@ -19,8 +21,8 @@ SRC = os.path.join(HERE, "src")
 # asset path -> {export name -> {property: value}}
 TUNING = {
     "Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset": {
-        # Victory.exe caps players plus bots at 16 (exe VA 0x14023218a), so solo
-        # gets 15 bots whatever this asks for; 50 just means "as many as allowed".
+        # Victory.exe caps players plus bots (24 with patch_exe.py, 16 stock),
+        # so solo gets 23 bots whatever this asks for; 50 means "as many as allowed".
         "Default__VictoryGameMode_C": {"BotsToSpawn": 50},
     },
     # Faster bot reactions (UNTESTED IN GAME: playtest before releasing).
@@ -57,15 +59,17 @@ TUNING = {
     },
 }
 
-# The names bots get in a match (VictoryGameMode's BotNames; the game draws
-# from this list). The stock list has 17 names (Tony The Ninja, Mandroid 5000,
-# ...); the edit keeps the asset's size, so the new list is 17 names with the
-# same total length: the community's names, then stock ones that fill the
-# space exactly. MatchLobby.js shows the same names in the pregame lobby.
+# The names bots get in a match (VictoryGameMode's BotNames; each bot takes
+# the next one). A bot past the end of the list is named by its ID
+# ("0-3C69A0F7..."), so there must be a name for every bot: 23 with
+# patch_exe.py's 24 contestants. The community's names, stock ones (Tony The
+# Ninja, Mandroid 5000, ...), then more. MatchLobby.js shows the same names in
+# the pregame lobby.
 BOT_NAMES = [
     "Dominoss", "Bigred", "Riskybixnew", "Bongzilla", "Billybobjrjr", "999Jay", "Slugling",
     "Sunsetwayboy", "HopelesslyNameless", "Arky", "ShadowRick",
     "Tony The Ninja", "Mandroid 5000", "Lord Xeinous", "Dr. Bonesaw", "Big Purp", "Frank",
+    "Viper Kid", "MossyBoots", "GrimJoe", "Kilowatt", "NoScopeNana", "Rusty Spoon", "The Barber", "Pyrelord",
 ]
 STR_ARRAYS = {
     ("Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset", "Default__VictoryGameMode_C", "BotNames"): BOT_NAMES,
@@ -111,9 +115,8 @@ def patch_props(pkg, data, export, values):
 
 
 def patch_str_array(pkg, data, export, prop, values):
-    """Replace an array of strings in place. The new array must take exactly
-    the bytes the old one did (count, then each string as length + ASCII +
-    NUL), so nothing else in the asset moves."""
+    """Replace an array of strings (count, then each string as length + ASCII
+    + NUL). Same size: in place. Otherwise returns the change for resize()."""
     for pname, ptype, idx, voff, size, extra, value in pkg.props(export):
         if pname == prop:
             break
@@ -127,11 +130,35 @@ def patch_str_array(pkg, data, export, prop, values):
     for v in values:
         b = v.encode("ascii") + b"\0"
         new += struct.pack("<i", len(b)) + b
-    if len(new) != size:
-        sys.exit("%s.%s: the new list takes %d bytes, the asset has room for exactly %d (%+d): adjust the names"
-                 % (export, prop, len(new), size, len(new) - size))
-    data[voff:voff + size] = new
-    print("  %s.%s: %d names -> %s" % (export, prop, len(old_values), ", ".join(values)))
+    print("  %s.%s: %d names -> %d: %s" % (export, prop, len(old_values), len(values), ", ".join(values)))
+    if len(new) == size:
+        data[voff:voff + size] = new
+        return None
+    return (export, voff, size, new)
+
+
+# An ArrayProperty tag ends: size (i32), array index (i32), inner type (FName,
+# 8 bytes), has-GUID (1 byte); then the value.
+ARRAY_SIZE_BEFORE_VALUE = 4 + 4 + 8 + 1
+
+
+def resize(pkg, data, changes):
+    """Rewrites the package with values of a new size (patch_str_array's
+    changes): each property's size and the export it is in grow or shrink, and
+    ue_package.py moves everything after it."""
+    up = UPackage(bytes(data))
+    for export, voff, size, new in changes:
+        e = pkg.export(export)
+        index = up.find_export(export) - 1
+        body = bytearray(up.exports[index]["data"])
+        assert body == data[e["offset"]:e["offset"] + e["size"]], export
+        at = voff - e["offset"]
+        size_at = at - ARRAY_SIZE_BEFORE_VALUE
+        assert struct.unpack_from("<i", body, size_at)[0] == size, "%s: property tag not where expected" % export
+        struct.pack_into("<i", body, size_at, len(new))
+        body[at:at + size] = new
+        up.exports[index]["data"] = bytes(body)
+    return bytearray(up.save())
 
 
 def patch_eqs_param(pkg, data, export, param, value):
@@ -173,10 +200,13 @@ def main(paks_dir):
         for (asset, export, param), value in EQS_TUNING.items():
             if asset == rel:
                 patch_eqs_param(pkg, data, export, param, value)
-        for (asset, export, prop), values in STR_ARRAYS.items():
-            if asset == rel:
-                patch_str_array(pkg, data, export, prop, values)
-        assert len(data) == len(originals[rel])
+        changes = [patch_str_array(pkg, data, export, prop, values)
+                   for (asset, export, prop), values in STR_ARRAYS.items() if asset == rel]
+        changes = [c for c in changes if c]
+        if changes:
+            data = resize(pkg, data, changes)
+        else:
+            assert len(data) == len(originals[rel])
         out = os.path.join(SRC, rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         open(out, "wb").write(data)

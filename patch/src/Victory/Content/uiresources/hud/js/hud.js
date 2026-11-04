@@ -3079,7 +3079,10 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 		damage: _deathData.DamageDone,
 		func: _deathData.FUNC,
 		distance: _deathData.DistanceTraveled,
-		placement: parseInt(_deathData.Rank, 10) || 0
+		placement: parseInt(_deathData.Rank, 10) || 0,
+		// This build's limit on players plus bots (patch_exe.py): the server
+		// scores placements out of the contestants the map really has.
+		cap: 24
 	};
 	console.log("ReportLocalMatchResult: " + JSON.stringify(result));
 

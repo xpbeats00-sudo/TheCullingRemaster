@@ -15,7 +15,8 @@ at the server (launcher/lib/clientdll.js).
 With --full <game dir> the release is the whole game: every file of that
 install is hard-linked in (no second copy of the gigabytes), except what is
 personal to this PC or made by the launcher itself (FULL_EXCLUDE), with the
-Remaster patch above in place of the install's own.
+Remaster patch above in place of the install's own, and Victory.exe
+patched for up to 24 contestants (patch_exe.py).
 
 usage: python make_release.py <server base url> <version> [--full <game dir>] [--out <dir>] [--no-setup]
   python make_release.py https://xplab.shop:8443 1.0.0
@@ -32,6 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import make_server_config  # noqa: E402
+import patch_exe  # noqa: E402
 
 LOCAL = "http://127.0.0.1:8000"
 PAK = "LocalServer-WindowsClient_P.pak"
@@ -48,6 +50,7 @@ FULL_EXCLUDE = {
     "Victory/Content/Paks/" + PAK,
     "InstallScript.vdf",
 }
+GAME_EXE = "Victory/Binaries/Win64/Victory.exe"
 SETTINGS_README = (
     "The Culling Remaster: the launcher writes your player name here\r\n"
     "(force_account_name.txt) before every game. Change it in the launcher.\r\n")
@@ -64,6 +67,12 @@ def link_game(game, release):
                 continue
             dst = os.path.join(release, *rel.split("/"))
             os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if rel == GAME_EXE:
+                # Patched (more contestants), so a copy: a link would patch the install.
+                shutil.copy2(src, dst)
+                patch_exe.patch(dst)
+                count += 1
+                continue
             try:
                 os.link(src, dst)
             except OSError:

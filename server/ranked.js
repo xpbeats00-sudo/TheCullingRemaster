@@ -30,6 +30,9 @@ const CONFIG = {
   // plus bots at 16 whatever BotsToSpawn says, and the HUD reports placements
   // 1-16; scoring a bigger field made even last place gain rating.
   field: 16,
+  // Builds with patch_exe.py place up to 24; the result says how many the
+  // match had (server.js matchField), never more than this.
+  maxField: 24,
   botSpread: 150,          // bot ratings: player MMR +- this (normal sd)
   // The season just opened: no bot is rated above the top of T4 (Hunter,
   // 1200-1399); a bot at Executioner or higher would be implausible.
@@ -234,10 +237,12 @@ function finishMatch(profile, result, now = Date.now(), grant) {
   if (!r.pending) return { error: 'no-ranked-match' };
   const match = r.pending;
   if (result.matchId && result.matchId !== match.id) return { error: 'unknown-match' };
+  // The match's real field when the result knows it (more contestants on some maps).
+  const field = Number.isInteger(result.field) && result.field >= 2 && result.field <= CONFIG.maxField ? result.field : match.field;
   const placement = Number(result.placement);
-  if (!Number.isInteger(placement) || placement < 1 || placement > match.field) return { error: 'invalid-placement' };
+  if (!Number.isInteger(placement) || placement < 1 || placement > field) return { error: 'invalid-placement' };
   r.pending = null;
-  return { entry: apply(r, match, Object.assign({}, result, { placement }), now, grant) };
+  return { entry: apply(r, Object.assign({}, match, { field }), Object.assign({}, result, { placement }), now, grant) };
 }
 
 function summary(profile, now = Date.now()) {

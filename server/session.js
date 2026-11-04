@@ -105,13 +105,14 @@ class Sessions {
 class MatchTickets {
   constructor(now = Date.now) {
     this.now = now;
-    this.open = new Map();          // userID -> { id, userID, ip, startedAt }
+    this.open = new Map();          // userID -> { id, userID, ip, startedAt, ...info }
     this.recent = new Map();        // ip -> { userID, at } of the last paid result
   }
 
-  start(userID, ip) {
+  // info: what the result needs to know about the match (its map).
+  start(userID, ip, info = {}) {
     this.expire();
-    const t = { id: crypto.randomBytes(8).toString("hex"), userID, ip, startedAt: this.now() };
+    const t = Object.assign({}, info, { id: crypto.randomBytes(8).toString("hex"), userID, ip, startedAt: this.now() });
     this.open.delete(userID);       // re-insert so the Map stays oldest-first
     this.open.set(userID, t);       // a new match replaces an unfinished one
     return t;

@@ -37,5 +37,5 @@ The rest of the account-server findings are in SERVER_PERFORMANCE_AUDIT.md.
 
 | Issue | Notes |
 |---|---|
-| The bot count can't exceed 15 in solo | Victory.exe caps players plus bots at 16. Raising it needs an exe patch, which is high risk |
+| Prison may hold only 16 contestants | `patch_exe.py` raises Victory.exe's cap to 24 (Jungle has 24 player starts; tested in game: more than 17 bots spawned). Prison has 16 starts, ran stable with the 24 cap, but how many spawn there is unmeasured, so ranked scores Prison as 16 |
 | No dedicated game server | Matches run on the player's PC against bots. The VPS only handles accounts. So server tick rate, replication and bot load on the VPS don't apply, and real multiplayer would need a dedicated server build of the game, which isn't available |
