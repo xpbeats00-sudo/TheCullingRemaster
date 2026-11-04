@@ -33,6 +33,14 @@
     });
     state.settings.gamePath = "C:\\Users\\Player\\AppData\\Local\\TheCullingRemaster\\Game";
   }
+  // ?offline: a paused install while the update server can't be reached.
+  if (/[?&]offline\b/.test(location.search)) {
+    Object.assign(state, {
+      online: false, error: "Can't reach the update server. Check your internet connection, then try again.",
+      game: { ok: false, installable: true, reason: "The game isn't installed yet" },
+      release: null, installed: null, pending: null, offlineStaged: 2793406464
+    });
+  }
   let paused = false;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   window.launcher = {

@@ -761,10 +761,28 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// Bytes downloaded towards the next install or update (staged files and
+// partial downloads), read from disk alone: shown while the server can't be
+// reached, when there is no manifest to plan against.
+function stagedBytes(gameRoot) {
+  let n = 0;
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (!e.name.endsWith(".part.json")) { const st = statOrNull(p); if (st) n += st.size; }
+    }
+  };
+  walk(path.join(stateDir(gameRoot), "staging"));
+  return n;
+}
+
 function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
 
 module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion,
-  freeBytes, checkSpace, recover, rollback, previousVersion, bandwidth, compareVersions, useFetch,
+  freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
   SyncError, SyncPaused, STATE_DIR, PARALLEL };

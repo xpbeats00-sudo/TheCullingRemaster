@@ -113,6 +113,11 @@
     let title, sub = "Version " + (state.installed || "-");
     const resume = resumeInfo();
     if (syncing) { title = pausing ? "Pausing" : "Syncing"; box.classList.add("busy"); }
+    else if (!state.online && state.offlineStaged > 0) {
+      title = "Download paused";
+      sub = `${bytes(state.offlineStaged)} kept · reconnect to resume`;
+      box.classList.add("warn");
+    }
     else if (resume) {
       title = "Download paused";
       sub = `${Math.floor(resume.have / resume.total * 100)}% done, ${bytes(resume.total - resume.have)} left`;

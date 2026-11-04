@@ -139,6 +139,9 @@ function state() {
     previous: sync.previousVersion(settings.gamePath),
     // partial: bytes of the planned files already downloaded (a paused or
     // interrupted sync); releaseBytes: the whole release, for "x of y".
+    // Offline there is nothing to plan against; what is already downloaded
+    // still shows, so a paused install doesn't look lost.
+    offlineStaged: manifest ? 0 : sync.stagedBytes(settings.gamePath),
     pending: todo ? {
       files: todo.length,
       bytes: todo.reduce((s, f) => s + f.size, 0),
