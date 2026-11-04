@@ -342,6 +342,21 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       await assert.rejects(get("redir"));
     });
 
+    await test("leftovers are cleaned: old-launcher .part files and empty staging folders", async () => {
+      const data = Buffer.from("tidy");
+      release("tidy", "1", { "Victory/deep/t.txt": data });
+      const r = path.join(tmp, "tidy");
+      await install("tidy", r);
+      fs.writeFileSync(path.join(r, "Victory", "deep", "t.txt.part"), data);   // as the first launchers left them
+      await sync.plan(await get("tidy"), r);
+      assert.ok(!fs.existsSync(path.join(r, "Victory", "deep", "t.txt.part")));
+      assert.ok(!fs.existsSync(path.join(r, ".remaster", "staging")), "empty staging folders removed after commit");
+      const events = [];
+      release("tidy2", "2", { "Victory/deep/t.txt": Buffer.from("tidy v2") });
+      await install("tidy2", r, { log: (ev, d) => events.push([ev, d]) });
+      assert.strictEqual(events.find(([ev]) => ev === "download")[1].files, 1, "the log counts downloaded files");
+    });
+
     await test("versions compare numerically", async () => {
       assert.strictEqual(sync.compareVersions("1.10.0", "1.9.9"), 1);
       assert.strictEqual(sync.compareVersions("1.1", "1.1.0"), 0);

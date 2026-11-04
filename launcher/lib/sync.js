@@ -293,6 +293,9 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
     }
     if (ok) {
       report.ok++;
+      // The first launchers downloaded next to the target: a leftover .part
+      // beside a verified file is theirs.
+      if (statOrNull(target + ".part")) fs.rmSync(target + ".part", { force: true });
     } else {
       delete state.files[f.path];
       if (stat) report.changed++; else report.missing++;
@@ -546,6 +549,16 @@ function finishCommit(gameRoot, state, journal) {
   saveState(gameRoot, state);
   writeJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), journal);
   fs.rmSync(path.join(stateDir(gameRoot), JOURNAL_FILE), { force: true });
+  removeEmptyDirs(path.join(stateDir(gameRoot), "staging"));
+}
+
+// Removes a folder tree's empty folders (left in staging after a commit);
+// anything with a file in it stays.
+function removeEmptyDirs(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) if (e.isDirectory()) removeEmptyDirs(path.join(dir, e.name));
+  try { if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir); } catch { /* in use: harmless */ }
 }
 
 // Finishes a commit a crash interrupted (start-up, and before any plan).
@@ -681,6 +694,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
   for (const f of todo) {
     if (f.staged) { doneBytes += f.size; filesDone++; } else queue.push(f);
   }
+  const toDownload = queue.length;
   const active = new Set();
   const failed = [];
   let fatal = null;
@@ -722,7 +736,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     if (opts.signal) opts.signal.removeEventListener("abort", onPause);
   }
   const seconds = (Date.now() - t0) / 1000;
-  log("download", { files: queue.length, seconds, retries, failed: failed.length });
+  log("download", { files: toDownload, seconds, retries, failed: failed.length });
   if (fatal) throw fatal;
   if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   if (failed.length) {
