@@ -1,5 +1,5 @@
 """Necro Mist: the Resurrection outfit's glowing mist eyes in eight colours,
-as full outfits (skull mask, hood, top, pants) and as a weapon camo set.
+as full outfits (skull mask with its hood, top, pants) and as a weapon camo set.
 
 Where the colour lives (cooked assets, read from the paks):
 - Skull mask eyes: the Necroskull_Hat mesh's second material slot is
@@ -18,11 +18,13 @@ Where the colour lives (cooked assets, read from the paks):
   is the material's "Emissive Color" (stock teal), so each top also gets
   MI_EyeTop<nn> / MI_EyeTopF<nn>, a child of the stock MI_Top_Necro with
   only Emissive Color overridden.
-- Hood: the hat material (MI_Necro_01, parent MI_Clothing_Hats) has no
-  ClothingColor parameters, so data-asset colours do nothing on it. The hood
-  data asset instead overrides the material's BaseColor texture (the same
-  data-asset override the stock camo balaclavas use) with T_NecroHood<nn>, a
-  tinted 1024 copy of Necro_BC.
+- Hood: the skull mask mesh carries the hood too, both on Necro_BC (one
+  atlas: dark cloth panels, beige bone, a white emblem). Hats take one slot,
+  so hood and eyes are one item: the mask's data asset overrides the hat
+  material's BaseColor texture (MI_Necro_01 has no ClothingColor parameters;
+  the stock camo balaclavas use the same override) with T_NecroHood<nn>, a
+  1024 copy of Necro_BC whose cloth and emblem are dyed and whose bone keeps
+  its stock colour (skull_hood_texture).
 - Weapons: the weapon material has no time input on its camo layer and the
   animated (GeoSkin) path is unproven, so Necro Mist weapon skins are static
   camos made from M_NecroMist's own cloud texture (T_Clouds_01) in each
@@ -96,15 +98,13 @@ PALETTE = [
 # display name.
 PIECES = [
     ("mask", "HeadMisc_22_Resurrection", "XP_EyeMask_", 119001, 2500, "Resurrection Skull Mask - %s"),
-    ("hood", "HeadMisc_23_Resurrection", "XP_EyeHood_", 119101, 1500, "Resurrection Hood - %s"),
     ("top", "BodyResurrection_01", "XP_EyeTop_", 129001, 2000, "Resurrection Top - %s"),
     ("topF", "F_BodyResurrection_01", "F_XP_EyeTop_", 229001, 2000, "Resurrection Top - %s"),
     ("legs", "LegsResurrection_01", "XP_EyeLegs_", 139001, 1500, "Resurrection Pants - %s"),
     ("legsF", "F_LegsResurrection_01", "F_XP_EyeLegs_", 239001, 1500, "Resurrection Pants - %s"),
 ]
 DESCRIPTION = {
-    "mask": "The Resurrection skull with %s mist burning in its eyes.",
-    "hood": "The Resurrection hood, dyed %s to match the mist.",
+    "mask": "The Resurrection skull and hood in %s, with matching mist burning in its eyes.",
     "top": "The Resurrection top in %s, its trim glowing to match.",
     "topF": "The Resurrection top in %s, its trim glowing to match.",
     "legs": "The Resurrection pants in %s.",
@@ -278,14 +278,29 @@ def mesh_copy(stock, mesh_path, mic_path):
 
 
 # ---- textures
-def hood_texture(stock_bc, package_path, color):
-    """Necro_BC at 1024, its cloth dyed toward the colour (luminance kept)."""
+def cloth_weight(a):
+    """How much of each Necro_BC texel is hood cloth or emblem (1) rather than
+    skull bone (0): the cloth is dark and grey, the emblem bright and neutral,
+    the bone mid-bright and warm (red above blue)."""
+    lum = a @ np.array([0.299, 0.587, 0.114], np.float32)
+    warm = a[..., 0] - a[..., 2]
+    sat = a.max(-1) - a.min(-1)
+    dark = np.clip((0.42 - lum) / 0.12, 0, 1)                   # 1 below 0.30, 0 above 0.42
+    emblem = np.clip((lum - 0.80) / 0.08, 0, 1) * np.clip((0.10 - sat) / 0.05, 0, 1)
+    bone = np.clip((warm - 0.03) / 0.05, 0, 1) * np.clip((lum - 0.30) / 0.10, 0, 1)
+    return np.clip(np.maximum(dark, emblem) * (1 - bone), 0, 1)
+
+
+def skull_hood_texture(stock_bc, package_path, color):
+    """Necro_BC at 1024: the hood's cloth and emblem dyed toward the colour
+    (luminance kept), the skull's bone left as it is."""
     img = cooked_texture.decode_top(stock_bc).convert("RGB").resize((1024, 1024), Image.LANCZOS)
     a = np.asarray(img, np.float32) / 255.0
     lum = (a @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
     c = np.array(color, np.float32)
-    dyed = np.clip(lum * (0.3 + 1.1 * c), 0, 1)
-    out = (np.clip(a * 0.15 + dyed * 0.85, 0, 1) * 255 + 0.5).astype(np.uint8)
+    dyed = np.clip(a * 0.15 + np.clip(lum * (0.3 + 1.1 * c), 0, 1) * 0.85, 0, 1)
+    w = cloth_weight(a)[..., None]
+    out = (np.clip(a * (1 - w) + dyed * w, 0, 1) * 255 + 0.5).astype(np.uint8)
     obj = package_path.rsplit("/", 1)[1]
     up = UPackage(stock_bc)
     rename(up, {"/Game/Character/Player/Hats/Necro_BC": FOLDER + "Necro_BC"})
@@ -439,13 +454,13 @@ def outfit_sheet(src, cloud, path):
     bot_bc = cooked_texture.decode_top(src[BOT_BC])
     trim = cooked_texture.decode_top(src[TOP_MTRGSP]).getchannel("A")
     sheet, d = _sheet("Necro Mist outfits - texture swatches (UV atlases), not in-game renders",
-                      ("Skull mask (eyes)", "Hood", "Top", "Pants"))
+                      ("Skull mask: eyes", "Skull mask: hood", "Top", "Pants"))
     for i, (label, color) in enumerate(PALETTE):
         c = np.array(color)
         tint = tuple(0.03 + 0.45 * c)
-        _, hood_px = hood_texture(src[NECRO_BC], FOLDER + "T_Preview", color)
+        _, hood_px = skull_hood_texture(src[NECRO_BC], FOLDER + "T_Preview", color)
         tiles = [mask_tile(necro_bc, cloud, color),
-                 _crop(Image.fromarray(hood_px), (0.03, 0.42, 0.97, 1.0)),
+                 _crop(Image.fromarray(hood_px), (0.0, 0.0, 1.0, 1.0)),
                  cloth_tile(top_bc, tint, trim, color),
                  cloth_tile(bot_bc, tint)]
         y = 40 + i * (T + 10)
@@ -550,9 +565,9 @@ def main(paks_dir):
                                   [("Emissive Color", 0, guid, tuple(c * scale) + (stock_rgba[3],))]))
             top_mic[g] = path
 
-        # hood texture
+        # the mask's hood: cloth and emblem dyed, bone kept
         hood_tex = FOLDER + "T_NecroHood" + n
-        tex, _ = hood_texture(src[NECRO_BC], hood_tex, color)
+        tex, _ = skull_hood_texture(src[NECRO_BC], hood_tex, color)
         write(hood_tex, tex)
 
         # data assets + catalog
@@ -576,7 +591,7 @@ def main(paks_dir):
 
             def added(up, piece=piece):
                 tags = [encode_tag(up, "bIsPurchasable", "BoolProperty", True)]
-                if piece == "hood":
+                if piece == "mask":
                     tags.append(asset_tag(up, "BaseColor", "%s.%s" % (hood_tex, hood_tex.rsplit("/", 1)[1])))
                 return tags
 

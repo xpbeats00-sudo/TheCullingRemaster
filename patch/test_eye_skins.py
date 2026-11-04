@@ -1,6 +1,6 @@
 """Checks the Necro Mist build (run after make_eye_skins.py and make_camos.py).
 
-- Catalog: 8 colours x 6 pieces of "xp-eye-skins" items with unique IDs in the
+- Catalog: 8 colours x 5 pieces of "xp-eye-skins" items with unique IDs in the
   stock ID scheme, bought with credits; 8 Necro Mist camos on every weapon the
   other camos cover, one camo key ("_XP_<Camo>") per colour.
 - Every generated package parses and saves back byte-for-byte.
@@ -11,8 +11,9 @@
   Tints are the palette colour x2 and x5. With a Paks dir: the mesh copy has
   the stock mesh's exact size and export offsets, and the Fog Tint GUIDs are
   M_NecroMist's.
-- Hood: its BaseColor override is a 1024 texture whose cloth leans to the
-  colour. Top: its material is a child of MI_Top_Necro with Emissive Color
+- Mask hood: the mask's BaseColor override is a 1024 texture whose hood
+  cloth leans to the colour while the skull's bone keeps the stock colour
+  (with a Paks dir). Top: its material is a child of MI_Top_Necro with Emissive Color
   in the colour.
 - Registry: patch/registry/eye_skins.bin lists every data asset.
 
@@ -133,6 +134,8 @@ ok("camo skins sampled: packages parse and use their Necro Mist texture")
 # ---- data assets
 stock_fog = eye.expression_params(eye.find_in_paks(PAKS, {eye.NECRO_MIST})[eye.NECRO_MIST]) if PAKS else None
 stock_mesh = eye.find_in_paks(PAKS, {eye.SKULL_MESH})[eye.SKULL_MESH] if PAKS else None
+stock_bc = (np.asarray(cooked_texture.decode_top(eye.find_in_paks(PAKS, {eye.NECRO_BC})[eye.NECRO_BC])
+                       .convert("RGB").resize((1024, 1024)), np.float32) if PAKS else None)
 by_tid = {t["tid"]: t for t in items}
 for i, (label, color) in enumerate(eye.PALETTE):
     c = np.array(color)
@@ -170,7 +173,8 @@ for i, (label, color) in enumerate(eye.PALETTE):
                   "%s: Fog Tint values" % mic[0][2])
             if stock_fog:
                 check(all(v[k][0] == stock_fog[k] for k in v), "%s: GUIDs differ from M_NecroMist" % mic[0][2])
-        elif piece == "hood":
+        if piece == "mask":
+            check("BaseColor" in tg, "%s: no hood BaseColor override" % t["asset"])
             tex = text(tg["BaseColor"][1])
             tdata, _ = load(tex)
             img = np.asarray(cooked_texture.decode_top(tdata).convert("RGB"), np.float32)
@@ -178,6 +182,10 @@ for i, (label, color) in enumerate(eye.PALETTE):
             mean = img.reshape(-1, 3).mean(0)
             want = int(np.argmax(c)) if c.max() - c.min() > 0.3 else None
             check(want is None or int(np.argmax(mean)) == want, "%s: mean colour %s is not %s" % (tex, mean, label))
+            if stock_bc is not None:
+                bone = (slice(40, 400), slice(560, 980))           # the skull's face in the atlas
+                diff = np.abs(img[bone] - stock_bc[bone]).mean()
+                check(diff < 25, "%s: the skull's bone changed (mean %.1f)" % (tex, diff))
         elif piece in ("top", "topF"):
             mi = text(tg["MaterialInstance"][1])
             _, iup = load(mi)
@@ -188,7 +196,7 @@ for i, (label, color) in enumerate(eye.PALETTE):
             rgb = np.array(v[("Emissive Color", 0)][1][:3])
             check(np.allclose(rgb / rgb.max(), c / c.max(), atol=1e-3), "%s: Emissive Color %s" % (mi, rgb))
     check(len(tints) == 1, "%s: pieces have different tints" % label)
-ok("data assets, meshes, materials and hood textures for %d colours" % len(eye.PALETTE)
+ok("data assets, meshes, materials and skull-hood textures for %d colours" % len(eye.PALETTE)
    + ("" if PAKS else " (no Paks dir: stock layout and GUID checks skipped)"))
 
 # ---- registry
