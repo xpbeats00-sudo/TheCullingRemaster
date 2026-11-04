@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "stamp": "node tools/stamp_build.js",
-    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js",
+    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js && node test/playername.test.js",
     "manifest": "node tools/make_manifest.js"
   },
   "devDependencies": {
