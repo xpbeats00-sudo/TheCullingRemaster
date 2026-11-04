@@ -127,6 +127,10 @@ function validateManifest(m) {
       if (sv.status !== undefined) checkUrl(sv.status);
     }
   }
+  // The current launcher (lib/selfupdate.js checks it in full).
+  if (m.launcher !== undefined && (!m.launcher || typeof m.launcher.version !== "string" || typeof m.launcher.url !== "string")) {
+    throw new SyncError("bad launcher entry in manifest");
+  }
   const seen = new Set();
   for (const f of m.files) {
     if (!f || !/^[0-9a-f]{64}$/.test(f.sha256 || "") || !Number.isSafeInteger(f.size) || f.size < 0 || typeof f.url !== "string") {

@@ -2,8 +2,17 @@
 // Each trace is posted to the Remaster server (logged as "ui-trace") before the
 // step it names runs, synchronously where Coherent allows it, so the last
 // line in the server log before a freeze is the step that hung.
+//
+// Only against a local server (this PC). A synchronous request blocks the
+// menu until it answers: to the VPS that is ~0.3 s per step (several per card
+// click), and a request that stalls never times out, freezing the menu. The
+// shared server doesn't log traces anyway (CULLING_UITRACE=0).
 (function () {
   var URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api") + "/uitrace";
+  if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(URL)) {
+    window.UiTrace = function () {};
+    return;
+  }
   var TRACED = {
     GetFlairCustomizations: 1, GetItemsForCustAndCat: 1, SetPreviewItem: 1,
     SetCustomization: 1, GetCategoriesForCustType: 1, ResetCustomizationPreview: 1

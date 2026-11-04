@@ -9,7 +9,9 @@ Run ON the VPS ("Publish Release.bat" does it), with the build PC's drive shared
     uploaded) and manifest.json(.sig) last, so a launcher never sees a manifest whose objects aren't there yet
     (served as https://<domain>:8443/remaster/; objects never change, so they can be cached for good)
   - copies the setup to C:\ssr\www\download (kept by the website deploy), served as
-    https://<domain>/download/TheCullingRemasterSetup.exe
+    https://<domain>/download/TheCullingRemasterSetup.exe, after checking it is the same build as the launcher the
+    release offers; and writes download\launcher.json (version, size, sha256), which the website reads to show the
+    current launcher version
 #>
 [CmdletBinding()]
 param(
@@ -33,6 +35,23 @@ $node = Join-Path $Root 'node\node.exe'
 & $node (Join-Path $PSScriptRoot 'verify_release.js') (Join-Path $Release 'manifest.json') (Join-Path $Release 'manifest.json.sig')
 if ($LASTEXITCODE -ne 0) { throw 'the release is not signed by the launcher release key: not published' }
 
+# The website's setup and the launcher the release offers (self-update) must be the same build, so a fresh
+# install and an updated one are identical. Checked before anything is published.
+Step 'Launcher version'
+$manifest = Get-Content (Join-Path $Release 'manifest.json') -Raw | ConvertFrom-Json
+$setupHash = (Get-FileHash $Setup -Algorithm SHA256).Hash.ToLower()
+$setupSize = (Get-Item $Setup).Length
+if ($manifest.launcher) {
+    if ($manifest.launcher.sha256 -ne $setupHash) {
+        throw "the setup at $Setup is not the launcher $($manifest.launcher.version) this release offers (SHA-256 differs): rebuild the release with this setup, or pass -Setup. Nothing was published."
+    }
+    $launcherVersion = $manifest.launcher.version
+} else {
+    $launcherVersion = (Get-Item $Setup).VersionInfo.ProductVersion
+    Write-Host "  (this release doesn't offer a launcher update: older launchers keep their version)" -ForegroundColor Yellow
+}
+Write-Host "  launcher: $launcherVersion ($([math]::Round($setupSize / 1MB, 1)) MB)"
+
 Step 'Release objects (only what the VPS lacks is uploaded)'
 $updates = Join-Path $Root 'updates'
 New-Item -ItemType Directory -Force -Path $updates | Out-Null
@@ -49,10 +68,17 @@ $download = Join-Path $Www 'download'
 New-Item -ItemType Directory -Force -Path $download | Out-Null
 Copy-Item $Setup (Join-Path $download 'TheCullingRemasterSetup.exe.new') -Force
 Move-Item (Join-Path $download 'TheCullingRemasterSetup.exe.new') (Join-Path $download 'TheCullingRemasterSetup.exe') -Force
+# What the website shows as the current launcher (https://<domain>/download/launcher.json).
+$info = [ordered]@{ version = $launcherVersion; size = $setupSize; sha256 = $setupHash;
+    published = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); url = '/download/TheCullingRemasterSetup.exe' }
+[IO.File]::WriteAllText((Join-Path $download 'launcher.json.new'), ($info | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+Move-Item (Join-Path $download 'launcher.json.new') (Join-Path $download 'launcher.json') -Force
 
 Step 'Checks'
 $m = Invoke-RestMethod "https://${Domain}:$PublicPort/remaster/manifest.json" -TimeoutSec 20
 Write-Host "  manifest: version $($m.version), $($m.files.Count) files" -ForegroundColor Green
 $head = Invoke-WebRequest "https://$Domain/download/TheCullingRemasterSetup.exe" -Method Head -UseBasicParsing -TimeoutSec 20
 Write-Host "  setup:    $([math]::Round([int64]$head.Headers['Content-Length'] / 1MB, 1)) MB at https://$Domain/download/TheCullingRemasterSetup.exe" -ForegroundColor Green
+$live = Invoke-RestMethod "https://$Domain/download/launcher.json" -TimeoutSec 20
+Write-Host "  website:  launcher v$($live.version) (https://$Domain/download/launcher.json)" -ForegroundColor Green
 Write-Host 'Published.' -ForegroundColor Green
