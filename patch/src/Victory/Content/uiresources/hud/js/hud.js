@@ -3055,10 +3055,10 @@ engine.on("ShowHideSprintIcon", function(display){
 });
 
 //////////////////////////////
-//	Local server match results	//
+//	Remaster server match results	//
 //////////////////////////////
-// Matches against bots run locally, so nothing reports them to a stats
-// server. Send our own result to the local ClientWeb server, which awards XP
+// Matches against bots run in the player's game, so nothing reports them to a
+// stats server. Send our own result to the Remaster server, which awards XP
 // and updates career stats, then feed the reply into the normal end-of-match
 // XP display.
 var LOCAL_SERVER_URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
@@ -3112,7 +3112,7 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 	});
 }
 
-// Ranked Solo (local test mode): the rating change, under the outcome.
+// Ranked Solo: the rating change, under the outcome.
 function ShowRankedResult(ranked) {
 	var e = ranked.entry, s = ranked.summary;
 	var sign = e.delta >= 0 ? "+" : "";
@@ -3124,7 +3124,7 @@ function ShowRankedResult(ranked) {
 		' display:flex; align-items:center; padding:0.8vh 1.6vw; border-radius:1.2vh; background:rgba(8,8,12,0.82);' +
 		' border:2px solid rgba(204,0,0,0.9); color:white; font-family:Sucrose-Bold; font-size:1.4vw; pointer-events:none;">' +
 		'<img src="/images/ranked/' + s.tier.name.toLowerCase() + '.png" style="width:4.2vw; height:4.2vw; margin-right:1vw;">' +
-		'<div><div style="font-size:0.9vw; opacity:0.8;">RANKED SOLO • LOCAL TEST • PLACE ' + e.placement + ' OF ' + e.field + '</div>' +
+		'<div><div style="font-size:0.9vw; opacity:0.8;">RANKED SOLO • PLACE ' + e.placement + ' OF ' + e.field + '</div>' +
 		'<div>' + e.ratingAfter + ' ELO <span style="color:' + (e.delta >= 0 ? '#5fe05f' : '#ff4b4b') + ';">(' + sign + e.delta + ')</span>' +
 		'  ' + status + '</div></div></div>');
 }

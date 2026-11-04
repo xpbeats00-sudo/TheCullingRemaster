@@ -109,7 +109,12 @@
     box.className = "status-game";
     let title, sub = "Version " + (state.installed || "-");
     if (syncing) { title = "Syncing"; box.classList.add("busy"); }
-    else if (!state.game.ok) { title = "Game folder needed"; sub = "Set it in Settings"; box.classList.add("bad"); }
+    else if (!state.game.ok && state.game.installable) {
+      title = state.online ? "Ready to install" : "Not installed";
+      sub = !state.online ? "Can't reach xplab.shop" : state.pending ? bytes(state.pending.bytes) + " download" : "Checking";
+      box.classList.add("warn");
+    }
+    else if (!state.game.ok) { title = "Choose a game folder"; sub = "In Settings"; box.classList.add("bad"); }
     else if (state.pending && state.pending.files) { title = "Update available"; sub = `${state.pending.files} file(s), ${bytes(state.pending.bytes)}`; box.classList.add("warn"); }
     else if (!state.online) { title = "Offline"; sub = "Can't reach xplab.shop"; box.classList.add("warn"); }
     else title = "Game Up to Date";
@@ -122,14 +127,22 @@
     $("#game-path").textContent = path;
     $("#settings-path").textContent = path;
     const hint = $("#game-check");
-    if (!state.game.ok) { hint.textContent = state.game.reason; hint.className = "hint bad"; }
+    const fresh = !state.game.ok && state.game.installable;
+    if (fresh) {
+      hint.textContent = state.pending
+        ? `Not installed yet: Install downloads ${bytes(state.pending.bytes)} here` + (state.freeBytes != null ? ` (${bytes(state.freeBytes)} free).` : ".")
+        : "Not installed yet.";
+      hint.className = "hint";
+    }
+    else if (!state.game.ok) { hint.textContent = state.game.reason; hint.className = "hint bad"; }
     else if (!state.game.funcLauncher) { hint.textContent = "Func launcher missing from this install."; hint.className = "hint bad"; }
     else { hint.textContent = "The Culling found."; hint.className = "hint"; }
     $("#sync-installed").textContent = state.installed || "Not installed";
     $("#sync-release").textContent = state.release || (state.online ? "-" : "Offline");
     $("#sync-pending").textContent = !state.pending ? "-" : state.pending.files ? `${state.pending.files} file(s), ${bytes(state.pending.bytes)}` : "Nothing";
-    $("#run-sync").disabled = syncing || !state.game.ok;
-    $("#update-launcher").textContent = "v" + state.appVersion;
+    $("#run-sync").disabled = syncing || !(state.game.ok || (fresh && state.online));
+    $("#run-sync").textContent = fresh ? "Install" : "Verify & Sync";
+    $("#update-launcher").textContent = state.build ? state.build.label : "v" + state.appVersion;
     $("#update-patch").textContent = state.release ? `${state.installed || "none"} installed, ${state.release} available` : "-";
     $("#update-server").textContent = new URL(state.settings.manifestUrl).host;
     $("#update-note").textContent = state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
@@ -144,6 +157,8 @@
     btn.disabled = false;
     let label = "Play";
     if (syncing) { label = "Syncing"; btn.classList.add("working"); btn.disabled = true; }
+    else if (!state.game.ok && state.game.installable && state.online) { label = "Install"; btn.classList.add("working"); }
+    else if (!state.game.ok && state.game.installable) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
     else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
     else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
     $("#play-label").textContent = label;
@@ -198,16 +213,32 @@
     }
   }
 
+  // Download speed: a moving average over progress events, for the time left.
+  const rate = { t: 0, bytes: 0, bps: 0 };
+  function speedText(done, total) {
+    const now = performance.now();
+    if (rate.t && now - rate.t > 400) {
+      const bps = (done - rate.bytes) / ((now - rate.t) / 1000);
+      if (bps >= 0) rate.bps = rate.bps ? rate.bps * 0.8 + bps * 0.2 : bps;
+      rate.t = now; rate.bytes = done;
+    } else if (!rate.t) { rate.t = now; rate.bytes = done; }
+    if (!rate.bps) return "";
+    const left = (total - done) / rate.bps;
+    const eta = left > 3600 ? `${Math.floor(left / 3600)} h ${Math.round((left % 3600) / 60)} min` : left > 90 ? `${Math.round(left / 60)} min` : `${Math.max(1, Math.round(left))} s`;
+    return ` · ${bytes(rate.bps)}/s · ${eta} left`;
+  }
+
   function onSyncProgress(p) {
     let frac, label;
-    if (p.phase === "verify") { frac = p.done / p.total; label = `Verifying ${p.done}/${p.total}`; }
-    else { frac = p.totalBytes ? p.doneBytes / p.totalBytes : 1; label = `Downloading ${p.file.split("/").pop()} (${bytes(p.doneBytes)} / ${bytes(p.totalBytes)})`; }
+    if (p.phase === "verify") { frac = p.done / p.total; label = `Verifying ${p.done}/${p.total}`; rate.t = 0; rate.bps = 0; }
+    else { frac = p.totalBytes ? p.doneBytes / p.totalBytes : 1; label = `Downloading ${p.file.split("/").pop()} (${bytes(p.doneBytes)} / ${bytes(p.totalBytes)})` + speedText(p.doneBytes, p.totalBytes); }
     $("#sync-progress-fill").style.width = Math.round(frac * 100) + "%";
     $("#sync-progress-pct").textContent = Math.round(frac * 100) + "%";
     $("#sync-progress-label").textContent = label;
   }
 
   async function play() {
+    if (!state.game.ok && state.game.installable) return runSync();
     if (!state.game.ok) { selectTab("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();
     const btn = $("#play");

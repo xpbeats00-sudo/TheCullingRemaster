@@ -1,12 +1,13 @@
 {
   "name": "culling-remaster-launcher",
   "productName": "The Culling Remaster",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Installs, updates and launches The Culling Remaster patch.",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
+    "stamp": "node tools/stamp_build.js",
     "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js",
     "manifest": "node tools/make_manifest.js"
   },
