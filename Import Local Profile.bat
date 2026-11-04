@@ -12,13 +12,19 @@ if not exist "%ADMIN%" (
   echo The account server isn't installed with accounts yet: run "Update Culling Server.bat" first.
   goto done
 )
-echo Local profiles file [%LOCAL%]:
-set /p "INPUT=> "
-if not "%INPUT%"=="" set "LOCAL=%INPUT%"
+rem Your PC's local server data, over the shared C: drive. Only asked for when it isn't there.
+if exist "%LOCAL%" goto found
+echo Your PC's profiles file isn't at %LOCAL%
+echo (connect with "Connect to VPS (shares C drive).rdp" so your PC's C: drive is shared).
+set /p "INPUT=Full path to a profiles.json file, or press Enter to stop: "
+if "%INPUT%"=="" goto done
+set "LOCAL=%INPUT%"
 if not exist "%LOCAL%" (
-  echo Can't find %LOCAL%. Connect with "Connect to VPS (shares C drive).rdp" so your PC's C: drive is shared.
+  echo Can't find %LOCAL%.
   goto done
 )
+:found
+echo Reading %LOCAL%
 echo.
 echo Profiles in that file:
 "%NODE%" -e "const p=require(process.argv[1]);for(const[k,v]of Object.entries(p))console.log('  '+k+'  level '+((v.stats||{}).level||1)+', '+((v.stats||{}).xp||0)+' XP, '+(v.cullCredits||0)+' credits')" "%LOCAL%"
