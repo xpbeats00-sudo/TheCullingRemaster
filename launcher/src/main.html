@@ -9,154 +9,24 @@
 </head>
 <body>
   <div class="app">
-    <canvas id="bg-back" aria-hidden="true"></canvas>
-    <div class="hero" aria-hidden="true">
-      <div class="hero-aura"></div>
-      <img class="hero-mask" src="assets/mask.png" alt="">
-    </div>
-    <canvas id="bg-front" aria-hidden="true"></canvas>
-    <div class="shade" aria-hidden="true"></div>
+    <!-- The news pictures, full window and undimmed: one per slide, crossfaded. -->
+    <div class="stage" id="stage" aria-hidden="true"></div>
+    <div class="scrim" aria-hidden="true"></div>
 
-    <header class="titlebar">
-      <img class="brand" src="assets/logo.png" alt="The Culling Remaster">
-      <nav class="tabs" role="tablist" aria-label="Launcher sections">
-        <button class="tab active" role="tab" aria-selected="true" data-tab="servers">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r="1"/><circle cx="7" cy="17" r="1"/></svg>
-          <span>Servers</span>
-        </button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="sync">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 0 1-14.3 4.9M4 12A8 8 0 0 1 18.3 7.1"/><path d="M18.5 3v4.3h-4.3M5.5 21v-4.3h4.3"/></svg>
-          <span>Game Sync</span>
-        </button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="update">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></svg>
-          <span>Update</span>
-        </button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="settings">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>
-          <span>Settings</span>
-        </button>
-        <div class="tab-underline" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <img class="brand" src="assets/logo.png" alt="The Culling Remaster">
+        <span class="brand-sep" aria-hidden="true"></span>
+        <span class="brand-tag">Launcher</span>
+      </div>
+      <nav class="top-links" aria-label="Links">
+        <button class="top-link" data-link="discord"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7.5c2.6-.8 5.4-.8 8 0M7.5 16.5c2.9 1 6.1 1 9 0M6.5 6.5C5 9 4.4 11.9 4.7 15.6c1.3 1 2.6 1.6 4 2l1-1.7M17.5 6.5c1.5 2.5 2.1 5.4 1.8 9.1-1.3 1-2.6 1.6-4 2l-1-1.7"/><circle cx="9.5" cy="12.5" r="1.2"/><circle cx="14.5" cy="12.5" r="1.2"/></svg>Discord</button>
+        <button class="top-link" data-link="website">Website<svg class="ext" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
+        <button class="top-link" data-link="support">Support</button>
       </nav>
-      <div class="window-controls">
-        <button data-window="minimize" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
-        <button data-window="maximize" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8"/></svg></button>
-        <button data-window="close" class="close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
-      </div>
-    </header>
-
-    <main class="panel" aria-live="polite">
-      <!-- Servers -->
-      <section class="view active" data-view="servers" role="tabpanel">
-        <div class="view-head">
-          <h2>Select Server</h2>
-          <button class="ghost" id="refresh-servers">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>
-            Refresh
-          </button>
-        </div>
-        <ul class="server-list" id="server-list"></ul>
-        <p class="note">Your profile, credits, shop and ranked live on the selected server. Matches are played against bots on your PC.</p>
-      </section>
-
-      <!-- Game Sync -->
-      <section class="view" data-view="sync" role="tabpanel">
-        <div class="view-head"><h2>Game Sync</h2></div>
-        <div class="field">
-          <label>Install folder</label>
-          <div class="path-row">
-            <span class="path" id="game-path">Not set</span>
-            <button class="ghost" id="choose-folder">Change</button>
-          </div>
-          <span class="hint" id="game-check"></span>
-        </div>
-        <dl class="facts">
-          <div><dt>Installed</dt><dd id="sync-installed">-</dd></div>
-          <div><dt>Latest release</dt><dd id="sync-release">-</dd></div>
-          <div><dt>To download</dt><dd id="sync-pending">-</dd></div>
-        </dl>
-        <div class="progress" id="sync-progress" hidden>
-          <div class="progress-row"><span id="sync-progress-label">Verifying</span><span id="sync-progress-pct">0%</span></div>
-          <div class="bar"><div class="bar-fill" id="sync-progress-fill"></div></div>
-        </div>
-        <div class="actions">
-          <button class="ghost" id="repair-sync" title="Rehash every game file and download only the bad or missing ones">Verify &amp; Repair</button>
-          <button class="primary" id="run-sync">Verify &amp; Sync</button>
-        </div>
-      </section>
-
-      <!-- Update -->
-      <section class="view" data-view="update" role="tabpanel">
-        <div class="view-head"><h2>Update</h2></div>
-        <dl class="facts">
-          <div><dt>Launcher</dt><dd id="update-launcher">-</dd></div>
-          <div><dt>Remaster patch</dt><dd id="update-patch">-</dd></div>
-          <div><dt>Update server</dt><dd id="update-server">-</dd></div>
-        </dl>
-        <p class="note" id="update-note"></p>
-        <div class="actions">
-          <button class="primary" id="check-updates">Check for updates</button>
-        </div>
-      </section>
-
-      <!-- Settings -->
-      <section class="view" data-view="settings" role="tabpanel">
-        <div class="view-head"><h2>Settings</h2></div>
-        <div class="field">
-          <label>Game folder</label>
-          <div class="path-row">
-            <span class="path" id="settings-path">Not set</span>
-            <button class="ghost" id="settings-folder">Change</button>
-          </div>
-        </div>
-        <label class="toggle"><input type="checkbox" id="opt-intro"><span class="switch"></span>Play the intro on start</label>
-        <label class="toggle"><input type="checkbox" id="opt-close"><span class="switch"></span>Close the launcher when the game starts</label>
-        <div class="field-row">
-          <label for="opt-parallel">Downloads at once</label>
-          <select id="opt-parallel">
-            <option value="16">16 (fastest)</option><option value="8">8</option><option value="4">4</option><option value="2">2</option>
-          </select>
-        </div>
-        <div class="field-row">
-          <label for="opt-speed">Download speed limit</label>
-          <select id="opt-speed">
-            <option value="0">No limit</option><option value="16">16 MB/s</option><option value="8">8 MB/s</option>
-            <option value="4">4 MB/s</option><option value="2">2 MB/s</option><option value="1">1 MB/s</option>
-          </select>
-        </div>
-        <div class="actions settings-actions">
-          <button class="ghost" id="copy-diagnostics">Copy diagnostics</button>
-          <button class="ghost" id="rollback" hidden>Restore previous version</button>
-        </div>
-      </section>
-    </main>
-
-    <section class="status">
-      <div class="status-game" id="status-game">
-        <span class="status-icon" id="status-icon" aria-hidden="true"></span>
-        <div><strong id="status-title">Checking</strong><span id="status-sub">Version -</span></div>
-      </div>
-      <div class="status-region">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></svg>
-        <label for="region-select"><span>Server</span>
-          <select id="region-select"></select>
-        </label>
-      </div>
-    </section>
-
-    <footer class="footer">
-      <div class="links">
-        <button class="link" data-link="discord"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7.5c2.6-.8 5.4-.8 8 0M7.5 16.5c2.9 1 6.1 1 9 0M6.5 6.5C5 9 4.4 11.9 4.7 15.6c1.3 1 2.6 1.6 4 2l1-1.7M17.5 6.5c1.5 2.5 2.1 5.4 1.8 9.1-1.3 1-2.6 1.6-4 2l-1-1.7"/><circle cx="9.5" cy="12.5" r="1.2"/><circle cx="14.5" cy="12.5" r="1.2"/></svg>Discord</button>
-        <button class="link" data-link="website"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></svg>Website</button>
-        <button class="link" data-link="support"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="13" width="4" height="6" rx="1.5"/><rect x="17" y="13" width="4" height="6" rx="1.5"/></svg>Support</button>
-      </div>
-      <p class="motto">Survive. Fight. Be the last.</p>
-    </footer>
-
-    <!-- The account: first, right before PLAY. Its username is the in-game name. -->
-    <section class="account-box" id="account-box" aria-labelledby="account-label">
-      <span class="account-label" id="account-label">Account</span>
-      <div class="account-row">
+      <!-- The account: its username is the in-game name, and PLAY needs it. -->
+      <section class="account-box" id="account-box" aria-labelledby="account-label">
+        <span class="account-label" id="account-label">Account</span>
         <svg class="account-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
         <div class="account-who">
           <strong id="account-name">Not signed in</strong>
@@ -164,8 +34,162 @@
         </div>
         <button class="ghost" id="account-signout" type="button" hidden>Sign out</button>
         <button class="primary account-open" id="account-open" type="button">Sign in</button>
+      </section>
+      <button class="build" id="build-label" type="button" title="Launcher and game versions">Build -</button>
+      <div class="window-controls">
+        <button data-window="minimize" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+        <button data-window="maximize" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8"/></svg></button>
+        <button data-window="close" class="close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
       </div>
+    </header>
+
+    <!-- An install, update or repair while it runs (or paused part-way). -->
+    <section class="op-card" id="op-card" hidden aria-live="polite">
+      <span class="op-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg></span>
+      <div class="op-body">
+        <div class="op-head"><span class="op-kind" id="op-kind">Operation in progress · Downloading</span><strong class="op-title" id="op-title">The Culling Remaster</strong></div>
+        <span class="op-file" id="op-file"></span>
+        <div class="op-bar"><div class="op-fill" id="op-fill"></div></div>
+        <span class="op-size" id="op-size"></span>
+      </div>
+      <span class="op-pct" id="op-pct">0%</span>
     </section>
+
+    <!-- News: the latest release and what's new, over its picture. -->
+    <section class="news" id="news" aria-roledescription="carousel" aria-label="News">
+      <div class="news-meta"><span class="news-tag" id="news-tag">Patch notes</span><span class="news-rule" aria-hidden="true"></span><span class="news-ver" id="news-ver"></span></div>
+      <h1 class="news-title" id="news-title"></h1>
+      <p class="news-text" id="news-text"></p>
+      <button class="news-read" id="news-read" type="button">Read update<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></button>
+    </section>
+    <div class="news-count" aria-hidden="true">
+      <span><b id="news-index">01</b> <i>/</i> <span id="news-total">01</span></span>
+      <div class="news-ticks" id="news-ticks"></div>
+    </div>
+    <div class="news-nav">
+      <button id="news-prev" aria-label="Previous news"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
+      <button id="news-next" aria-label="Next news"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+    </div>
+
+    <!-- Servers, Game Sync, Update and Settings: a drawer over the news. -->
+    <aside class="drawer" id="drawer" aria-label="Launcher sections" hidden>
+      <div class="drawer-head">
+        <nav class="tabs" role="tablist" aria-label="Launcher sections">
+          <button class="tab active" role="tab" aria-selected="true" data-tab="servers">Servers</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="sync">Game Sync</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="update">Update</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="settings">Settings</button>
+          <div class="tab-underline" aria-hidden="true"></div>
+        </nav>
+        <button class="drawer-close" id="drawer-close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+      </div>
+      <main class="panel" aria-live="polite">
+        <!-- Servers -->
+        <section class="view active" data-view="servers" role="tabpanel">
+          <div class="view-head">
+            <h2>Select Server</h2>
+            <button class="ghost" id="refresh-servers">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>
+              Refresh
+            </button>
+          </div>
+          <ul class="server-list" id="server-list"></ul>
+          <p class="note">Your profile, credits, shop and ranked live on the selected server. Matches are played against bots on your PC.</p>
+        </section>
+
+        <!-- Game Sync -->
+        <section class="view" data-view="sync" role="tabpanel">
+          <div class="view-head"><h2>Game Sync</h2></div>
+          <div class="field">
+            <label>Install folder</label>
+            <div class="path-row">
+              <span class="path" id="game-path">Not set</span>
+              <button class="ghost" id="choose-folder">Change</button>
+            </div>
+            <span class="hint" id="game-check"></span>
+          </div>
+          <dl class="facts">
+            <div><dt>Installed</dt><dd id="sync-installed">-</dd></div>
+            <div><dt>Latest release</dt><dd id="sync-release">-</dd></div>
+            <div><dt>To download</dt><dd id="sync-pending">-</dd></div>
+          </dl>
+          <div class="progress" id="sync-progress" hidden>
+            <div class="progress-row"><span id="sync-progress-label">Verifying</span><span id="sync-progress-pct">0%</span></div>
+            <div class="bar"><div class="bar-fill" id="sync-progress-fill"></div></div>
+          </div>
+          <div class="actions">
+            <button class="ghost" id="repair-sync" title="Rehash every game file and download only the bad or missing ones">Verify &amp; Repair</button>
+            <button class="primary" id="run-sync">Verify &amp; Sync</button>
+          </div>
+        </section>
+
+        <!-- Update -->
+        <section class="view" data-view="update" role="tabpanel">
+          <div class="view-head"><h2>Update</h2></div>
+          <dl class="facts">
+            <div><dt>Launcher</dt><dd id="update-launcher">-</dd></div>
+            <div><dt>Remaster patch</dt><dd id="update-patch">-</dd></div>
+            <div><dt>Update server</dt><dd id="update-server">-</dd></div>
+          </dl>
+          <p class="note" id="update-note"></p>
+          <div class="actions">
+            <button class="primary" id="check-updates">Check for updates</button>
+          </div>
+        </section>
+
+        <!-- Settings -->
+        <section class="view" data-view="settings" role="tabpanel">
+          <div class="view-head"><h2>Settings</h2></div>
+          <div class="field">
+            <label>Game folder</label>
+            <div class="path-row">
+              <span class="path" id="settings-path">Not set</span>
+              <button class="ghost" id="settings-folder">Change</button>
+            </div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="opt-intro"><span class="switch"></span>Play the intro on start</label>
+          <label class="toggle"><input type="checkbox" id="opt-close"><span class="switch"></span>Close the launcher when the game starts</label>
+          <div class="field-row">
+            <label for="opt-parallel">Downloads at once</label>
+            <select id="opt-parallel">
+              <option value="16">16 (fastest)</option><option value="8">8</option><option value="4">4</option><option value="2">2</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label for="opt-speed">Download speed limit</label>
+            <select id="opt-speed">
+              <option value="0">No limit</option><option value="16">16 MB/s</option><option value="8">8 MB/s</option>
+              <option value="4">4 MB/s</option><option value="2">2 MB/s</option><option value="1">1 MB/s</option>
+            </select>
+          </div>
+          <div class="actions settings-actions">
+            <button class="ghost" id="copy-diagnostics">Copy diagnostics</button>
+            <button class="ghost" id="rollback" hidden>Restore previous version</button>
+          </div>
+        </section>
+      </main>
+    </aside>
+
+    <footer class="bottombar">
+      <div class="status-game" id="status-game">
+        <span class="status-icon" id="status-icon" aria-hidden="true"></span>
+        <div><strong id="status-title">Checking</strong><span id="status-sub">Version -</span></div>
+      </div>
+      <div class="env">
+        <svg class="env-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18a8 8 0 1 1 14 0"/><path d="M12 13l4-4"/><circle cx="12" cy="13" r="1.2"/></svg>
+        <label class="env-pick" for="region-select"><span>Server</span>
+          <select id="region-select"></select>
+        </label>
+        <button class="env-online" id="env-online" type="button" title="Servers"><i aria-hidden="true"></i><span id="env-online-text">Checking</span></button>
+        <span class="env-live" id="env-live">Live</span>
+      </div>
+      <button class="bar-btn" id="open-repair" title="Game Sync: verify and repair the game files" aria-label="Game Sync: verify and repair"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.2l-5.6 5.6a1.6 1.6 0 0 0 2.3 2.3l5.6-5.6a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.2-.4-.4-2.2z"/></svg></button>
+      <button class="bar-btn" id="open-settings" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+      <button class="play" id="play">
+        <span class="play-label" id="play-label">Play</span>
+        <svg class="play-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l10 7-10 7z"/></svg>
+      </button>
+    </footer>
 
     <!-- Sign in / create account. -->
     <div class="modal" id="account-modal" hidden>
@@ -199,15 +223,9 @@
       </form>
     </div>
 
-    <button class="play" id="play">
-      <span class="play-label" id="play-label">Play</span>
-      <svg class="play-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l10 7-10 7z"/></svg>
-      <span class="play-shine" aria-hidden="true"></span>
-    </button>
-
     <div class="toast" id="toast" role="alert" hidden></div>
   </div>
-  <script src="fx.js"></script>
+  <script src="news.js"></script>
   <script src="main-ui.js"></script>
 </body>
 </html>

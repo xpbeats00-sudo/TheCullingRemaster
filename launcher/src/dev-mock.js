@@ -11,7 +11,7 @@
       gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\TheCulling",
       manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",
       serverId: "eu", closeOnLaunch: false, playIntro: true, playerName: "", parallel: 16, maxMBps: 0,
-      links: { website: "https://xplab.shop/", discord: "https://discord.gg/example", support: "https://xplab.shop/faq.html" }
+      links: { website: "https://xplab.shop/", discord: "https://discord.com/invite/tson", support: "https://xplab.shop/faq.html" }
     },
     game: { ok: true, funcLauncher: true, clientDll: true },
     online: true, error: null, release: "1.0.1", installed: "1.0.1", previous: "1.0.0",
@@ -42,6 +42,11 @@
       release: null, installed: null, pending: null, offlineStaged: 2793406464
     });
   }
+  // ?drawer=sync (servers, update, settings): open that section once shown.
+  const drawer = /[?&]drawer=(\w+)/.exec(location.search);
+  if (drawer) setTimeout(() => document.querySelector(`.tab[data-tab="${drawer[1]}"]`) &&
+    document.querySelector(drawer[1] === "settings" ? "#open-settings" : drawer[1] === "sync" ? "#open-repair"
+      : drawer[1] === "update" ? "#build-label" : "#env-online").click(), 500);
   let paused = false;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   window.launcher = {

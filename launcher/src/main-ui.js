@@ -12,25 +12,61 @@
   let repairing = false;        // the running sync rehashes every file
   let syncBase = 0;             // bytes already on disk when this sync started
 
-  // ---------------------------------------------------------------- background
-  const back = $("#bg-back").getContext("2d");
-  const front = $("#bg-front").getContext("2d");
-  const ambient = new FX.Ambient(0.6);
-  let W = 0, H = 0;
-  const fit = () => ({ W, H } = FX.fitCanvases([back, front]));
-  window.addEventListener("resize", fit);
-  fit();
-  let last = performance.now();
-  (function frame(now) {
-    const dt = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    const t = now / 1000;
-    back.clearRect(0, 0, W, H);
-    ambient.drawBack(back, dt, t, W, H);
-    front.clearRect(0, 0, W, H);
-    ambient.drawFront(front, dt, t, W, H);
-    requestAnimationFrame(frame);
-  })(last);
+  // ---------------------------------------------------------------- news
+  // Full-window pictures, one per slide, crossfaded; the text sits on the left.
+  const news = (window.LAUNCHER_NEWS || []).slice();
+  let slide = 0;
+  let slideTimer = null;
+  const SLIDE_MS = 9000;
+  const two = (n) => String(n).padStart(2, "0");
+
+  function buildNews() {
+    const stage = $("#stage");
+    const ticks = $("#news-ticks");
+    news.forEach((n, i) => {
+      const img = document.createElement("img");
+      img.className = "stage-img";
+      img.src = n.image;
+      img.alt = "";
+      stage.appendChild(img);
+      const t = document.createElement("i");
+      ticks.appendChild(t);
+    });
+    $("#news-total").textContent = two(news.length);
+    const single = news.length < 2;
+    $(".news-nav").hidden = single;
+    $(".news-count").hidden = single;
+  }
+
+  function showSlide(i) {
+    if (!news.length) return;
+    slide = (i + news.length) % news.length;
+    const n = news[slide];
+    const fill = (s) => String(s).replace("{launcher}", state && state.appVersion || "");
+    $$(".stage-img").forEach((img, k) => img.classList.toggle("on", k === slide));
+    $$("#news-ticks i").forEach((t, k) => t.classList.toggle("on", k === slide));
+    $("#news-index").textContent = two(slide + 1);
+    const box = $("#news");
+    box.classList.remove("in");
+    void box.offsetWidth;            // restart the text's entrance
+    box.classList.add("in");
+    $("#news-tag").textContent = fill(n.tag);
+    $("#news-ver").textContent = fill(n.version || "");
+    $("#news-title").textContent = fill(n.title);
+    $("#news-text").textContent = fill(n.text);
+    const read = $("#news-read");
+    read.dataset.link = n.link || "website";
+    read.hidden = !(state && state.settings.links[read.dataset.link]);
+    schedule();
+  }
+
+  // Slides move on by themselves, unless the pointer or focus is on the news.
+  let holding = false;
+  function schedule() {
+    clearTimeout(slideTimer);
+    if (news.length > 1 && !holding) slideTimer = setTimeout(() => showSlide(slide + 1), SLIDE_MS);
+  }
+  function hold(on) { holding = on; schedule(); }
 
   // ---------------------------------------------------------------- helpers
   function toast(msg, kind) {
@@ -55,7 +91,8 @@
     try { return await fn(...args); } catch (e) { toast(errorText(e)); throw e; }
   }
 
-  // ---------------------------------------------------------------- tabs
+  // ---------------------------------------------------------------- drawer
+  // Servers, Game Sync, Update and Settings open in a drawer over the news.
   function selectTab(name) {
     $$(".tab").forEach((t) => {
       const on = t.dataset.tab === name;
@@ -70,6 +107,25 @@
     $$(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === name));
   }
   $$(".tab").forEach((t) => t.addEventListener("click", () => selectTab(t.dataset.tab)));
+
+  function openDrawer(name) {
+    const d = $("#drawer");
+    const wasOpen = !d.hidden;
+    d.hidden = false;
+    $(".app").classList.add("drawer-open");
+    selectTab(name);
+    hold(true);
+    if (!wasOpen) $(`.tab[data-tab="${name}"]`).focus();
+  }
+
+  function closeDrawer() {
+    const d = $("#drawer");
+    if (d.hidden) return;
+    d.hidden = true;
+    $(".app").classList.remove("drawer-open");
+    hold(false);
+    renderOp();
+  }
 
   // ---------------------------------------------------------------- rendering
   function selectedServer() {
@@ -105,6 +161,20 @@
       select.appendChild(o);
     }
     select.value = selectedServer().id;
+    renderEnv();
+  }
+
+  // The selected server in the bottom bar: who's online, and whether it's up.
+  function renderEnv() {
+    const p = pings[selectedServer().id];
+    const online = $("#env-online");
+    const live = $("#env-live");
+    online.className = "env-online" + (!p ? "" : p.ok ? " ok" : " bad");
+    $("#env-online-text").textContent = !p ? "Checking"
+      : !p.ok ? "Unreachable"
+      : p.users != null ? `${Number(p.users).toLocaleString()} online` : `${p.ms} ms`;
+    live.className = "env-live" + (!p ? "" : p.ok ? " ok" : " bad");
+    live.textContent = !p ? "..." : p.ok ? "Live" : "Offline";
   }
 
   function renderStatus() {
@@ -206,6 +276,41 @@
     rb.disabled = syncing;
     $("#repair-sync").disabled = syncing || !state.game.ok || !state.online;
     $$("[data-link]").forEach((b) => { b.hidden = !state.settings.links[b.dataset.link]; });
+    $("#build-label").textContent = "Build " + (state.build && state.build.version || state.appVersion);
+  }
+
+  // ---------------------------------------------------------------- operation card
+  // An install, update or repair while it runs, top left over the news; a
+  // paused one keeps its card at the point it stopped (offline too).
+  function setOp(o) {
+    const card = $("#op-card");
+    card.hidden = !o || !$("#drawer").hidden;
+    if (!o) return;
+    card.classList.toggle("paused", !!o.paused);
+    $("#op-kind").textContent = o.kind;
+    $("#op-title").textContent = o.title;
+    $("#op-file").textContent = o.file || "";
+    $("#op-size").textContent = o.size || "";
+    $("#op-fill").style.width = o.frac == null ? "0%" : Math.round(o.frac * 100) + "%";
+    $("#op-pct").textContent = o.frac == null ? "" : Math.floor(o.frac * 100) + "%";
+  }
+
+  let opLive = null;            // the running operation's latest progress
+  const gameTitle = () => "The Culling Remaster" + (state.release ? " " + state.release : "");
+
+  function renderOp() {
+    if (opLive) return setOp(opLive);
+    if (syncing) return setOp({ kind: "Operation in progress · Starting", title: gameTitle(), frac: 0 });
+    if (!state.online && state.offlineStaged > 0) {
+      return setOp({ kind: "Paused · Offline", title: "The Culling Remaster", paused: true,
+        size: `${bytes(state.offlineStaged)} kept · reconnect to resume` });
+    }
+    const resume = resumeInfo();
+    if (resume) {
+      return setOp({ kind: "Paused · Progress saved", title: gameTitle(), paused: true,
+        frac: resume.have / resume.total, size: `${bytes(resume.have)} / ${bytes(resume.total)} downloaded` });
+    }
+    setOp(null);
   }
 
   function renderPlay() {
@@ -317,6 +422,7 @@
     renderSync();
     renderAccount();
     renderPlay();
+    renderOp();
   }
 
   // ---------------------------------------------------------------- actions
@@ -356,7 +462,7 @@
     syncBase = p && notInstalled() ? p.releaseBytes - p.bytes : 0;
     rate.t = 0; rate.bps = 0;
     syncing = true;
-    selectTab("sync");
+    opLive = null;
     $("#sync-progress").hidden = false;
     render();
     try {
@@ -371,6 +477,7 @@
       syncing = false;
       pausing = false;
       repairing = false;
+      opLive = null;
       $("#sync-progress").hidden = true;
       state = await api.state();
       render();
@@ -399,6 +506,10 @@
     box.className = "status-game busy";
     $("#status-title").textContent = "Updating launcher";
     $("#status-sub").textContent = p.done < p.total ? `Version ${p.version} · ${pct}%` : `Version ${p.version} · restarting`;
+    opLive = { kind: "Operation in progress · Updating launcher", title: `Launcher ${p.version}`,
+      file: p.done < p.total ? "The launcher restarts by itself when it's done" : "Restarting",
+      frac: p.total ? p.done / p.total : 1, size: `${bytes(p.done)} / ${bytes(p.total)}` };
+    setOp(opLive);
     const btn = $("#play");
     btn.disabled = true;
     btn.classList.add("working");
@@ -407,25 +518,41 @@
 
   function onSyncProgress(p) {
     if (p.phase === "launcher") return onLauncherUpdate(p);
-    let frac, label;
-    if (p.phase === "verify") { frac = p.done / p.total; label = `${repairing ? "Repairing: checking" : "Checking"} ${p.done.toLocaleString()} / ${p.total.toLocaleString()} files`; rate.t = 0; rate.bps = 0; }
-    else if (p.phase === "install") { frac = p.total ? p.done / p.total : 1; label = p.done < p.total ? `Installing ${p.total.toLocaleString()} files` : "Finalizing"; }
+    let frac, label, op;
+    if (p.phase === "verify") {
+      frac = p.done / p.total;
+      label = `${repairing ? "Repairing: checking" : "Checking"} ${p.done.toLocaleString()} / ${p.total.toLocaleString()} files`;
+      rate.t = 0; rate.bps = 0;
+      op = { kind: `Operation in progress · ${repairing ? "Repairing" : "Verifying"}`, file: "Checking every game file",
+        size: `${p.done.toLocaleString()} / ${p.total.toLocaleString()} files` };
+    }
+    else if (p.phase === "install") {
+      frac = p.total ? p.done / p.total : 1;
+      label = p.done < p.total ? `Installing ${p.total.toLocaleString()} files` : "Finalizing";
+      op = { kind: "Operation in progress · Installing", file: label, size: `${p.done.toLocaleString()} / ${p.total.toLocaleString()} files` };
+    }
     else {
       const done = syncBase + p.doneBytes, total = syncBase + p.totalBytes;
       frac = total ? done / total : 1;
       const what = p.active > 1 ? `${p.active} files` : p.file.split("/").pop();
-      const files = p.filesTotal ? ` · ${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files` : "";
-      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + files + speedText(p.doneBytes, p.totalBytes);
+      const files = p.filesTotal ? `${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files` : "";
+      const speed = speedText(p.doneBytes, p.totalBytes);
+      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + (files ? " · " + files : "") + speed;
+      op = { kind: `Operation in progress · ${pausing ? "Pausing" : "Downloading"}`,
+        file: p.active > 1 ? `${p.file.split("/").pop()} and ${p.active - 1} more` : p.file.split("/").pop(),
+        size: (files ? files + " · " : "") + `${bytes(done)} / ${bytes(total)}` + speed };
     }
     $("#sync-progress-fill").style.width = Math.round(frac * 100) + "%";
     $("#sync-progress-pct").textContent = Math.round(frac * 100) + "%";
     $("#sync-progress-label").textContent = label;
+    opLive = Object.assign(op, { title: gameTitle(), frac });
+    setOp(opLive);
   }
 
   async function play() {
     if (syncing) return pauseSync();
     if (notInstalled()) return runSync();
-    if (!state.game.ok) { selectTab("settings"); return chooseFolder(); }
+    if (!state.game.ok) { openDrawer("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();
     // The account comes first.
     if (accountNeeded()) return openAccount("signin");
@@ -492,6 +619,25 @@
     });
     $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     $$("[data-link]").forEach((b) => b.addEventListener("click", () => call(api.openLink, b.dataset.link)));
+    // The drawer: the bottom bar's buttons, the build number, the server status.
+    $("#open-settings").addEventListener("click", () => openDrawer("settings"));
+    $("#open-repair").addEventListener("click", () => openDrawer("sync"));
+    $("#build-label").addEventListener("click", () => openDrawer("update"));
+    $("#env-online").addEventListener("click", () => openDrawer("servers"));
+    $("#drawer-close").addEventListener("click", closeDrawer);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && $("#account-modal").hidden) closeDrawer();
+    });
+    // The news: arrows, and arrow keys while the news has focus.
+    $("#news-read").addEventListener("click", () => call(api.openLink, $("#news-read").dataset.link));
+    $("#news-prev").addEventListener("click", () => showSlide(slide - 1));
+    $("#news-next").addEventListener("click", () => showSlide(slide + 1));
+    for (const el of [$("#news"), $(".news-nav")]) {
+      el.addEventListener("mouseenter", () => hold(true));
+      el.addEventListener("mouseleave", () => hold(!$("#drawer").hidden));
+      el.addEventListener("focusin", () => hold(true));
+      el.addEventListener("focusout", () => hold(!$("#drawer").hidden));
+    }
     api.onSyncProgress(onSyncProgress);
   }
 
@@ -500,9 +646,11 @@
     // Without the intro, the start-up checks finish after this page shows.
     if (api.onStateChanged) api.onStateChanged(async () => { if (!syncing) { state = await api.state(); render(); } });
     state = await api.state();
+    buildNews();
     wire();
     render();
     selectTab("servers");
+    showSlide(0);
     refreshPings();
   }
 
