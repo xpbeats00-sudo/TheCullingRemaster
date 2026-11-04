@@ -17,6 +17,11 @@ python patch/test_eye_skins.py <Paks dir>
 
 The generated packages are git-ignored, like every other generator's output, so the build machine has to run both generators before `make_pak.py`.
 
+`python patch/make_eye_skins.py <Paks dir> --preview` redraws only the two swatch sheets (git-ignored, in `patch/branding/`). They show the textures, not in-game renders:
+
+- `eye_skins_preview.png`: each colour's skull-mask eyes, hood, top and pants;
+- `necro_mist_camos_preview.png`: each camo on the Ice Axe, Katana and Revolver texture atlases, composited as the weapon material does it.
+
 ## Colours and item IDs
 
 | # | Colour | Mask | Hood | Top (M / F) | Pants (M / F) | Weapon camo key |

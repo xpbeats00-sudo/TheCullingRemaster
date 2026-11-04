@@ -35,10 +35,11 @@ exe), so the data assets live there; meshes, materials and textures live in
 /Game/Remaster/EyeSkins.
 
 Outputs: patch/src/Victory/Content/... packages, patch/registry/eye_skins.bin,
-the "xp-eye-skins" entries of server/data/catalog.json and
-patch/branding/eye_skins_preview.png.
+the "xp-eye-skins" entries of server/data/catalog.json, and two swatch
+sheets: patch/branding/eye_skins_preview.png (outfits) and
+patch/branding/necro_mist_camos_preview.png (the camos on weapon textures).
 
-usage: python make_eye_skins.py <Paks dir>
+usage: python make_eye_skins.py <Paks dir> [--preview]    (--preview: only redraw the two sheets)
 """
 import glob
 import hashlib
@@ -373,47 +374,140 @@ def stored_path(stock, prop):
     return None
 
 
-# ---- preview
-def preview(rows, path):
-    """Swatch sheet: per colour the eye glow, hood texture, cloth tint, camo."""
-    T = 150
-    sheet = Image.new("RGB", (5 * (T + 8) + 120, len(rows) * (T + 22) + 24), (18, 18, 20))
+# ---- previews (texture swatches, not renders: the in-game look needs the game)
+CAMO_PREVIEW = os.path.join(HERE, "branding", "necro_mist_camos_preview.png")
+PREVIEW_WEAPONS = [("Ice Axe", "IceAxe_A"), ("Katana", "Katana"), ("Revolver", "Revolver_A")]
+BOT_BC = C + "Character/Player/MaleClothing/Bot_Necro_BC.uasset"
+TOP_BC = C + "Character/Player/MaleClothing/Top_Necro_BC.uasset"
+TOP_MTRGSP = C + "Character/Player/MaleClothing/Top_Necro_MTRGSP.uasset"
+T = 180
+
+
+def _f(img):
+    return np.asarray(img.convert("RGB"), np.float32) / 255.0
+
+
+def _img(a):
+    return Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8))
+
+
+def _crop(img, box):
+    w, h = img.size
+    return img.crop((int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h)))
+
+
+def _label_color(color):
+    return tuple(int(min(1.0, v) * 255) for v in 0.35 + 0.65 * np.array(color))
+
+
+def mask_tile(necro_bc, cloud, color):
+    """The skull face (from Necro_BC) with its sockets filled by the tinted mist."""
+    skull = _f(_crop(necro_bc, (0.47, 0.0, 1.0, 0.45)).resize((T, T)))
+    m = np.asarray(Image.fromarray((cloud * 255).astype(np.uint8)).resize((T, T)), np.float32) / 255.0
+    yy, xx = np.mgrid[0:T, 0:T] / T
+    sock = np.zeros((T, T), np.float32)
+    for cx, cy in ((0.19, 0.44), (0.78, 0.46)):
+        sock = np.maximum(sock, np.clip(1.3 - ((xx - cx) ** 2 / 0.011 + (yy - cy) ** 2 / 0.016), 0, 1))
+    glow = (sock * (0.35 + 0.9 * m))[..., None]
+    return _img(skull * (1 - 0.8 * sock[..., None]) + glow * np.array(color))
+
+
+def cloth_tile(bc, tint, glow_mask=None, color=None):
+    """Stock texture x the ClothingColor tint (luminance kept), plus the top's
+    emissive trim in the colour where its MTRGSP alpha marks it."""
+    a = _f(bc.resize((T, T)))
+    lum = (a @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
+    out = lum * np.array(tint) * 2.2
+    if glow_mask is not None:
+        g = np.asarray(glow_mask.resize((T, T)), np.float32)[..., None] / 255.0
+        out = out + g * np.array(color) * 1.2
+    return _img(out)
+
+
+def _sheet(title, heads):
+    sheet = Image.new("RGB", (130 + len(heads) * (T + 8), 40 + len(PALETTE) * (T + 10)), (18, 18, 20))
     d = ImageDraw.Draw(sheet)
-    for j, h in enumerate(("eyes (Fog Tint)", "hood BaseColor", "top/pants tint", "camo picture", "camo as fitted")):
-        d.text((120 + j * (T + 8), 4), h, fill=(200, 200, 200))
-    for i, r in enumerate(rows):
-        y = 22 + i * (T + 22)
-        d.text((4, y + T // 2), r["label"], fill=(255, 255, 255))
-        for j, img in enumerate(r["tiles"]):
-            if img is not None:
-                sheet.paste(img.convert("RGB").resize((T, T)), (120 + j * (T + 8), y))
+    d.text((4, 4), title, fill=(160, 160, 160))
+    for j, h in enumerate(heads):
+        d.text((130 + j * (T + 8), 22), h, fill=(210, 210, 210))
+    return sheet, d
+
+
+def outfit_sheet(src, cloud, path):
+    necro_bc = cooked_texture.decode_top(src[NECRO_BC])
+    top_bc = cooked_texture.decode_top(src[TOP_BC])
+    bot_bc = cooked_texture.decode_top(src[BOT_BC])
+    trim = cooked_texture.decode_top(src[TOP_MTRGSP]).getchannel("A")
+    sheet, d = _sheet("Necro Mist outfits - texture swatches (UV atlases), not in-game renders",
+                      ("Skull mask (eyes)", "Hood", "Top", "Pants"))
+    for i, (label, color) in enumerate(PALETTE):
+        c = np.array(color)
+        tint = tuple(0.03 + 0.45 * c)
+        _, hood_px = hood_texture(src[NECRO_BC], FOLDER + "T_Preview", color)
+        tiles = [mask_tile(necro_bc, cloud, color),
+                 _crop(Image.fromarray(hood_px), (0.03, 0.42, 0.97, 1.0)),
+                 cloth_tile(top_bc, tint, trim, color),
+                 cloth_tile(bot_bc, tint)]
+        y = 40 + i * (T + 10)
+        d.text((6, y + T // 2 - 6), label, fill=_label_color(color))
+        for j, t in enumerate(tiles):
+            sheet.paste(t.convert("RGB").resize((T, T)), (130 + j * (T + 8), y))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     sheet.save(path)
 
 
-def eye_tile(cloud, color, size=150):
-    """A flat stand-in for the mask's eyes: two sockets filled with the tinted mist."""
-    m = np.asarray(Image.fromarray((cloud * 255).astype(np.uint8)).resize((size, size)), np.float32) / 255.0
-    yy, xx = np.mgrid[0:size, 0:size] / size
-    sock = np.zeros((size, size), np.float32)
-    for cx in (0.32, 0.68):
-        sock = np.maximum(sock, np.clip(1 - ((xx - cx) ** 2 / 0.018 + (yy - 0.5) ** 2 / 0.03), 0, 1))
-    glow = (sock * (0.4 + 0.8 * m))[..., None]
-    rgb = np.array([0.82, 0.78, 0.66]) * (1 - sock[..., None]) * 0.6 + glow * np.array(color)
-    return Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
+def camo_sheet(paks_dir, cloud, path):
+    """Each Necro Mist camo as make_camos fits it (4 colours + masks), laid on
+    weapon texture atlases the way PM_Weapon_Master does: albedo = BC x camo
+    in the camo zone (CM red), the masks tiled CamoScale times."""
+    import make_camos
+    rels = {w: (C + "Character/Weapons/%s_BC.uasset" % m, C + "Character/Weapons/%s_CM.uasset" % m)
+            for w, m in PREVIEW_WEAPONS}
+    tex = find_in_paks(paks_dir, {r for pair in rels.values() for r in pair})
+    S = 516
+    weapons = {}
+    for w, (bc, cm) in rels.items():
+        rgb = np.asarray(cooked_texture.decode_top(tex[bc]).convert("RGB").resize((S, S)), np.float32)
+        zone = np.asarray(cooked_texture.decode_top(tex[cm]).convert("RGB").resize((S, S)), np.float32)[..., :1] / 255.0
+        weapons[w] = (make_camos.srgb_to_linear(rgb), zone)
+    sheet, d = _sheet("Necro Mist camos on weapon texture atlases (the static camo layer), not in-game renders",
+                      ("camo picture",) + tuple(w for w, _ in PREVIEW_WEAPONS))
+    reps = int(make_camos.CAMO_SCALE)
+    for i, (label, color) in enumerate(PALETTE):
+        picture = mist_image(cloud, color)
+        colors, masks = make_camos.fit(picture)
+        m = np.asarray(Image.fromarray(masks).resize((S // reps, S // reps)), np.float32) / 255.0
+        m = np.tile(m, (reps, reps, 1))
+        c1, c2, c3, c4 = colors * make_camos.GAIN
+        camo = c2 + (c1 - c2) * m[..., 2:3]
+        camo = camo + (c3 - camo) * m[..., 0:1]
+        camo = camo + (c4 - camo) * m[..., 1:2]
+        tiles = [picture]
+        for w, _ in PREVIEW_WEAPONS:
+            bc_lin, zone = weapons[w]
+            albedo = bc_lin * (1 - zone) + bc_lin * camo * zone
+            tiles.append(_img(np.clip(albedo, 0, 1) ** (1 / 2.2)))
+        y = 40 + i * (T + 10)
+        d.text((6, y + T // 2 - 12), CAMO_PACK, fill=_label_color(color))
+        d.text((6, y + T // 2 + 2), label, fill=_label_color(color))
+        for j, t in enumerate(tiles):
+            sheet.paste(t.convert("RGB").resize((T, T)), (130 + j * (T + 8), y))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    sheet.save(path)
 
 
-def cloth_tile(top_bc, tint):
-    a = np.asarray(top_bc.convert("RGB").resize((150, 150)), np.float32) / 255.0
-    lum = (a @ np.array([0.299, 0.587, 0.114], np.float32))[..., None]
-    return Image.fromarray((np.clip(lum * np.array(tint) * 2.2, 0, 1) * 255).astype(np.uint8))
+def previews(paks_dir):
+    src = find_in_paks(paks_dir, {NECRO_BC, CLOUDS, TOP_BC, BOT_BC, TOP_MTRGSP})
+    cloud = cloud_image(src[CLOUDS])
+    outfit_sheet(src, cloud, PREVIEW)
+    camo_sheet(paks_dir, cloud, CAMO_PREVIEW)
+    print("previews: %s, %s" % (PREVIEW, CAMO_PREVIEW))
 
 
 # ---- main
 def main(paks_dir):
     stock_assets = {p[0]: C + "Cosmetics/Clothing/%s.uasset" % p[1] for p in PIECES}
-    top_bc_rel = C + "Character/Player/MaleClothing/Top_Necro_BC.uasset"
-    src = find_in_paks(paks_dir, {NECRO_MIST, SKULL_MESH, NECRO_BC, CLOUDS, MIC_TEMPLATE, top_bc_rel}
+    src = find_in_paks(paks_dir, {NECRO_MIST, SKULL_MESH, NECRO_BC, MIC_TEMPLATE}
                        | set(TOP_MI.values()) | set(stock_assets.values()))
 
     for f in glob.glob(os.path.join(CONTENT, "Remaster", "EyeSkins", "*.uasset")) \
@@ -430,9 +524,7 @@ def main(paks_dir):
     catalog = [t for t in json.load(open(CATALOG)) if t.get("source") != CATALOG_TAG]
     by_asset = {t["asset"]: t for t in catalog}
     taken = {t["tid"] for t in catalog}
-    cloud = cloud_image(src[CLOUDS])
-    top_bc = cooked_texture.decode_top(src[top_bc_rel])
-    records, rows = [], []
+    records = []
 
     for i, (label, color) in enumerate(PALETTE):
         n = "%02d" % (i + 1)
@@ -460,7 +552,7 @@ def main(paks_dir):
 
         # hood texture
         hood_tex = FOLDER + "T_NecroHood" + n
-        tex, hood_px = hood_texture(src[NECRO_BC], hood_tex, color)
+        tex, _ = hood_texture(src[NECRO_BC], hood_tex, color)
         write(hood_tex, tex)
 
         # data assets + catalog
@@ -498,26 +590,17 @@ def main(paks_dir):
             catalog.append(entry)
             taken.add(item_id)
         print("%-13s eyes %s  cloth %s" % (label, tuple(round(float(v), 2) for v in c * 2), tint))
-        rows.append({"label": label, "color": color,
-                     "tiles": [eye_tile(cloud, color), Image.fromarray(hood_px), cloth_tile(top_bc, tint),
-                               mist_image(cloud, color), None]})
-
     asset_registry.save("eye_skins", records)
     asset_registry.build(paks_dir)
     with open(CATALOG, "w") as f:
         json.dump(catalog, f, indent=1)
 
-    # the camo column as make_camos will fit it
-    try:
-        import make_camos
-        for r in rows:
-            colors, masks = make_camos.fit(r["tiles"][3])
-            r["tiles"][4] = Image.fromarray((make_camos.reconstruct(colors, masks) * 255).astype(np.uint8))
-    except ImportError:
-        pass
-    preview(rows, PREVIEW)
-    print("%d colours x %d pieces = %d items; preview %s" % (len(PALETTE), len(PIECES), len(records), PREVIEW))
+    previews(paks_dir)
+    print("%d colours x %d pieces = %d items" % (len(PALETTE), len(PIECES), len(records)))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    if "--preview" in sys.argv[2:]:
+        previews(sys.argv[1])
+    else:
+        main(sys.argv[1])
