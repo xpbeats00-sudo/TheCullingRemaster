@@ -1,5 +1,5 @@
 // The Culling Remaster: UI breadcrumbs for diagnosing menu freezes.
-// Each trace is posted to the local server (logged as "ui-trace") before the
+// Each trace is posted to the Remaster server (logged as "ui-trace") before the
 // step it names runs, synchronously where Coherent allows it, so the last
 // line in the server log before a freeze is the step that hung.
 (function () {

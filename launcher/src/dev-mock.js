@@ -5,7 +5,8 @@
   "use strict";
   const listeners = [];
   const state = {
-    appVersion: "1.0.0",
+    appVersion: "1.1.0",
+    build: { version: "1.1.0", commit: "dev", label: "v1.1.0 · build dev" },
     settings: {
       gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\TheCulling",
       manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",

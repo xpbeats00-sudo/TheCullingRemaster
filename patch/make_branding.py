@@ -227,7 +227,7 @@ RANKED_TILE = """          <li tabindex="0" class="play-ranked-bg" id="ranked_pl
               <div class="tiledhighlighttop"></div>
             </div>
             <div class="tiled-menu-rollover">
-              <p>Climb nine ranks on placement. Local test ladder against bots.</p>
+              <p>Climb nine ranks on placement, against bots.</p>
             </div>
             <div class="play-title">
               <h1>RANKED</h1>
@@ -250,7 +250,7 @@ def add_ranked(html):
     end = html.index("</li>", start)
     block = (html[start:end].replace("<h1>FREE FOR ALL</h1>", "<h1>RANKED SOLO</h1>")
              .replace("<p>Solo queue for a Free For All match.</p>",
-                      "<p>Solo free-for-all. Rating moves on placement, never kills. Local test mode.</p>"))
+                      "<p>Solo free-for-all. Rating moves on placement, never kills.</p>"))
     html = html[:start] + block + html[end:]
     tag = '<script src="js/Screens/Ranked.js"></script>'
     assert html.count(tag) == 1

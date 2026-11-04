@@ -61,6 +61,29 @@ try {
     assert.throws(() => clientdll.ensure(fakeGame(path.join(tmp, "NoFunc")), "https://xplab.shop:8443/api"), /Func mod/);
   });
 
+  test("a missing or empty folder, or a partial install, is ready to install into", () => {
+    assert.deepStrictEqual(game.check(path.join(tmp, "nothing-here")).installable, true);
+    const empty = path.join(tmp, "Empty");
+    fs.mkdirSync(empty);
+    assert.strictEqual(game.check(empty).installable, true);
+    const partial = path.join(tmp, "Partial");
+    fs.mkdirSync(path.join(partial, ".remaster"), { recursive: true });
+    fs.mkdirSync(path.join(partial, "Engine"));
+    assert.strictEqual(game.check(partial).installable, true, "Game Sync's own unfinished install");
+    const other = path.join(tmp, "MyStuff");
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, "notes.txt"), "mine");
+    assert.deepStrictEqual([game.check(other).ok, game.check(other).installable], [false, false]);
+    assert.strictEqual(game.check(path.join(tmp, "TheCulling")).ok, true);
+  });
+
+  test("a picked folder: the game or an empty folder as is, else a subfolder inside it", () => {
+    assert.strictEqual(game.installTarget(path.join(tmp, "TheCulling")), path.join(tmp, "TheCulling"));
+    assert.strictEqual(game.installTarget(path.join(tmp, "Empty")), path.join(tmp, "Empty"));
+    assert.strictEqual(game.installTarget(path.join(tmp, "MyStuff")), path.join(tmp, "MyStuff", game.INSTALL_NAME));
+    assert.ok(game.defaultInstallDir().endsWith(path.join("Programs", game.INSTALL_NAME)));
+  });
+
   console.log("all %d game tests passed", passed);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

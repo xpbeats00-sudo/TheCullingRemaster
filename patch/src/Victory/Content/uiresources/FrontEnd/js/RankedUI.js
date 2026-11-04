@@ -1,6 +1,6 @@
-// The Culling Remaster: Ranked Solo UI (local test mode).
+// The Culling Remaster: Ranked Solo UI.
 // A rank badge under the player card on every menu screen, and the ranked
-// overview on the Ranked screen, from the local server's /api/ranked.
+// overview on the Ranked screen, from the Remaster server's /api/ranked.
 (function () {
   var URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api") + "/ranked";
   var REWARDS = {
@@ -46,7 +46,7 @@
     }).join("");
     $("#ranked-panel").html(
       '<div class="rp-head"><img src="' + emblem(s.tier.name) + '"><div>' +
-      '<div class="rp-season">' + s.season.name.toUpperCase() + ' • ' + s.season.daysLeft + ' DAYS LEFT • LOCAL TEST MODE</div>' +
+      '<div class="rp-season">' + s.season.name.toUpperCase() + ' • ' + s.season.daysLeft + ' DAYS LEFT</div>' +
       '<div class="rp-tier">' + (s.placement ? "PLACEMENTS " + s.placement.played + "/" + s.placement.total : s.tier.name) + '</div>' +
       '<div class="rp-elo">' + s.rating + ' ELO <small>' + next + '</small></div>' +
       '<div class="rb-bar"><div style="width:' + Math.round(s.tier.progress * 100) + '%"></div></div>' +
@@ -54,8 +54,8 @@
       '</div></div>' +
       '<div class="rp-cols"><div><h3>RECENT</h3><ul class="rp-recent">' + recent + '</ul></div>' +
       '<div><h3>RANK REWARDS</h3><ul class="rp-tiers">' + tiers + '</ul></div></div>' +
-      '<p class="rp-note">Opponents are bots and results come from your own game, so this ladder is local only. ' +
-      'Rating moves on placement, never kills. Leaving a ranked match counts as last place.</p>');
+      '<p class="rp-note">Opponents are bots. Rating moves on placement, never kills. ' +
+      'Leaving a ranked match counts as last place.</p>');
   }
 
   function refresh() {
