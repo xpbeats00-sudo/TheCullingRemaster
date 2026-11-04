@@ -45,7 +45,10 @@ async function stage(publishDir, updatesDir, log = console.log) {
   const seen = new Set();
   const n = { reused: 0, linked: 0, uploaded: 0, uploadedBytes: 0 };
   let i = 0;
-  for (const f of manifest.files) {
+  // The launcher setup the release offers (self-update) is an object too.
+  const all = manifest.launcher ? manifest.files.concat([{ path: "(launcher setup " + manifest.launcher.version + ")",
+    size: manifest.launcher.size, sha256: manifest.launcher.sha256 }]) : manifest.files;
+  for (const f of all) {
     i++;
     if (seen.has(f.sha256)) continue;
     seen.add(f.sha256);
@@ -62,16 +65,92 @@ async function stage(publishDir, updatesDir, log = console.log) {
     await copyVerified(src, dst, f.sha256);
     n.uploaded++;
     n.uploadedBytes += f.size;
-    if (n.uploaded % 50 === 0 || f.size > 50 * 1048576) log(`  uploaded ${n.uploaded} object(s), ${(n.uploadedBytes / 1048576).toFixed(0)} MB (file ${i} of ${manifest.files.length})`);
+    if (n.uploaded % 50 === 0 || f.size > 50 * 1048576) log(`  uploaded ${n.uploaded} object(s), ${(n.uploadedBytes / 1048576).toFixed(0)} MB (file ${i} of ${all.length})`);
   }
   log(`release ${manifest.version}: ${seen.size} objects: ${n.reused} already there, ${n.linked} linked from the old layout, ` +
     `${n.uploaded} uploaded (${(n.uploadedBytes / 1048576).toFixed(1)} MB)`);
   return n;
 }
 
-module.exports = { stage };
+const MB = (b) => (b / 1048576).toFixed(1) + " MB";
+
+// What publishing this release changes, compared with the release live on the
+// VPS (<updates>/manifest.json), and what has to come over the Remote Desktop
+// drive: objects the VPS doesn't have yet. Nothing is read from the release
+// folder but its manifest, so this is instant.
+function plan(publishDir, updatesDir, log = console.log) {
+  const next = JSON.parse(fs.readFileSync(path.join(publishDir, "manifest.json"), "utf8"));
+  let live = null;
+  try { live = JSON.parse(fs.readFileSync(path.join(updatesDir, "manifest.json"), "utf8")); } catch { /* first publish */ }
+  const objects = path.join(updatesDir, "objects");
+  // A file still in the old files\ layout is linked, not uploaded (staging
+  // checks its hash; here only its size, to stay instant).
+  const paths = new Map();
+  for (const f of next.files) if (!paths.has(f.sha256)) paths.set(f.sha256, f.path);
+  const oldLayout = (sha, size) => paths.has(sha) && sizeOf(path.join(updatesDir, "files", ...paths.get(sha).split("/"))) === size;
+  return describe(next, live, (sha, size) => sizeOf(path.join(objects, sha)) === size || oldLayout(sha, size), log);
+}
+
+// The difference between the live release and the next one, and the objects
+// `has` says the server is missing (what a publish uploads).
+function describe(next, live, has, log = console.log) {
+  const before = new Map(live ? live.files.map((f) => [f.path, f]) : []);
+  const changed = [], added = [];
+  for (const f of next.files) {
+    const old = before.get(f.path);
+    if (!old) added.push(f);
+    else if (old.sha256 !== f.sha256) changed.push(f);
+    before.delete(f.path);
+  }
+  const removed = [...before.values()];
+  const want = new Map();
+  for (const f of next.files) want.set(f.sha256, f.size);
+  if (next.launcher) want.set(next.launcher.sha256, next.launcher.size);
+  let uploadBytes = 0, uploadCount = 0;
+  for (const [sha, size] of want) if (!has(sha, size)) { uploadCount++; uploadBytes += size; }
+
+  log(`release ${live ? live.version : "(none)"} -> ${next.version}: ${changed.length} changed, ${added.length} added, ${removed.length} removed`);
+  const show = (tag, list) => list.slice(0, 20).forEach((f) => log(`  ${tag} ${f.path} (${MB(f.size)})`));
+  show("changed", changed);
+  show("added  ", added);
+  show("removed", removed);
+  if (changed.length + added.length + removed.length > 60) log("  ...");
+  if (next.launcher) {
+    const was = live && live.launcher ? live.launcher.version : "none";
+    log(`  launcher ${was} -> ${next.launcher.version}` + (live && live.launcher && live.launcher.sha256 === next.launcher.sha256 ? " (unchanged)" : ""));
+  }
+  log(`to upload: ${uploadCount} object(s), ${MB(uploadBytes)}; everything else is already on the VPS`);
+  return { from: live ? live.version : null, to: next.version, changed, added, removed, uploadCount, uploadBytes };
+}
+
+// The website's setup and launcher.json, from the setup object the release
+// offers (already staged and hash-checked on the VPS), so the setup never
+// crosses the Remote Desktop drive a second time.
+async function publishSetup(publishDir, updatesDir, downloadDir, log = console.log) {
+  const m = JSON.parse(fs.readFileSync(path.join(publishDir, "manifest.json"), "utf8"));
+  const l = m.launcher;
+  if (!l) throw new Error("this release doesn't offer a launcher (no \"launcher\" entry)");
+  const obj = path.join(updatesDir, "objects", l.sha256);
+  if (sizeOf(obj) !== l.size) throw new Error("the launcher object isn't staged: " + obj);
+  fs.mkdirSync(downloadDir, { recursive: true });
+  const setup = path.join(downloadDir, "TheCullingRemasterSetup.exe");
+  await copyVerified(obj, setup + ".new", l.sha256);
+  fs.renameSync(setup + ".new", setup);
+  const info = { version: l.version, size: l.size, sha256: l.sha256,
+    published: new Date().toISOString().replace(/\.\d+Z$/, "Z"), url: "/download/TheCullingRemasterSetup.exe" };
+  fs.writeFileSync(path.join(downloadDir, "launcher.json.new"), JSON.stringify(info));
+  fs.renameSync(path.join(downloadDir, "launcher.json.new"), path.join(downloadDir, "launcher.json"));
+  log(`website: setup ${l.version} (${MB(l.size)}) and launcher.json written`);
+  return info;
+}
+
+module.exports = { stage, plan, describe, publishSetup };
 if (require.main === module) {
-  const [publishDir, updatesDir] = process.argv.slice(2);
-  if (!publishDir || !updatesDir) { console.error("usage: node stage_objects.js <release publish dir> <updates dir>"); process.exit(2); }
-  stage(publishDir, updatesDir).catch((e) => { console.error(e.message); process.exit(1); });
+  const args = process.argv.slice(2);
+  const usage = "usage: node stage_objects.js [--plan] <release publish dir> <updates dir>\n" +
+    "       node stage_objects.js --setup <release publish dir> <updates dir> <website download dir>";
+  const run = (p) => Promise.resolve().then(p).catch((e) => { console.error(e.message); process.exit(1); });
+  if (args[0] === "--plan") { if (args.length !== 3) { console.error(usage); process.exit(2); } run(() => plan(args[1], args[2])); }
+  else if (args[0] === "--setup") { if (args.length !== 4) { console.error(usage); process.exit(2); } run(() => publishSetup(args[1], args[2], args[3])); }
+  else { if (args.length !== 2) { console.error(usage); process.exit(2); } run(() => stage(args[0], args[1])); }
 }

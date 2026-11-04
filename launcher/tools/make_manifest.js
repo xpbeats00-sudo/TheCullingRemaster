@@ -48,6 +48,37 @@ function place(src, dst) {
   try { fs.linkSync(src, dst); } catch { fs.copyFileSync(src, dst); }
 }
 
+// SHA-256s of files hashed before, keyed by the file's identity (volume and
+// file index: a release's game files are hard links of one install) and
+// stamped with its size and modification time. A new release then hashes only
+// what changed (the patch pak, the setup) instead of all 5.6 GB. The cache
+// lives next to the releases (CULLING_HASH_CACHE overrides; "off" disables it).
+function hashCache(file) {
+  let saved = {};
+  if (file) { try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none yet */ } }
+  const now = {};
+  const n = { hits: 0, hashed: 0 };
+  return {
+    async sha256(src) {
+      const st = fs.statSync(src, { bigint: true });
+      const key = st.dev + ":" + st.ino;
+      const stamp = st.size + ":" + st.mtimeNs;
+      const hit = file && saved[key];
+      if (hit && hit.stamp === stamp && /^[0-9a-f]{64}$/.test(hit.sha256)) { n.hits++; now[key] = hit; return hit.sha256; }
+      const sha256 = await sha256File(src);
+      n.hashed++;
+      now[key] = { stamp, sha256 };
+      return sha256;
+    },
+    save() {
+      if (!file) return;
+      fs.writeFileSync(file + ".tmp", JSON.stringify(now));
+      fs.renameSync(file + ".tmp", file);
+    },
+    stats: n
+  };
+}
+
 // The version built into a Windows exe (electron-builder writes the app's).
 function exeVersion(file) {
   const v = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
@@ -58,10 +89,10 @@ function exeVersion(file) {
 }
 
 // The setup as a published object.
-async function launcherEntry(setup, outDir) {
+async function launcherEntry(setup, outDir, cache) {
   if (!fs.existsSync(setup)) throw new Error("no setup at " + setup);
   const version = exeVersion(setup);
-  const sha256 = await sha256File(setup);
+  const sha256 = cache ? await cache.sha256(setup) : await sha256File(setup);
   const dst = path.join(outDir, "objects", sha256);
   fs.mkdirSync(path.dirname(dst), { recursive: true });
   if (!fs.existsSync(dst)) place(setup, dst);
@@ -84,11 +115,14 @@ async function build(release, version, outDir, keyPath, setup) {
   }
   if (!fs.existsSync(keyPath)) throw new Error("no release key at " + keyPath + ": run node tools/make_release_key.js once");
   const key = crypto.createPrivateKey(fs.readFileSync(keyPath));
+  const cacheFile = process.env.CULLING_HASH_CACHE === "off" ? null
+    : process.env.CULLING_HASH_CACHE || path.join(outDir, "..", ".hashcache.json");
+  const cache = hashCache(cacheFile);
   const files = [];
   for (const rel of walk(release).sort()) {
     targetPath(release, rel);                    // the same path rules the launcher applies
     const src = path.join(release, ...rel.split("/"));
-    const sha256 = await sha256File(src);
+    const sha256 = await cache.sha256(src);
     const dst = path.join(outDir, "objects", sha256);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     if (!fs.existsSync(dst)) place(src, dst);
@@ -98,14 +132,16 @@ async function build(release, version, outDir, keyPath, setup) {
   const serversFile = path.join(release, "..", "servers.json");
   if (fs.existsSync(serversFile)) servers = JSON.parse(fs.readFileSync(serversFile, "utf8"));
   const manifest = { version, released: new Date().toISOString(), files, servers };
-  if (setup) manifest.launcher = await launcherEntry(setup, outDir);
+  if (setup) manifest.launcher = await launcherEntry(setup, outDir, cache);
+  cache.save();
   const body = Buffer.from(JSON.stringify(manifest, null, 1));
   fs.writeFileSync(path.join(outDir, "manifest.json"), body);
   fs.writeFileSync(path.join(outDir, "manifest.json.sig"), crypto.sign(null, body, key).toString("base64"));
   const objects = new Set(files.map((f) => f.sha256)).size;
   console.log(`manifest ${version}: ${files.length} files (${objects} objects), ${files.reduce((s, f) => s + f.size, 0)} bytes -> ${outDir}`);
   if (manifest.launcher) console.log(`launcher ${manifest.launcher.version}: ${manifest.launcher.size} bytes, object ${manifest.launcher.sha256}`);
+  console.log(`hashed ${cache.stats.hashed} file(s), ${cache.stats.hits} unchanged since the last build (hash cache)`);
 }
 
-module.exports = { main, exeVersion };
+module.exports = { main, exeVersion, hashCache };
 if (require.main === module) main(...process.argv.slice(2)).catch((e) => { console.error(e.message); process.exit(1); });
