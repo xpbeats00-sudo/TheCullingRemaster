@@ -86,7 +86,7 @@
     var score = el("div", "sd-score");
     score.appendChild(document.createTextNode("YOU " + series.wins + " "));
     score.appendChild(el("span", null, "—"));
-    score.appendChild(document.createTextNode(" " + series.losses + " BOT"));
+    score.appendChild(document.createTextNode(" " + series.losses + " RIVAL"));
     c.appendChild(score);
     var dots = el("div", "sd-rounds");
     for (var i = 0; i < series.rounds.length; i++) dots.appendChild(el("i", series.rounds[i]));
@@ -130,7 +130,7 @@
 
   function over(series) {
     var title = series.forfeit ? "SHOWDOWN LEFT" : series.won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT";
-    var ui = card(series, title, series.won ? "You took " + series.wins + " rounds first." : "The bot took " + series.losses + " rounds first.");
+    var ui = card(series, title, series.won ? "You took " + series.wins + " rounds first." : "Your rival took " + series.losses + " rounds first.");
     button(ui.buttons, "CLOSE", false, hide);
     button(ui.buttons, "PLAY AGAIN", true, function () { hide(); queue(null, null); });
   }

@@ -17,6 +17,7 @@ const clientdll = require("./lib/clientdll");
 const playername = require("./lib/playername");
 const account = require("./lib/account");
 const selfupdate = require("./lib/selfupdate");
+const discord = require("./lib/discord");
 const build = require("./lib/build");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
@@ -428,7 +429,11 @@ function registerIpc() {
     // The player's own Func client, pointed at the chosen server.
     clientdll.ensure(game.win64(settings.gamePath), server.api);
     await game.launch(settings.gamePath, app.getPath("logs"));
-    if (settings.closeOnLaunch) setTimeout(() => app.quit(), 1500);
+    const presence = watchGame();
+    // With Discord presence on, "close on launch" hides the window and the
+    // launcher leaves when the game does (the presence needs a process).
+    if (settings.closeOnLaunch && !presence) setTimeout(() => app.quit(), 1500);
+    else if (settings.closeOnLaunch) win.hide();
     else win.minimize();
     return true;
   });
@@ -446,12 +451,37 @@ function registerIpc() {
   });
 }
 
+// Discord presence while the game runs (lib/discord.js). The game takes a
+// while to start after its launcher; it counts as closed once it was seen and
+// is gone, or never appeared within GAME_START_MS. Returns false when there is
+// no Discord application to show.
+const GAME_POLL_MS = 10000, GAME_START_MS = 3 * 60 * 1000;
+let presence = null, gameWatch = null;
+function watchGame() {
+  if (!discord.APP_ID) return false;
+  if (!presence) presence = discord.createPresence({ links: settings.links, log });
+  presence.start();
+  if (gameWatch) clearInterval(gameWatch);
+  const launched = Date.now();
+  let seen = false;
+  gameWatch = setInterval(() => {
+    const running = game.isRunning();
+    if (running) { seen = true; return; }
+    if (!seen && Date.now() - launched < GAME_START_MS) return;
+    clearInterval(gameWatch);
+    gameWatch = null;
+    presence.stop();
+    if (settings.closeOnLaunch && win && !win.isVisible()) setTimeout(() => app.quit(), 500);
+  }, GAME_POLL_MS);
+  return true;
+}
+
 // ---------------------------------------------------------------- app
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.on("second-instance", () => { if (win) { if (!win.isVisible()) win.show(); if (win.isMinimized()) win.restore(); win.focus(); } });
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
     // Chromium's network stack: the system proxy and the Windows certificate store.

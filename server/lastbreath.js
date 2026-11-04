@@ -5,7 +5,7 @@
 // per server tick, and round / match state. It is NOT wired into the game.
 // The cooked game has no round loop, no team mode beyond pairs and no
 // circular zone, so it needs new game-side Blueprints, which can't be authored
-// for a cooked build (see GAME_MODE_INTEGRATION_REPORT.md).
+// for a cooked build (see docs/GAME_MODE_INTEGRATION_REPORT.md).
 
 const fs = require('fs');
 const path = require('path');

@@ -61,6 +61,18 @@ class MatchLobbies {
     return lobby;
   }
 
+  // A party joins together: everyone into one lobby, the open one if it has
+  // room for them all (it starts counting down otherwise and they open the
+  // next). `prefer` is everyone's first map vote.
+  joinGroup(queue, members, prefer) {
+    for (const m of members) this.leave(m.id);
+    const open = this.open.get(queue);
+    if (open && open.members.size + members.length > open.maxPlayers) this.countdown(open);
+    let lobby = null;
+    for (const m of members) lobby = this.join(queue, m, prefer);
+    return lobby;
+  }
+
   // Takes a player out of their lobby, if they are in one.
   leave(id) {
     const lobby = this.byMember.get(id);
