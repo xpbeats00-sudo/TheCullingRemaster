@@ -118,7 +118,7 @@
       sub = `${Math.floor(resume.have / resume.total * 100)}% done, ${bytes(resume.total - resume.have)} left`;
       box.classList.add("warn");
     }
-    else if (!state.game.ok && state.game.installable) {
+    else if (notInstalled()) {
       title = state.online ? "Ready to install" : "Not installed";
       sub = !state.online ? "Can't reach xplab.shop" : state.pending ? bytes(state.pending.bytes) + " download" : "Checking";
       box.classList.add("warn");
@@ -133,10 +133,16 @@
 
   // A paused or interrupted download: what is already on disk, of how much.
   // A fresh install counts the finished files too; an update only the partial ones.
+  // No release fully installed yet: a fresh install, or one paused part-way
+  // (Victory.exe can already be there; only a finished commit counts).
+  function notInstalled() {
+    return !state.installed && (state.game.ok || state.game.installable);
+  }
+
   function resumeInfo() {
     const p = state.pending;
     if (syncing || !p || !p.files) return null;
-    const fresh = !state.game.ok && state.game.installable;
+    const fresh = notInstalled();
     const have = (fresh ? p.releaseBytes - p.bytes : 0) + p.partial;
     if (have <= 0) return null;
     return { have, total: fresh ? p.releaseBytes : p.bytes };
@@ -147,7 +153,7 @@
     $("#game-path").textContent = path;
     $("#settings-path").textContent = path;
     const hint = $("#game-check");
-    const fresh = !state.game.ok && state.game.installable;
+    const fresh = notInstalled();
     if (fresh) {
       hint.textContent = state.pending
         ? `Not installed yet: Install downloads ${bytes(state.pending.bytes)} here` + (state.freeBytes != null ? ` (${bytes(state.freeBytes)} free).` : ".")
@@ -203,8 +209,8 @@
     let label = "Play";
     if (syncing) { label = pausing ? "Pausing" : "Pause"; btn.classList.add("working"); btn.disabled = pausing; }
     else if (resumeInfo() && state.online) { label = "Resume"; btn.classList.add("working"); }
-    else if (!state.game.ok && state.game.installable && state.online) { label = "Install"; btn.classList.add("working"); }
-    else if (!state.game.ok && state.game.installable) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
+    else if (notInstalled() && state.online) { label = "Install"; btn.classList.add("working"); }
+    else if (notInstalled()) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
     else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
     else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
     else if (nameNeeded()) { label = "Set your name"; btn.classList.add("secondary"); }
@@ -296,7 +302,7 @@
     repairing = !!(opts && opts.repair);
     // Progress continues from what is already on disk (a resumed install).
     const p = state.pending;
-    syncBase = p && !state.game.ok && state.game.installable ? p.releaseBytes - p.bytes : 0;
+    syncBase = p && notInstalled() ? p.releaseBytes - p.bytes : 0;
     rate.t = 0; rate.bps = 0;
     syncing = true;
     selectTab("sync");
@@ -353,7 +359,7 @@
 
   async function play() {
     if (syncing) return pauseSync();
-    if (!state.game.ok && state.game.installable) return runSync();
+    if (notInstalled()) return runSync();
     if (!state.game.ok) { selectTab("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();
     // The name comes first: an unsaved edit is saved, a missing name asked for.

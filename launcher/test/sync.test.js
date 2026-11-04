@@ -106,12 +106,12 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     await test("a corrupt download is rejected and leaves the old file", async () => {
       const f = path.join(game, "Victory/Binaries/Win64/Func.Client.Local.dll");
       fs.writeFileSync(f, "old");
-      served["/files/Victory/Binaries/Win64/Func.Client.Local.dll"] = "evil!!!";
       const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
+      served["/" + m.files.find((x) => x.path === "Victory/Binaries/Win64/Func.Client.Local.dll").url] = "evil!!!";
       const todo = await sync.plan(m, game);
-      await assert.rejects(sync.apply(m, todo, game), /failed verification/);
+      await assert.rejects(sync.apply(m, todo, game, () => {}, { retryDelayMs: 5 }), /failed verification/);
       assert.strictEqual(fs.readFileSync(f, "utf8"), "old");
-      assert.ok(!fs.existsSync(f + ".part"), "partial download cleaned up");
+      assert.ok(!fs.existsSync(path.join(game, ".remaster/staging/Victory/Binaries/Win64/Func.Client.Local.dll.part")), "partial download cleaned up");
       served = {};
     });
 
