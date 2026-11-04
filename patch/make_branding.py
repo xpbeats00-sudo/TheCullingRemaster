@@ -254,7 +254,9 @@ def add_ranked(html):
     html = html[:start] + block + html[end:]
     tag = '<script src="js/Screens/Ranked.js"></script>'
     assert html.count(tag) == 1
-    return html.replace(tag, tag + '\n  <script src="js/RankedUI.js"></script>')
+    # The matchmaking lobby panel (MatchLobby.js) loads here too: after ClientWeb.js.
+    return html.replace(tag, tag + '\n  <script src="js/RankedUI.js"></script>'
+                        '\n  <script src="js/MatchLobby.js"></script>')
 
 
 def make_intro(game_root):

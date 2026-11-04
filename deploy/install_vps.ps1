@@ -79,7 +79,7 @@ if ($have -ne "v$NodeVersion") {
 
 Step 'Server code'
 $app = Join-Path $Root 'app'
-foreach ($f in 'server.js', 'ranked.js', 'session.js', 'store.js', 'metrics.js', 'accounts.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
+foreach ($f in 'server.js', 'ranked.js', 'session.js', 'store.js', 'metrics.js', 'accounts.js', 'matchlobby.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
     Copy-Item (Join-Path $Repo "server\$f") (Join-Path $app $f) -Force
 }
 # Operator commands (node tools\account_admin.js ...), run on the VPS while the service is running.
