@@ -12,6 +12,7 @@ const config = require("./lib/config");
 const game = require("./lib/game");
 const sync = require("./lib/sync");
 const clientdll = require("./lib/clientdll");
+const build = require("./lib/build");
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
 const PAGES = { splash: "src/splash.html", main: "src/main.html" };
@@ -57,7 +58,7 @@ function createWindow() {
 
 async function refreshPlan(onHash) {
   const check = game.check(settings.gamePath);
-  if (!check.ok || !manifest) { todo = null; return; }
+  if (!(check.ok || check.installable) || !manifest) { todo = null; return; }
   todo = await sync.plan(manifest, settings.gamePath, onHash);
 }
 
@@ -66,8 +67,9 @@ async function boot() {
   bootResult = { online: false, error: null };
   progress(0.08, "Checking game folder");
   if (!settings.gamePath) {
-    const found = game.detect();
-    if (found) settings = config.save(SETTINGS(), Object.assign(settings, { gamePath: found }));
+    // The player's Steam copy if there is one, else where a fresh install goes.
+    const gamePath = game.detect() || game.defaultInstallDir();
+    settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
   }
   progress(0.25, "Contacting xplab.shop");
   try {
@@ -77,13 +79,14 @@ async function boot() {
     manifest = null;
     bootResult.error = e.message;
   }
-  progress(0.45, "Verifying Remaster files");
+  const installed = game.check(settings.gamePath).ok;
+  progress(0.45, installed ? "Verifying game files" : "Preparing install");
   try {
-    await refreshPlan((done, total) => progress(0.45 + 0.5 * done / total, "Verifying Remaster files"));
+    await refreshPlan((done, total) => progress(0.45 + 0.5 * done / total, installed ? "Verifying game files" : "Preparing install"));
   } catch (e) {
     bootResult.error = e.message;
   }
-  progress(1, !bootResult.online ? "Offline" : todo && todo.length ? "Update available" : "Ready");
+  progress(1, !bootResult.online ? "Offline" : !installed ? "Ready to install" : todo && todo.length ? "Update available" : "Ready");
 }
 
 // ---------------------------------------------------------------- state for the pages
@@ -92,6 +95,7 @@ function state() {
   const check = game.check(settings.gamePath);
   return {
     appVersion: app.getVersion(),
+    build: build.info(app.getVersion()),
     settings,
     game: check,
     online: bootResult.online,
@@ -99,6 +103,7 @@ function state() {
     release: manifest ? manifest.version : null,
     installed: check.ok ? sync.installedVersion(settings.gamePath) : null,
     pending: todo ? { files: todo.length, bytes: todo.reduce((s, f) => s + f.size, 0) } : null,
+    freeBytes: (() => { try { return sync.freeBytes(settings.gamePath); } catch { return null; } })(),
     servers: (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers,
     busy
   };
@@ -134,15 +139,15 @@ function registerIpc() {
   handle("splash-done", () => win.loadFile(PAGES.main));
 
   handle("choose-game-folder", async () => {
+    if (busy) throw new Error("Wait for Game Sync to finish");
     const r = await dialog.showOpenDialog(win, {
-      title: "Select your The Culling folder (the one containing Victory)",
-      properties: ["openDirectory"],
+      title: "Choose where to install The Culling Remaster (or an existing install)",
+      properties: ["openDirectory", "createDirectory"],
       defaultPath: settings.gamePath || undefined
     });
     if (r.canceled || !r.filePaths[0]) return state();
-    const check = game.check(r.filePaths[0]);
-    if (!check.ok) throw new Error(check.reason);
-    settings = config.save(SETTINGS(), Object.assign(settings, { gamePath: r.filePaths[0] }));
+    const gamePath = game.installTarget(r.filePaths[0]);
+    settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
     await refreshPlan();
     return state();
   });
@@ -162,13 +167,20 @@ function registerIpc() {
 
   handle("sync", async () => {
     if (busy) throw new Error("Game Sync is already running");
-    if (!game.check(settings.gamePath).ok) throw new Error("Choose your game folder in Settings first");
+    const check = game.check(settings.gamePath);
+    if (!(check.ok || check.installable)) throw new Error(check.reason + ": choose another folder in Settings");
     busy = true;
     try {
       if (!manifest) manifest = await sync.fetchManifest(settings.manifestUrl);
       await refreshPlan((done, total) => send("sync-progress", { phase: "verify", done, total }));
-      const r = await sync.apply(manifest, todo, settings.gamePath,
-        (p) => send("sync-progress", Object.assign({ phase: "download" }, p)));
+      // About ten progress updates a second, not one per network chunk.
+      let lastSent = 0;
+      const r = await sync.apply(manifest, todo, settings.gamePath, (p) => {
+        const now = Date.now();
+        if (now - lastSent < 100 && p.doneBytes < p.totalBytes) return;
+        lastSent = now;
+        send("sync-progress", Object.assign({ phase: "download" }, p));
+      });
       todo = [];
       return Object.assign(state(), { synced: r });
     } finally {

@@ -235,5 +235,10 @@
   }
 
   // For the launcher's main process (and debugging).
+  // The corner shows the launcher's version and build.
+  if (window.launcher && window.launcher.state) {
+    window.launcher.state().then((s) => { if (s.build) document.querySelector(".frame-note.left").textContent = s.build.label; });
+  }
+
   window.Splash = { setProgress, setReady };
 })();
