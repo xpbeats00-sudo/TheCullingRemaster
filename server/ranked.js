@@ -30,6 +30,7 @@ const CONFIG = {
   field: 51,
   botSpread: 150,          // bot ratings: player MMR +- this (normal sd)
   historyLength: 50,
+  processedLength: 100,    // match IDs remembered against duplicate results
   season: { id: 'S1', name: 'Season 1', start: '2026-11-01T00:00:00Z', end: '2027-02-01T00:00:00Z' }
 };
 
@@ -175,7 +176,17 @@ function apply(r, match, result, now, grant) {
     timeAlive: result.timeAlive || 0,
     rewards
   };
-  r.processed[match.id] = entry;
+  // Processed match IDs -> when. Only the ID matters (the entry itself is in
+  // history); profiles from before stored a full copy of every entry here,
+  // forever, which made a ranked veteran's profile ~75 KB and every save of
+  // profiles.json slower. Only recent IDs need remembering: a result can only
+  // be for the pending match.
+  r.processed[match.id] = now;
+  const ids = Object.keys(r.processed);
+  for (let i = 0; i < ids.length; i++) {
+    if (i < ids.length - CONFIG.processedLength) delete r.processed[ids[i]];
+    else if (typeof r.processed[ids[i]] === 'object') r.processed[ids[i]] = r.processed[ids[i]].at || now;
+  }
   r.history.unshift(entry);
   r.history.length = Math.min(r.history.length, CONFIG.historyLength);
   return entry;
@@ -202,7 +213,10 @@ function startMatch(profile, now = Date.now(), grant) {
 // result stands. Invalid results are rejected without changing anything.
 function finishMatch(profile, result, now = Date.now(), grant) {
   const r = ensure(profile);
-  if (result.matchId && r.processed[result.matchId]) return { entry: r.processed[result.matchId], duplicate: true };
+  if (result.matchId && Object.prototype.hasOwnProperty.call(r.processed, result.matchId)) {
+    const entry = r.history.find((h) => h.matchId === result.matchId) || { matchId: result.matchId };
+    return { entry, duplicate: true };
+  }
   if (!r.pending) return { error: 'no-ranked-match' };
   const match = r.pending;
   if (result.matchId && result.matchId !== match.id) return { error: 'unknown-match' };

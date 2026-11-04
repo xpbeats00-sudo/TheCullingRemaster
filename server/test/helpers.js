@@ -14,7 +14,9 @@ function startServer(port, env = {}) {
   fs.copyFileSync(path.join(__dirname, "..", "data", "catalog.json"), path.join(dir, "catalog.json"));
   if (env.profiles) fs.writeFileSync(path.join(dir, "profiles.json"), JSON.stringify(env.profiles));
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir }, env.vars || {}),
+    // CULLING_SAVE_DELAY_MS=0: write profiles on every change, so tests can read
+    // profiles.json right after a request (the service coalesces to 1 s).
+    env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: "0" }, env.vars || {}),
     stdio: "ignore"
   });
   const srv = {
