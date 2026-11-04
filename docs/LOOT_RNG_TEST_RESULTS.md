@@ -32,6 +32,7 @@ Showdown (`showdown.test.js`):
 | Player gets a kit | **Fail** with the airdrop kit (crate out of reach). **Pass** after the change: spawned holding Muscle Man Milk (slot 1), Tomahawk (slot 2, in hand), armor on; no crate |
 | Bot gets the same kit | Unconfirmed: one run the bot dealt a bleed wound and killed fast; another it didn't engage |
 | No airdrops | Pass: none arrived |
+| Start messages | Pass: "Drink Up & Fight!" (was "Open Your Airdrop") and help "Ready up and fight" (was "Grab your Airdrop.") |
 | Pre-round panel, round banner, next-round screen | Not run yet (needs the server update) |
 | Multiplayer sync | Not possible: no server-capable game binary |
 

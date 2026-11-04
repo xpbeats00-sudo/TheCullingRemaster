@@ -23,6 +23,10 @@ build, so this assembles it from what the game already has:
 - Spawns: Jungle_P's eight SpawnsLightning starts sit ~20,000 units out. Two
   move into the arena, on opposite sides facing the middle; the other six are
   retagged so they're never picked.
+- Messages: the Lightning branch of the gas manager shows "Open Your
+  Airdrop" at match start and Jungle's level script a "Grab your Airdrop."
+  help toast; with no airdrop they mislead, so they say what to do instead
+  (same length: they are string constants in compiled script).
 - Start: the menu's StartTraining("Practice") travels to the URL in
   DefaultGame.ini's TrainingMapAdvanced (make_loading_bar.py writes it); the
   stock Practice map isn't reachable from the Remaster menu.
@@ -72,6 +76,12 @@ ARENA_STARTS = {
     "Spawns_Lightning05": ((1800.0, 0.0, 200.0), 180.0),
 }
 UNUSED_TAG = "SpawnsShowdownUnused"
+PHASES = "Victory/Content/Blueprints/Environment/MatchPhaseManager_BP.uasset"
+# (old, new): same length, each the whole of a script string constant.
+TEXTS = {
+    PHASES: [("Open Your Airdrop", "Drink Up & Fight!")],      # Lightning branch only
+    JUNGLE: [("Grab your Airdrop.", "Ready up and fight")],    # help toast
+}
 
 
 # ---------------------------------------------------------------- tagged properties
@@ -241,6 +251,19 @@ def perk(data):
     return bytes(out)
 
 
+def retext(rel, data):
+    """Replace whole script string constants (EX_StringConst 0x1F, text, NUL)
+    in place; already replaced is fine."""
+    out = bytearray(data)
+    for old, new in TEXTS.get(rel, []):
+        assert len(old) == len(new), (old, new)
+        o, n = b"\x1f" + old.encode() + b"\x00", b"\x1f" + new.encode() + b"\x00"
+        found = out.count(o)
+        assert found or out.count(n), "%s: %r not found" % (rel, old)
+        out = bytearray(bytes(out).replace(o, n))
+    return bytes(out)
+
+
 def server_kit():
     """The kit's contents for the server and the HUD, from the loot tables."""
     loot = json.load(open(LOOT))
@@ -292,11 +315,18 @@ def main(paks_dir):
     originals = find_in_paks(paks_dir, {GAME_MODE, JUNGLE, PAWN, SOURCE_PERK})
     originals[PERK] = originals.pop(SOURCE_PERK)
     for rel, fix in ((GAME_MODE, game_mode), (JUNGLE, jungle), (PAWN, pawn), (PERK, perk)):
-        data = fix(originals[rel])
+        data = retext(rel, fix(originals[rel]))
         out = os.path.join(SRC, rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         open(out, "wb").write(data)
         print("showdown:", rel)
+    # The gas manager is tuned by patch_assets.py first: edit its copy.
+    tuned = os.path.join(SRC, PHASES)
+    if not os.path.exists(tuned):
+        sys.exit("run patch_assets.py first (it writes %s)" % PHASES)
+    data = open(tuned, "rb").read()
+    open(tuned, "wb").write(retext(PHASES, data))
+    print("showdown:", PHASES)
     kit = server_kit()["kit"]
     print("showdown kit: %s (%s)" % (kit["name"], ", ".join(i["name"] for i in kit["items"])))
 
