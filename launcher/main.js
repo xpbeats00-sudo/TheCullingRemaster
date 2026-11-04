@@ -16,11 +16,13 @@ const sync = require("./lib/sync");
 const clientdll = require("./lib/clientdll");
 const playername = require("./lib/playername");
 const account = require("./lib/account");
+const selfupdate = require("./lib/selfupdate");
 const build = require("./lib/build");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
+const UPDATES = () => path.join(app.getPath("userData"), "launcher-updates");
 const PAGES = { splash: "src/splash.html", main: "src/main.html" };
 
 let win = null;
@@ -33,6 +35,8 @@ let bootResult = { online: false, error: null };
 let log = () => {};
 let accounts = null;             // saved sign-ins (lib/account.js)
 let accountApi = null;
+// A launcher update in progress or failed: { version, done, total, error }.
+let launcherUpdate = null;
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -110,6 +114,11 @@ async function boot() {
     bootResult = { online: false, error: friendly(e) };
     log("manifest", { error: e.message });
   }
+  // A newer launcher first: it may handle this release better than this one.
+  if (manifest && await updateLauncher((done, total) =>
+    progress(0.25 + 0.7 * done / total, `Updating the launcher to ${manifest.launcher.version} (${Math.floor(done / total * 100)}%)`))) {
+    return;                      // the setup takes over; this launcher is quitting
+  }
   const installed = game.check(settings.gamePath).ok;
   progress(0.45, installed ? "Verifying game files" : "Preparing install");
   try {
@@ -119,6 +128,50 @@ async function boot() {
   }
   log("boot", { online: bootResult.online, release: manifest && manifest.version, installed: sync.installedVersion(settings.gamePath), todo: todo ? todo.length : null });
   progress(1, !bootResult.online ? "Offline" : !installed ? "Ready to install" : todo && todo.length ? "Update available" : "Ready");
+}
+
+// ---------------------------------------------------------------- launcher self-update
+
+// Updates the launcher if the manifest offers a newer one: downloads and
+// checks the setup, runs it and quits. Returns true when the setup is running.
+// Only the installed (packaged) launcher updates itself; CULLING_SELFUPDATE=1
+// allows it from a dev run, for testing.
+async function updateLauncher(onProgress) {
+  const allowed = app.isPackaged || process.env.CULLING_SELFUPDATE === "1";
+  let offer = null;
+  try { offer = allowed && manifest ? selfupdate.offered(manifest, app.getVersion()) : null; } catch (e) { log("launcher-update", { error: e.message }); return false; }
+  if (!offer) {
+    if (allowed) try { selfupdate.cleanup(UPDATES()); } catch { /* in use: next time */ }
+    return false;
+  }
+  if (!selfupdate.mayTry(UPDATES(), offer.version)) {
+    launcherUpdate = { version: offer.version, error: "Launcher " + offer.version + " didn't install. Download it from the website." };
+    log("launcher-update", { version: offer.version, error: "tried " + selfupdate.MAX_TRIES + " times, giving up" });
+    return false;
+  }
+  if (busy) return false;
+  launcherUpdate = { version: offer.version, done: 0, total: offer.size };
+  try {
+    log("launcher-update", { from: app.getVersion(), to: offer.version, size: offer.size });
+    const file = await selfupdate.download(manifest, UPDATES(), {
+      fetchImpl: (url, init) => net.fetch(url, init),
+      onProgress: (done, total) => {
+        launcherUpdate.done = done;
+        onProgress(done, total);
+        // The main window too (it is already showing when the intro is off).
+        send("sync-progress", { phase: "launcher", done, total, version: offer.version });
+      }
+    });
+    selfupdate.recordTry(UPDATES(), offer.version);
+    selfupdate.install(file);
+    log("launcher-update", { installing: offer.version });
+    setTimeout(() => app.quit(), 300);
+    return true;
+  } catch (e) {
+    log("launcher-update", { version: offer.version, error: e.message });
+    launcherUpdate = { version: offer.version, error: friendly(e) };
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- state for the pages
@@ -152,6 +205,7 @@ function state() {
     accountSupported: !check.ok || playername.supported(settings.gamePath),
     // The account signed in on the selected server: its username is the in-game name.
     account: (() => { const a = accounts.get(currentServer().id); return a ? { username: a.username } : null; })(),
+    launcherUpdate,
     busy
   };
 }
@@ -252,6 +306,10 @@ function registerIpc() {
   handle("check-updates", async () => {
     if (busy) throw new Error("Game Sync is running");
     await latestManifest();
+    // A newer launcher installs right away (the launcher restarts).
+    if (await updateLauncher(() => {})) {
+      return Object.assign(state(), { restarting: true });
+    }
     await refreshPlan((done, total) => send("sync-progress", { phase: "verify", done, total }));
     return state();
   });

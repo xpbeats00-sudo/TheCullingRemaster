@@ -5,7 +5,9 @@
   2. puts the local setting (http://127.0.0.1:8000) back, so local play and
      "Play The Culling (local).bat" keep working
   3. writes the server list and runs the launcher's make_manifest.js, giving
-     publish/ (manifest.json + files/) to copy to C:\\culling\\updates on the VPS
+     publish/ (manifest.json + objects/) to copy to C:\\culling\\updates on the VPS
+  4. includes the built launcher setup (launcher/dist/TheCullingRemasterSetup.exe,
+     unless --no-setup), so older launchers update themselves to it
 
 The client DLL isn't shipped: the launcher points the player's own Func client
 at the server (launcher/lib/clientdll.js).
@@ -15,7 +17,7 @@ install is hard-linked in (no second copy of the gigabytes), except what is
 personal to this PC or made by the launcher itself (FULL_EXCLUDE), with the
 Remaster patch above in place of the install's own.
 
-usage: python make_release.py <server base url> <version> [--full <game dir>] [--out <dir>]
+usage: python make_release.py <server base url> <version> [--full <game dir>] [--out <dir>] [--no-setup]
   python make_release.py https://xplab.shop:8443 1.0.0
   python make_release.py https://xplab.shop:8443 1.1.0 --full ../TheCulling
 """
@@ -74,7 +76,7 @@ def link_game(game, release):
     return count
 
 
-def main(base, version, out=None, game=None):
+def main(base, version, out=None, game=None, setup=True):
     base = base.rstrip("/")
     out = out or os.path.join(ROOT, "releases", version)
     release = os.path.join(out, "release")
@@ -96,7 +98,13 @@ def main(base, version, out=None, game=None):
                 "api": base + "/api", "status": base + "/health"}]
     with open(os.path.join(out, "servers.json"), "w") as f:
         json.dump(servers, f, indent=1)
-    subprocess.check_call(["node", os.path.join(ROOT, "launcher", "tools", "make_manifest.js"), release, version, publish])
+    cmd = ["node", os.path.join(ROOT, "launcher", "tools", "make_manifest.js"), release, version, publish]
+    setup_exe = os.path.join(ROOT, "launcher", "dist", "TheCullingRemasterSetup.exe")
+    if setup and os.path.exists(setup_exe):
+        cmd += ["--setup", setup_exe]
+    elif setup:
+        print("no launcher setup at %s: launchers won't be offered an update (build it with npm run dist)" % setup_exe)
+    subprocess.check_call(cmd)
     print("release", version, "for", base, "->", publish)
 
 
@@ -106,5 +114,6 @@ if __name__ == "__main__":
     ap.add_argument("version")
     ap.add_argument("--full", metavar="GAME_DIR", help="ship the whole game from this install")
     ap.add_argument("--out", help="output folder (default releases/<version>)")
+    ap.add_argument("--no-setup", action="store_true", help="don't offer the built launcher setup as a launcher update")
     a = ap.parse_args()
-    main(a.server, a.version, a.out, a.full)
+    main(a.server, a.version, a.out, a.full, not a.no_setup)
