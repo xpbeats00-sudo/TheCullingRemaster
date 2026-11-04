@@ -20,7 +20,8 @@
       { id: "eu", name: "The Culling Remaster EU", region: "Europe" },
       { id: "us", name: "The Culling Remaster US", region: "America" }
     ],
-    nameSupported: true,
+    accountSupported: true,
+    account: null,
     busy: false
   };
   // ?fresh: a PC without the game, installing the whole release (pausable).
@@ -46,7 +47,21 @@
   window.launcher = {
     state: async () => JSON.parse(JSON.stringify(state)),
     pingServers: async () => { await wait(400); return [{ id: "eu", ok: true, ms: 16, users: 24 }, { id: "us", ok: true, ms: 32, users: 18 }]; },
-    setPlayerName: async (name) => { await wait(150); state.settings.playerName = name.replace(/\s+/g, " ").trim(); return window.launcher.state(); },
+    // Accounts: "taken" is a taken username; any password but "wrong" signs in.
+    createAccount: async (f) => {
+      await wait(500);
+      if (/^taken$/i.test(f.username)) throw new Error("That username is taken: choose another");
+      if (String(f.password).length < 8) throw new Error("Passwords are at least 8 characters");
+      state.account = { username: f.username.trim() };
+      return Object.assign(await window.launcher.state(), { claimed: true });
+    },
+    signIn: async (f) => {
+      await wait(400);
+      if (f.password === "wrong" || !f.username) throw new Error("Wrong username or password");
+      state.account = { username: f.username.trim() };
+      return window.launcher.state();
+    },
+    signOut: async () => { state.account = null; return window.launcher.state(); },
     setSetting: async (k, v) => { state.settings[k] = v; return window.launcher.state(); },
     chooseGameFolder: async () => window.launcher.state(),
     checkUpdates: async () => { await wait(600); return window.launcher.state(); },

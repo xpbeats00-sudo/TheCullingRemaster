@@ -153,18 +153,51 @@
       <p class="motto">Survive. Fight. Be the last.</p>
     </footer>
 
-    <!-- The player's in-game name: chosen first, right before PLAY. -->
-    <section class="player-name" id="player-name" aria-labelledby="name-label">
-      <label class="name-label" id="name-label" for="name-input">Player name</label>
-      <div class="name-row">
-        <svg class="name-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
-        <input id="name-input" type="text" maxlength="32" autocomplete="off" spellcheck="false" placeholder="Choose your name" aria-describedby="name-hint">
-        <button class="name-save" id="name-save" type="button" aria-label="Save name">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
-        </button>
+    <!-- The account: first, right before PLAY. Its username is the in-game name. -->
+    <section class="account-box" id="account-box" aria-labelledby="account-label">
+      <span class="account-label" id="account-label">Account</span>
+      <div class="account-row">
+        <svg class="account-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>
+        <div class="account-who">
+          <strong id="account-name">Not signed in</strong>
+          <span class="account-hint" id="account-hint">Sign in to play online</span>
+        </div>
+        <button class="ghost" id="account-signout" type="button" hidden>Sign out</button>
+        <button class="primary account-open" id="account-open" type="button">Sign in</button>
       </div>
-      <span class="name-hint" id="name-hint">Shown to everyone in game</span>
     </section>
+
+    <!-- Sign in / create account. -->
+    <div class="modal" id="account-modal" hidden>
+      <form class="modal-card" id="account-form" role="dialog" aria-modal="true" aria-labelledby="account-title" novalidate>
+        <div class="modal-tabs" role="tablist">
+          <button type="button" role="tab" class="modal-tab active" data-mode="signin" aria-selected="true">Sign in</button>
+          <button type="button" role="tab" class="modal-tab" data-mode="create" aria-selected="false">Create account</button>
+        </div>
+        <h2 id="account-title">Sign in</h2>
+        <label class="form-field">Username
+          <input id="acc-username" type="text" maxlength="20" autocomplete="username" spellcheck="false" required>
+          <span class="form-hint" data-create>3 to 20 letters, numbers, spaces or _ . - · this is your name in game</span>
+        </label>
+        <label class="form-field" data-create>Email
+          <input id="acc-email" type="email" maxlength="254" autocomplete="email" spellcheck="false">
+          <span class="form-hint">Only used to help you get back into your account</span>
+        </label>
+        <label class="form-field">Password
+          <input id="acc-password" type="password" maxlength="128" autocomplete="current-password" required>
+          <span class="form-hint" data-create>At least 8 characters</span>
+        </label>
+        <label class="form-field" data-create>Confirm password
+          <input id="acc-confirm" type="password" maxlength="128" autocomplete="new-password">
+        </label>
+        <p class="form-error" id="acc-error" role="alert"></p>
+        <p class="form-note" data-signin>Forgot your password? Ask for a reset on Discord.</p>
+        <div class="modal-actions">
+          <button type="button" class="ghost" id="acc-cancel">Cancel</button>
+          <button type="submit" class="primary" id="acc-submit">Sign in</button>
+        </div>
+      </form>
+    </div>
 
     <button class="play" id="play">
       <span class="play-label" id="play-label">Play</span>
