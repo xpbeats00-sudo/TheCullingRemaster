@@ -104,12 +104,18 @@ def main(base, version, out=None, game=None, setup=True):
         cmd += ["--setup", setup_exe]
     elif setup:
         print("no launcher setup at %s: launchers won't be offered an update (build it with npm run dist)" % setup_exe)
-    subprocess.check_call(cmd)
+    # One hash cache for every release built into this folder: only files that
+    # changed since the last build are hashed (make_manifest.js).
+    env = dict(os.environ)
+    env.setdefault("CULLING_HASH_CACHE", os.path.join(os.path.dirname(os.path.abspath(out)), ".hashcache.json"))
+    subprocess.check_call(cmd, env=env)
     # "Publish Release.bat" publishes the newest release built here unless told otherwise.
     if out == os.path.join(ROOT, "releases", version):
         with open(os.path.join(ROOT, "releases", "LATEST"), "w") as f:
             f.write(version)
     print("release", version, "for", base, "->", publish)
+    # What publishing it will change, against the live release (not fatal offline).
+    subprocess.call(["node", os.path.join(ROOT, "deploy", "diff_release.js"), publish, base + "/remaster/"])
 
 
 if __name__ == "__main__":
