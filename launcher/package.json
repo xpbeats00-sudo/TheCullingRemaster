@@ -1,14 +1,14 @@
 {
   "name": "culling-remaster-launcher",
   "productName": "The Culling Remaster",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Installs, updates, repairs and launches The Culling Remaster.",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
     "stamp": "node tools/stamp_build.js",
-    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js && node test/playername.test.js && node test/update.test.js && node test/errors.test.js",
+    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js && node test/playername.test.js && node test/update.test.js && node test/errors.test.js && node test/account.test.js",
     "manifest": "node tools/make_manifest.js",
     "dist": "npm run stamp && electron-builder --win nsis"
   },

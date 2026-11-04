@@ -6,7 +6,7 @@
 // window.launcher API from preload.js.
 "use strict";
 
-const { app, BrowserWindow, ipcMain, dialog, shell, net, Menu, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, net, Menu, clipboard, safeStorage } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -15,6 +15,7 @@ const game = require("./lib/game");
 const sync = require("./lib/sync");
 const clientdll = require("./lib/clientdll");
 const playername = require("./lib/playername");
+const account = require("./lib/account");
 const build = require("./lib/build");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
@@ -30,6 +31,8 @@ let busy = false;              // a sync is running
 let syncAbort = null;          // aborts the running sync (Pause)
 let bootResult = { online: false, error: null };
 let log = () => {};
+let accounts = null;             // saved sign-ins (lib/account.js)
+let accountApi = null;
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -99,11 +102,6 @@ async function boot() {
     settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
   }
   try { sync.recover(settings.gamePath); } catch (e) { log("recover", { error: e.message }); }
-  // An install that already has a name (the game's own setting) starts with it.
-  if (!settings.playerName && game.check(settings.gamePath).ok) {
-    const existing = playername.read(settings.gamePath);
-    if (existing) settings = config.save(SETTINGS(), Object.assign(settings, { playerName: existing }));
-  }
   progress(0.25, "Contacting xplab.shop");
   try {
     await latestManifest();
@@ -150,10 +148,17 @@ function state() {
     } : null,
     freeBytes: (() => { try { return sync.freeBytes(settings.gamePath); } catch { return null; } })(),
     servers: (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers,
-    // The name can be set unless the installed game uses a real Steam name.
-    nameSupported: !check.ok || playername.supported(settings.gamePath),
+    // A Remaster account works unless the installed game uses a real Steam account.
+    accountSupported: !check.ok || playername.supported(settings.gamePath),
+    // The account signed in on the selected server: its username is the in-game name.
+    account: (() => { const a = accounts.get(currentServer().id); return a ? { username: a.username } : null; })(),
     busy
   };
+}
+
+function currentServer() {
+  const servers = (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers;
+  return servers.find((s) => s.id === settings.serverId) || servers[0];
 }
 
 async function ping(server) {
@@ -214,11 +219,33 @@ function registerIpc() {
     return state();
   });
 
-  handle("set-player-name", (raw) => {
-    const v = playername.validate(raw);
-    if (v.error) throw new Error(v.error);
-    settings = config.save(SETTINGS(), Object.assign(settings, { playerName: v.name }));
-    if (game.check(settings.gamePath).ok && playername.supported(settings.gamePath)) playername.write(settings.gamePath, v.name);
+  // Accounts. The password goes to the server and is dropped; the token is kept.
+  handle("account-register", async (form) => {
+    const f = form && typeof form === "object" ? form : {};
+    if (String(f.password || "") !== String(f.confirm || "")) throw new Error("The passwords don't match");
+    const server = currentServer();
+    // Progress already on this server under this PC's Steam ID moves to the new account.
+    const claimUserID = playername.readSteamId(settings.gamePath, app.getPath("appData"));
+    const a = await accountApi.register(server.api, { username: f.username, email: f.email, password: f.password, claimUserID });
+    accounts.set(server.id, a);
+    log("account", { created: a.username, claimed: a.claimed });
+    return Object.assign(state(), { claimed: a.claimed });
+  });
+
+  handle("account-login", async (form) => {
+    const f = form && typeof form === "object" ? form : {};
+    const server = currentServer();
+    const a = await accountApi.login(server.api, { username: f.username, password: f.password });
+    accounts.set(server.id, a);
+    log("account", { signedIn: a.username });
+    return state();
+  });
+
+  handle("account-logout", async () => {
+    const server = currentServer();
+    const a = accounts.get(server.id);
+    accounts.remove(server.id);
+    if (a) { try { await accountApi.logout(server.api, a.token); } catch (e) { log("account", { logout: e.message }); } }
     return state();
   });
 
@@ -322,14 +349,25 @@ function registerIpc() {
     if (!check.ok) throw new Error(check.reason);
     // Only a finished install starts: a paused one has some files but not all.
     if (!sync.installedVersion(settings.gamePath)) throw new Error("The game isn't fully installed yet: press Resume to finish it");
-    // The name chosen in the launcher is the one the game shows.
-    if (playername.supported(settings.gamePath)) {
-      if (!settings.playerName) throw new Error("Choose your player name first");
-      playername.write(settings.gamePath, settings.playerName);
+    // Online play needs a Remaster account: the server lets the game in as
+    // the account's Steam ID from this connection, and the username is the
+    // name the game shows.
+    const server = currentServer();
+    const signedIn = accounts.get(server.id);
+    if (!signedIn) throw new Error("Sign in or create an account first");
+    if (!playername.supported(settings.gamePath)) {
+      throw new Error("This install uses your Steam account, so it can't use a Remaster account. Choose an install made by the launcher in Settings");
     }
+    let grant;
+    try {
+      grant = await accountApi.play(server.api, signedIn.token);
+    } catch (e) {
+      if (e.code === "signed-out") { accounts.remove(server.id); send("state-changed"); }
+      throw e;
+    }
+    playername.write(settings.gamePath, grant.username);
+    playername.writeSteamId(settings.gamePath, grant.userID);
     // The player's own Func client, pointed at the chosen server.
-    const servers = state().servers;
-    const server = servers.find((s) => s.id === settings.serverId) || servers[0];
     clientdll.ensure(game.win64(settings.gamePath), server.api);
     await game.launch(settings.gamePath, app.getPath("logs"));
     if (settings.closeOnLaunch) setTimeout(() => app.quit(), 1500);
@@ -362,6 +400,8 @@ if (!app.requestSingleInstanceLock()) {
     sync.useFetch((url, init) => net.fetch(url, init));
     log = createLog(app.getPath("logs"));
     settings = config.load(SETTINGS());
+    accounts = account.createStore(path.join(app.getPath("userData"), "account.dat"), safeStorage);
+    accountApi = account.createClient((url, init) => net.fetch(url, init));
     log("start", { version: app.getVersion(), gamePath: settings.gamePath });
     registerIpc();
     createWindow();
