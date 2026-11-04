@@ -2,11 +2,18 @@
 // While searching, the server sends "remaster-lobby" (server/matchlobby.js):
 // everyone in the playlist's lobby with their calling card, level, rank and
 // name, each player's map vote, the vote count per map, the lobby's state and
-// its countdown. This screen shows it over the menu, in two columns:
-//   left:  SEARCHING / PLAYERS FOUND / STARTING MATCH, the playlist, the clock,
-//          and the map vote (Jungle or Prison; click to vote, until the
-//          countdown locks the winner in);
-//   right: the players, each on their calling card.
+// its countdown. This screen shows it over the menu:
+//   top middle:    SEARCHING / PLAYERS FOUND / PREGAME LOBBY, the playlist,
+//                  the clock and Cancel search (in place of the stock widget);
+//   bottom middle: the map vote (Jungle or Prison; click to vote, until the
+//                  countdown locks the winner in);
+//   right:         the players, each on their calling card (animated cards play,
+//          through AnimatedCards.js).
+// When the countdown starts it becomes the pregame lobby: the map is locked
+// and the right column is the roster of the match about to load, you and the
+// bots the game fills it with (matches run on each player's PC, so the other
+// players in the lobby start their own). It replaces the stock queue widget
+// while it is up.
 // Self-contained: builds its own markup and styles (only .js files are kept
 // in the patch tree), so it can also be previewed outside the game.
 (function () {
@@ -14,56 +21,48 @@
   var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
   var ROWS = 10;                    // player rows that fit at any resolution
   var CSS = [
-    "#remaster-lobby { position: absolute; right: 2.6vw; top: 21vh; display: flex; align-items: flex-start; z-index: 40;",
-    "  font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); pointer-events: none; }",
+    // Three parts over the menu: the state at the top middle (where the stock
+    // queue widget sits; it is hidden while this is up), the map vote at the
+    // bottom middle, the players (and in the pregame lobby, the bots) on the right.
+    "#remaster-lobby { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 40; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); pointer-events: none; }",
     "#remaster-lobby.hidden { display: none; }",
-    "#remaster-lobby .rl-side { width: 21vw; margin-right: 1.2vw; }",
-    "#remaster-lobby .rl-head { padding: 1.4vh 1vw 1.2vh; background: linear-gradient(90deg, rgba(10, 6, 8, 0.94), rgba(10, 6, 8, 0.76));",
-    "  border-left: 0.3vw solid rgba(204, 0, 0, 1); }",
-    "#remaster-lobby .rl-state { font: 2.7vw Creepster, Impact, sans-serif; letter-spacing: 0.15vw; line-height: 1; color: rgba(204, 0, 0, 1); }",
-    "#remaster-lobby .rl-what { margin-top: 0.8vh; font: 0.9vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.85; }",
-    "#remaster-lobby .rl-clock { margin-top: 0.4vh; font: 2.2vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; color: white; }",
-    "#remaster-lobby .rl-maps-title { margin: 1.4vh 0 0.6vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw;",
-    "  text-transform: uppercase; opacity: 0.75; }",
+    "body.rl-on #queue-widget { display: none !important; }",
+    "#remaster-lobby .rl-top { position: absolute; top: 4.5vh; left: 50%; transform: translateX(-50%); min-width: 22vw; padding: 1.4vh 1.6vw 1.6vh; text-align: center; border-radius: 1.8vh; background: rgba(10, 6, 8, 0.88); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.75), 0 0.8vh 2.4vh rgba(0, 0, 0, 0.6); }",
+    "#remaster-lobby .rl-state { font: 2.4vw Creepster, Impact, sans-serif; letter-spacing: 0.12vw; line-height: 1; white-space: nowrap; color: rgba(204, 0, 0, 1); }",
+    "#remaster-lobby .rl-what { margin-top: 0.7vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.85; }",
+    "#remaster-lobby .rl-clock { margin-top: 0.3vh; font: 2vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; color: white; }",
+    "#remaster-lobby .rl-cancel { display: inline-block; margin-top: 1vh; padding: 0.7vh 1.4vw; border-radius: 3vh; font: 0.8vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(204, 0, 0, 0.85); pointer-events: all; cursor: pointer; transition: background 0.15s; }",
+    "#remaster-lobby .rl-cancel:hover { background: rgba(255, 40, 30, 1); color: white; }",
+    "#remaster-lobby .rl-bottom { position: absolute; bottom: 6vh; left: 50%; transform: translateX(-50%); width: 32vw; text-align: center; }",
+    "#remaster-lobby .rl-maps-title { margin-bottom: 0.8vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.14vw; text-transform: uppercase; text-shadow: 0 0 0.6vh black; }",
     "#remaster-lobby .rl-maps { display: flex; }",
-    "#remaster-lobby .rl-map { position: relative; flex: 1 1 0; height: 11vh; margin-right: 0.6vw; background-size: cover;",
-    "  background-position: center; background-color: rgba(18, 14, 16, 0.86); border: 0.15vw solid rgba(255, 255, 255, 0.12);",
-    "  pointer-events: all; cursor: pointer; transition: border-color 0.15s, filter 0.15s, opacity 0.15s; }",
+    "#remaster-lobby .rl-map { position: relative; flex: 1 1 0; height: 13vh; margin-right: 1vw; border-radius: 1.6vh; overflow: hidden; background-size: cover; background-position: center; background-color: rgba(18, 14, 16, 0.86); box-shadow: 0 0 0 0.15vw rgba(255, 255, 255, 0.15); pointer-events: all; cursor: pointer; transition: box-shadow 0.15s, filter 0.15s, opacity 0.15s; }",
     "#remaster-lobby .rl-map:last-child { margin-right: 0; }",
-    "#remaster-lobby .rl-map::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 70%;",
-    "  background: linear-gradient(0deg, rgba(8, 6, 8, 0.92), rgba(8, 6, 8, 0)); }",
+    "#remaster-lobby .rl-map::before { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 70%; background: linear-gradient(0deg, rgba(8, 6, 8, 0.92), rgba(8, 6, 8, 0)); }",
     "#remaster-lobby .rl-map > * { position: absolute; }",
-    "#remaster-lobby .rl-map:hover { border-color: rgba(255, 255, 255, 0.45); }",
-    "#remaster-lobby .rl-map.mine { border-color: rgba(204, 0, 0, 1); box-shadow: 0 0 1.6vh rgba(204, 0, 0, 0.55); }",
+    "#remaster-lobby .rl-map:hover { box-shadow: 0 0 0 0.15vw rgba(255, 255, 255, 0.5); }",
+    "#remaster-lobby .rl-map.mine { box-shadow: 0 0 0 0.2vw rgba(204, 0, 0, 1), 0 0 1.8vh rgba(204, 0, 0, 0.6); }",
     "#remaster-lobby .rl-map.locked { cursor: default; }",
     "#remaster-lobby .rl-map.lost { opacity: 0.35; filter: grayscale(1); }",
-    "#remaster-lobby .rl-map.won { border-color: rgba(204, 0, 0, 1); box-shadow: 0 0 2.4vh rgba(204, 0, 0, 0.75); }",
-    "#remaster-lobby .rl-map-name { left: 0.6vw; bottom: 0.8vh; font: 1.5vw Creepster, Impact, sans-serif; letter-spacing: 0.1vw; }",
-    "#remaster-lobby .rl-map-votes { right: 0.6vw; bottom: 1vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; }",
-    "#remaster-lobby .rl-map-tag { left: 0.6vw; top: 0.7vh; padding: 0.2vh 0.4vw; font: 0.7vw Sucrose-Bold, Arial, sans-serif;",
-    "  letter-spacing: 0.1vw; text-transform: uppercase; background: rgba(204, 0, 0, 1); }",
+    "#remaster-lobby .rl-map.won { box-shadow: 0 0 0 0.2vw rgba(204, 0, 0, 1), 0 0 2.6vh rgba(204, 0, 0, 0.8); }",
+    "#remaster-lobby .rl-map-name { left: 0.9vw; bottom: 1vh; font: 1.7vw Creepster, Impact, sans-serif; letter-spacing: 0.1vw; }",
+    "#remaster-lobby .rl-map-votes { right: 0.9vw; bottom: 1.3vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; }",
+    "#remaster-lobby .rl-map-tag { left: 0.9vw; top: 1vh; padding: 0.25vh 0.6vw; border-radius: 2vh; font: 0.7vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; background: rgba(204, 0, 0, 1); }",
     "#remaster-lobby .rl-map-tag:empty { display: none; }",
-    "#remaster-lobby .rl-cancel { display: inline-block; margin-top: 1.4vh; padding: 0.8vh 1vw; font: 0.85vw Sucrose-Bold, Arial, sans-serif;",
-    "  letter-spacing: 0.12vw; text-transform: uppercase; border: 0.12vw solid rgba(255, 255, 255, 0.6); pointer-events: all; cursor: pointer; }",
-    "#remaster-lobby .rl-cancel:hover { border-color: rgba(204, 0, 0, 1); color: white; background: rgba(204, 0, 0, 0.35); }",
-    "#remaster-lobby .rl-note { margin-top: 1.2vh; font-size: 0.75vw; opacity: 0.6; }",
-    "#remaster-lobby .rl-players { width: 25vw; }",
-    "#remaster-lobby .rl-players-title { padding: 1vh 1vw; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase;",
-    "  background: rgba(10, 6, 8, 0.86); display: flex; justify-content: space-between; }",
+    "#remaster-lobby .rl-note { margin-top: 1vh; font-size: 0.75vw; opacity: 0.7; text-shadow: 0 0 0.6vh black; }",
+    "#remaster-lobby .rl-players { position: absolute; right: 2.6vw; top: 21vh; width: 25vw; }",
+    "#remaster-lobby .rl-players-title { padding: 1vh 1.1vw; border-radius: 1.2vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(10, 6, 8, 0.88); display: flex; justify-content: space-between; }",
     "#remaster-lobby .rl-list { list-style: none; margin: 0; padding: 0; }",
-    "#remaster-lobby .rl-row { position: relative; display: flex; align-items: center; height: 4.6vh; margin-top: 0.4vh;",
-    "  background-color: rgba(18, 14, 16, 0.86); background-size: cover; background-position: center; overflow: hidden; }",
-    "#remaster-lobby .rl-row::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 70%;",
-    "  background: linear-gradient(90deg, rgba(8, 6, 8, 0.92), rgba(8, 6, 8, 0)); }",
+    "#remaster-lobby .rl-row { position: relative; display: flex; align-items: center; height: 4.6vh; margin-top: 0.5vh; border-radius: 1.2vh; background-color: rgba(18, 14, 16, 0.86); background-size: cover; background-position: center; overflow: hidden; }",
+    "#remaster-lobby .rl-row::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 70%; background: linear-gradient(90deg, rgba(8, 6, 8, 0.92), rgba(8, 6, 8, 0)); }",
     "#remaster-lobby .rl-row > * { position: relative; }",
     "#remaster-lobby .rl-level { width: 2.8vw; text-align: center; font: 1.3vw Sucrose-Bold, Arial, sans-serif; }",
-    "#remaster-lobby .rl-name { flex: 1 1 auto; font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw;",
-    "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.4vh black; }",
-    "#remaster-lobby .rl-vote { margin-right: 0.5vw; padding: 0.15vh 0.35vw; font: 0.65vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw;",
-    "  text-transform: uppercase; background: rgba(8, 6, 8, 0.75); border: 1px solid rgba(255, 255, 255, 0.25); }",
+    "#remaster-lobby .rl-row.bot .rl-level { font: 0.75vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; opacity: 0.8; }",
+    "#remaster-lobby .rl-name { flex: 1 1 auto; font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.4vh black; }",
+    "#remaster-lobby .rl-vote { margin-right: 0.5vw; padding: 0.2vh 0.5vw; border-radius: 2vh; font: 0.65vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; text-transform: uppercase; background: rgba(8, 6, 8, 0.75); border: 1px solid rgba(255, 255, 255, 0.25); }",
     "#remaster-lobby .rl-rank { width: 2.4vw; height: 2.4vw; margin-right: 0.5vw; flex: 0 0 auto; }",
-    "#remaster-lobby .rl-row.me { box-shadow: inset 0.25vw 0 0 rgba(204, 0, 0, 1); }",
-    "#remaster-lobby .rl-row.empty { background: rgba(18, 14, 16, 0.55); border: 1px dashed rgba(255, 255, 255, 0.14); }",
+    "#remaster-lobby .rl-row.me { box-shadow: inset 0 0 0 0.15vw rgba(204, 0, 0, 1); }",
+    "#remaster-lobby .rl-row.empty { background: rgba(18, 14, 16, 0.55); border: 1px dashed rgba(255, 255, 255, 0.16); }",
     "#remaster-lobby .rl-row.empty::before, #remaster-lobby .rl-row.more::before { display: none; }",
     "#remaster-lobby .rl-row.more { background: rgba(18, 14, 16, 0.75); border: 0; }",
     "#remaster-lobby .rl-row.empty .rl-name { font: 0.85vw Sucrose-Regular, Arial, sans-serif; opacity: 0.55; letter-spacing: 0.1vw; text-transform: uppercase; }",
@@ -88,9 +87,9 @@
     panel = el("section", "hidden");
     panel.id = "remaster-lobby";
     panel.innerHTML =
-      '<div class="rl-side"><div class="rl-head"><div class="rl-state"></div><div class="rl-what"></div><div class="rl-clock"></div></div>' +
-      '<div class="rl-maps-title"></div><div class="rl-maps"></div>' +
-      '<div class="rl-cancel">Cancel search</div><div class="rl-note"></div></div>' +
+      '<div class="rl-top"><div class="rl-state"></div><div class="rl-what"></div><div class="rl-clock"></div>' +
+      '<div class="rl-cancel">Cancel search</div></div>' +
+      '<div class="rl-bottom"><div class="rl-maps-title"></div><div class="rl-maps"></div><div class="rl-note"></div></div>' +
       '<div class="rl-players"><div class="rl-players-title"><span>Players</span><span class="rl-count"></span></div><ul class="rl-list"></ul></div>';
     panel.querySelector(".rl-cancel").addEventListener("click", function () {
       if (typeof OnCancelMatchmaking == "function") OnCancelMatchmaking();
@@ -126,9 +125,14 @@
     try { if (typeof socketConnection != "undefined" && socketConnection) socketConnection.emit("lobby-vote-map", { map: map }); } catch (e) { /* offline */ }
   }
 
+  function animate(li) {
+    if (typeof TrackCullingCardElement == "function") TrackCullingCardElement(li);
+  }
+
   function row(p, me) {
     var li = el("li", "rl-row" + (me ? " me" : "") + (shownNames[p.name] ? "" : " joined"));
     li.style.backgroundImage = cardImage(p.cardID);
+    animate(li);
     li.appendChild(el("span", "rl-level", String(p.level || 1)));
     li.appendChild(el("span", "rl-name", p.name || "Player"));
     if (p.vote && MAPS[p.vote]) li.appendChild(el("span", "rl-vote", MAPS[p.vote].name));
@@ -138,6 +142,29 @@
       img.alt = p.rank;
       li.appendChild(img);
     }
+    return li;
+  }
+
+  function botCards(seed, count) {
+    var all = [], animated = [];
+    if (typeof CullingCardImages != "undefined") {
+      for (var id in CullingCardImages) {
+        all.push(id);
+        if (typeof AnimatedCullingCards != "undefined" && AnimatedCullingCards[CullingCardImages[id]]) animated.push(id);
+      }
+    }
+    var cards = [], x = seed * 9301 + 49297;
+    function pick(list) { x = (x * 9301 + 49297) % 233280; return list.length ? list[Math.floor(x / 233280 * list.length)] : 0; }
+    for (var i = 0; i < count; i++) cards.push(i < 3 && animated.length ? pick(animated) : pick(all));
+    return cards;
+  }
+
+  function botRow(n, cardID) {
+    var li = el("li", "rl-row bot" + (shownNames["bot " + n] ? "" : " joined"));
+    li.style.backgroundImage = cardImage(cardID);
+    animate(li);
+    li.appendChild(el("span", "rl-level", "BOT"));
+    li.appendChild(el("span", "rl-name", "Bot " + n));
     return li;
   }
 
@@ -178,7 +205,7 @@
     var elapsed = Date.now() - received;
     var state, what, time;
     if (last.state === "starting" || last.state === "started") {
-      state = "Starting Match";
+      state = "Pregame Lobby";
       what = (MODES[last.queue] || last.queue) + (last.map && MAPS[last.map] ? " · " + MAPS[last.map].name : "");
       time = clock((last.startsInMs || 0) - elapsed);
     } else {
@@ -191,6 +218,29 @@
     root.querySelector(".rl-clock").textContent = time;
   }
 
+  // The pregame roster: you, then the bots of your match.
+  function renderRoster(lobby, list, names) {
+    var me = myName(), you = null;
+    for (var i = 0; i < lobby.players.length; i++) if (lobby.players[i].name === me) you = lobby.players[i];
+    if (!you) you = lobby.players[0];
+    list.appendChild(row(you, true));
+    names[you.name] = true;
+    var cards = botCards(lobby.id, lobby.matchBots);
+    var shown = lobby.matchBots > ROWS - 1 ? ROWS - 2 : lobby.matchBots;
+    for (var b = 0; b < shown; b++) { list.appendChild(botRow(b + 1, cards[b])); names["bot " + (b + 1)] = true; }
+    if (shown < lobby.matchBots) {
+      var more = emptyRow("+" + (lobby.matchBots - shown) + " more bots");
+      more.className = "rl-row more";
+      list.appendChild(more);
+    }
+    var others = lobby.players.length - 1;
+    build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
+    build().querySelector(".rl-count").textContent = "1 player · " + lobby.matchBots + " bots";
+    build().querySelector(".rl-note").textContent = others > 0
+      ? others + (others === 1 ? " other player" : " other players") + " from this lobby start their own match. " + (lobby.note || "")
+      : (lobby.note || "");
+  }
+
   function render(lobby) {
     last = lobby;
     received = Date.now();
@@ -199,6 +249,18 @@
     var me = myName();
     list.textContent = "";
     var names = {};
+    document.body.className = (document.body.className.replace(/\brl-on\b/g, "") + " rl-on").trim();
+    if (lobby.state !== "searching" && lobby.matchBots) {
+      renderRoster(lobby, list, names);
+      shownNames = names;
+      root.querySelector(".rl-cancel").style.display = "none";
+      renderMaps();
+      renderHead();
+      root.className = "";
+      if (!ticker) ticker = setInterval(function () { if (last) renderHead(); }, 250);
+      return;
+    }
+    root.querySelector(".rl-players-title").firstChild.textContent = "Players";
     // A full lobby of 16 doesn't fit: the last row counts the rest.
     var shown = lobby.players.length > ROWS ? ROWS - 1 : lobby.players.length;
     for (var i = 0; i < lobby.players.length; i++) {
@@ -228,6 +290,7 @@
 
   function hide() {
     if (panel) panel.className = "hidden";
+    document.body.className = document.body.className.replace(/\brl-on\b/g, "").trim();
     last = null;
     shownNames = {};
     if (ticker) { clearInterval(ticker); ticker = null; }

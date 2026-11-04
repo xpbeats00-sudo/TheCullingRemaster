@@ -201,6 +201,7 @@ function setup(options = {}) {
       assert.strictEqual(final.map, "prison");
       assert.deepStrictEqual(final.maps, { jungle: 0, prison: 2 });
       assert.strictEqual(final.players.length, 2, "one lobby for both map queues");
+      assert.strictEqual(final.matchBots, 15, "the pregame roster: each player's match is filled with 15 bots");
     });
 
     console.log("all %d match lobby tests passed", passed);
