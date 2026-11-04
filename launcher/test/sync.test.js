@@ -69,7 +69,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       const todo = await sync.plan(m, game);
       assert.strictEqual(todo.length, 2);
       let last = null;
-      const r = await sync.apply(m, todo, game, (p) => { last = p; });
+      const r = await sync.apply(m, todo, game, (p) => { if (p.phase === "download") last = p; });
       assert.strictEqual(r.files, 2);
       assert.strictEqual(last.doneBytes, last.totalBytes);
       assert.strictEqual(fs.readFileSync(path.join(game, "Victory/Binaries/Win64/Func.Client.Local.dll"), "utf8"), "dll v1");
@@ -180,7 +180,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       const target = path.join(tmp, "resume-game");
       const m = await sync.fetchManifest(base + "/resume/manifest.json", TEST_PUB);
       let last = null;
-      await sync.apply(m, await sync.plan(m, target), target, (p) => { last = p; }, { retryDelayMs: 10 });
+      await sync.apply(m, await sync.plan(m, target), target, (p) => { if (p.phase === "download") last = p; }, { retryDelayMs: 10 });
       assert.ok(fs.readFileSync(path.join(target, "Victory/Content/Paks/big.pak")).equals(big));
       assert.strictEqual(calls, 2, "one dropped request, one resumed request");
       assert.ok(/^bytes=[1-9]\d*-$/.test(ranges[0]), "resumed with a Range from the bytes it had: " + ranges[0]);
@@ -198,7 +198,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       fs.writeFileSync(path.join(target, "Victory", "x.bin.part"), Buffer.alloc(1000, 1));   // stale partial
       const m = await sync.fetchManifest(base + "/norange/manifest.json", TEST_PUB);
       let last = null;
-      await sync.apply(m, await sync.plan(m, target), target, (p) => { last = p; }, { retryDelayMs: 10 });
+      await sync.apply(m, await sync.plan(m, target), target, (p) => { if (p.phase === "download") last = p; }, { retryDelayMs: 10 });
       assert.ok(fs.readFileSync(path.join(target, "Victory/x.bin")).equals(data));
       assert.strictEqual(last.doneBytes, data.length);
     });
@@ -246,7 +246,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
           fetched[route] = (fetched[route] || 0) + 1;
           const from = req.headers.range ? Number(/bytes=(\d+)-/.exec(req.headers.range)[1]) : 0;
           if (req.headers.range) ranges.push(route + ":" + from);
-          res.writeHead(from ? 206 : 200, { "Content-Length": b.length - from });
+          res.writeHead(from ? 206 : 200, Object.assign({ "Content-Length": b.length - from }, from ? { "Content-Range": `bytes ${from}-${b.length - 1}/${b.length}` } : {}));
           let at = from;
           const tick = setInterval(() => {               // 64 KB every 10 ms
             if (res.destroyed) return clearInterval(tick);
@@ -267,8 +267,11 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
         if (p.doneBytes > 2.5 * (1 << 20) && !ctl.signal.aborted) ctl.abort();
       }, { parallel: 2, signal: ctl.signal, retryDelayMs: 10 });
       await assert.rejects(first, (e) => e instanceof sync.SyncPaused);
-      const done = fs.readdirSync(path.join(target, "Victory")).filter((n) => n.endsWith(".bin"));
-      const parts = fs.readdirSync(path.join(target, "Victory")).filter((n) => n.endsWith(".part"));
+      // Downloads wait in staging; nothing reaches the game folder before the commit.
+      const stagingDir = path.join(target, ".remaster", "staging", "Victory");
+      const done = fs.readdirSync(stagingDir).filter((n) => n.endsWith(".bin"));
+      const parts = fs.readdirSync(stagingDir).filter((n) => n.endsWith(".part"));
+      assert.ok(!fs.existsSync(path.join(target, "Victory")), "game folder untouched while paused");
       assert.ok(done.length >= 2, "finished files kept: " + done);
       assert.ok(parts.length >= 1, "partial files kept: " + parts);
       assert.strictEqual(sync.installedVersion(target), null, "not marked installed while paused");
@@ -276,11 +279,12 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       // A new launcher run: only what's missing is planned, partial files resume by Range.
       const m2 = await sync.fetchManifest(base + "/pause/manifest.json", TEST_PUB);
       const todo = await sync.plan(m2, target);
-      assert.strictEqual(todo.length, 6 - done.length, "finished files aren't planned again");
+      assert.strictEqual(todo.filter((f) => !f.staged).length, 6 - done.length, "finished files aren't downloaded again");
+      assert.strictEqual(todo.report.staged, done.length, "finished files wait in staging for the commit");
       assert.ok(sync.partialBytes(todo, target) > 0, "partial progress is counted");
       const before = Object.assign({}, fetched);
       let last = null;
-      await sync.apply(m2, todo, target, (p) => { last = p; }, { parallel: 2, retryDelayMs: 10 });
+      await sync.apply(m2, todo, target, (p) => { if (p.phase === "download") last = p; }, { parallel: 2, retryDelayMs: 10 });
       for (const n of done) assert.strictEqual(fetched["/pause/f" + n.slice(1, 2)], before["/pause/f" + n.slice(1, 2)], n + " not fetched again");
       assert.ok(ranges.length >= 1, "resumed with a Range: " + ranges);
       for (let i = 0; i < 6; i++) assert.ok(fs.readFileSync(path.join(target, `Victory/p${i}.bin`)).equals(blobs["/pause/f" + i]));
@@ -297,7 +301,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       routes["/stall/s.bin"] = (req, res) => {
         calls++;
         const from = req.headers.range ? Number(/bytes=(\d+)-/.exec(req.headers.range)[1]) : 0;
-        res.writeHead(from ? 206 : 200, { "Content-Length": data.length - from });
+        res.writeHead(from ? 206 : 200, Object.assign({ "Content-Length": data.length - from }, from ? { "Content-Range": `bytes ${from}-${data.length - 1}/${data.length}` } : {}));
         if (calls === 1) { res.write(data.subarray(0, 50000)); return; }   // then goes silent, never ends
         res.end(data.subarray(from));
       };

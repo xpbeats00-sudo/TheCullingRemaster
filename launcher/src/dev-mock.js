@@ -10,11 +10,11 @@
     settings: {
       gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\TheCulling",
       manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",
-      serverId: "eu", closeOnLaunch: false, playIntro: true, playerName: "",
+      serverId: "eu", closeOnLaunch: false, playIntro: true, playerName: "", parallel: 16, maxMBps: 0,
       links: { website: "https://xplab.shop/", discord: "https://discord.gg/example", support: "https://xplab.shop/faq.html" }
     },
     game: { ok: true, funcLauncher: true, clientDll: true },
-    online: true, error: null, release: "1.0.1", installed: "1.0.1",
+    online: true, error: null, release: "1.0.1", installed: "1.0.1", previous: "1.0.0",
     pending: { files: 0, bytes: 0, partial: 0, releaseBytes: 205391611 },
     servers: [
       { id: "eu", name: "The Culling Remaster EU", region: "Europe" },
@@ -63,6 +63,9 @@
       return Object.assign(await window.launcher.state(), { synced: { files: p.files, bytes: total } });
     },
     pauseSync: async () => { paused = true; return true; },
+    rollback: async () => { const v = state.previous; state.installed = v; state.previous = null; return Object.assign(await window.launcher.state(), { restored: v }); },
+    copyDiagnostics: async () => true,
+    onStateChanged: () => () => {},
     play: async () => { await wait(800); return true; },
     openLink: async (name) => console.log("open", name),
     window: async (a) => console.log("window", a),

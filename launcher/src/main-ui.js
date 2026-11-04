@@ -9,6 +9,7 @@
   let pings = {};
   let syncing = false;
   let pausing = false;          // Pause pressed, downloads stopping
+  let repairing = false;        // the running sync rehashes every file
   let syncBase = 0;             // bytes already on disk when this sync started
 
   // ---------------------------------------------------------------- background
@@ -185,6 +186,13 @@
     $("#update-note").textContent = state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
     $("#opt-intro").checked = state.settings.playIntro;
     $("#opt-close").checked = state.settings.closeOnLaunch;
+    $("#opt-parallel").value = String(state.settings.parallel);
+    $("#opt-speed").value = String(state.settings.maxMBps);
+    const rb = $("#rollback");
+    rb.hidden = !state.previous;
+    rb.textContent = state.previous ? `Restore previous version (${state.previous})` : "Restore previous version";
+    rb.disabled = syncing;
+    $("#repair-sync").disabled = syncing || !state.game.ok || !state.online;
     $$("[data-link]").forEach((b) => { b.hidden = !state.settings.links[b.dataset.link]; });
   }
 
@@ -283,8 +291,9 @@
     try { await api.pauseSync(); } catch { pausing = false; render(); }
   }
 
-  async function runSync() {
+  async function runSync(opts) {
     if (syncing) return pauseSync();
+    repairing = !!(opts && opts.repair);
     // Progress continues from what is already on disk (a resumed install).
     const p = state.pending;
     syncBase = p && !state.game.ok && state.game.installable ? p.releaseBytes - p.bytes : 0;
@@ -294,15 +303,17 @@
     $("#sync-progress").hidden = false;
     render();
     try {
-      const r = await call(api.sync);
+      const r = await call(api.sync, { repair: repairing });
       state = r;
       if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
+      else if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` : "Every game file checked out: nothing to repair.", "info");
       else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` : "Everything is up to date.", "info");
     } catch (e) {
       /* toast already shown */
     } finally {
       syncing = false;
       pausing = false;
+      repairing = false;
       $("#sync-progress").hidden = true;
       state = await api.state();
       render();
@@ -326,12 +337,14 @@
 
   function onSyncProgress(p) {
     let frac, label;
-    if (p.phase === "verify") { frac = p.done / p.total; label = `Verifying ${p.done}/${p.total}`; rate.t = 0; rate.bps = 0; }
+    if (p.phase === "verify") { frac = p.done / p.total; label = `${repairing ? "Repairing: checking" : "Checking"} ${p.done.toLocaleString()} / ${p.total.toLocaleString()} files`; rate.t = 0; rate.bps = 0; }
+    else if (p.phase === "install") { frac = p.total ? p.done / p.total : 1; label = p.done < p.total ? `Installing ${p.total.toLocaleString()} files` : "Finalizing"; }
     else {
       const done = syncBase + p.doneBytes, total = syncBase + p.totalBytes;
       frac = total ? done / total : 1;
       const what = p.active > 1 ? `${p.active} files` : p.file.split("/").pop();
-      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + speedText(p.doneBytes, p.totalBytes);
+      const files = p.filesTotal ? ` · ${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files` : "";
+      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + files + speedText(p.doneBytes, p.totalBytes);
     }
     $("#sync-progress-fill").style.width = Math.round(frac * 100) + "%";
     $("#sync-progress-pct").textContent = Math.round(frac * 100) + "%";
@@ -386,11 +399,25 @@
     $("#region-select").addEventListener("change", (e) => chooseServer(e.target.value));
     $("#choose-folder").addEventListener("click", chooseFolder);
     $("#settings-folder").addEventListener("click", chooseFolder);
-    $("#run-sync").addEventListener("click", runSync);
+    $("#run-sync").addEventListener("click", () => runSync());
     $("#check-updates").addEventListener("click", checkUpdates);
     $("#play").addEventListener("click", play);
     $("#opt-intro").addEventListener("change", async (e) => { state = await call(api.setSetting, "playIntro", e.target.checked); });
     $("#opt-close").addEventListener("change", async (e) => { state = await call(api.setSetting, "closeOnLaunch", e.target.checked); });
+    $("#opt-parallel").addEventListener("change", async (e) => { state = await call(api.setSetting, "parallel", Number(e.target.value)); render(); });
+    $("#opt-speed").addEventListener("change", async (e) => { state = await call(api.setSetting, "maxMBps", Number(e.target.value)); render(); });
+    $("#repair-sync").addEventListener("click", () => runSync({ repair: true }));
+    $("#copy-diagnostics").addEventListener("click", async () => {
+      try { await call(api.copyDiagnostics); toast("Diagnostics copied: paste them into your message to support.", "info"); } catch { /* toast shown */ }
+    });
+    $("#rollback").addEventListener("click", async () => {
+      if (!confirm(`Restore version ${state.previous}? The current version's files are replaced by the ones kept from before the last update.`)) return;
+      try {
+        state = await call(api.rollback);
+        toast(`Version ${state.restored} restored.`, "info");
+      } catch { state = await api.state(); }
+      render();
+    });
     $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     $$("[data-link]").forEach((b) => b.addEventListener("click", () => call(api.openLink, b.dataset.link)));
     api.onSyncProgress(onSyncProgress);
@@ -398,6 +425,8 @@
 
   async function start() {
     api = window.launcher;
+    // Without the intro, the start-up checks finish after this page shows.
+    if (api.onStateChanged) api.onStateChanged(async () => { if (!syncing) { state = await api.state(); render(); } });
     state = await api.state();
     wire();
     render();

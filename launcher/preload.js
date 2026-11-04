@@ -14,7 +14,10 @@ function on(channel) {
 contextBridge.exposeInMainWorld("launcher", {
   state: () => ipcRenderer.invoke("state"),
   checkUpdates: () => ipcRenderer.invoke("check-updates"),
-  sync: () => ipcRenderer.invoke("sync"),
+  sync: (opts) => ipcRenderer.invoke("sync", opts || {}),
+  rollback: () => ipcRenderer.invoke("rollback"),
+  copyDiagnostics: () => ipcRenderer.invoke("diagnostics"),
+  onStateChanged: on("state-changed"),
   pingServers: () => ipcRenderer.invoke("ping-servers"),
   play: () => ipcRenderer.invoke("play"),
   chooseGameFolder: () => ipcRenderer.invoke("choose-game-folder"),

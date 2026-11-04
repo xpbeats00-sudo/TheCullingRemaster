@@ -269,3 +269,13 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .player-name.saved .name-hint { color: var(--ok); }
 .player-name.needed { animation: nudge 1.6s ease-in-out infinite; }
 @keyframes nudge { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 59, 47, 0); } 50% { box-shadow: 0 0 0 4px rgba(255, 59, 47, 0.25); } }
+
+/* ---- settings: download options, support actions ---- */
+.field-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 20px; font-size: 15px; }
+.field-row select {
+  min-width: 150px; height: 34px; padding: 0 10px; border-radius: 6px;
+  border: 1px solid var(--panel-line); background: rgba(0, 0, 0, 0.45); color: var(--ink); font: inherit;
+}
+.field-row select:focus { outline: none; border-color: var(--blood-hot); }
+.actions { gap: 10px; }
+.settings-actions { margin-top: 14px; justify-content: flex-start; }

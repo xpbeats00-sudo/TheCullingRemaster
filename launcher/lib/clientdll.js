@@ -30,14 +30,15 @@ function ensure(win64, apiUrl) {
     throw new Error("the client may only use an https server");
   }
   const target = path.join(win64, TARGET);
-  const want = slot(apiUrl);
-  if (fs.existsSync(target) && fs.readFileSync(target).includes(want)) return "unchanged";
   const src = path.join(win64, SOURCE);
   if (!fs.existsSync(src)) throw new Error("Func.Client.dll is missing: install the Func mod for The Culling first");
+  // Always built from the current Func.Client.dll: an update to it (a new
+  // release) must not leave the old copy in use.
   const data = fs.readFileSync(src);
   const at = data.indexOf(utf16(ORIGINAL));
   if (at < 0) throw new Error("this Func.Client.dll has an unexpected server address (different Func version?)");
-  want.copy(data, at);
+  slot(apiUrl).copy(data, at);
+  if (fs.existsSync(target) && fs.readFileSync(target).equals(data)) return "unchanged";
   const tmp = target + ".tmp";
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, target);
