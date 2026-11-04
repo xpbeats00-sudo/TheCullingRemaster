@@ -7,12 +7,13 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execFileSync } = require("child_process");
 
 const WIN64 = ["Victory", "Binaries", "Win64"];
 const GAME_EXE = "Victory.exe";
 const FUNC_LAUNCHER = "Func.Launcher.exe";
 const CLIENT_DLL = "Func.Client.Local.dll";
+const APP_ID = "437220";
 
 function win64(root) { return path.join(root, ...WIN64); }
 
@@ -28,21 +29,57 @@ function check(root) {
   };
 }
 
-// Steam library folders, from Steam's libraryfolders.vdf.
-function steamLibraries() {
+// Steam's install folder: the registry first, then the usual places.
+function steamRoots() {
   const roots = [];
-  for (const steam of ["C:\\Program Files (x86)\\Steam", "C:\\Program Files\\Steam"]) {
-    const vdf = path.join(steam, "steamapps", "libraryfolders.vdf");
-    if (!fs.existsSync(vdf)) continue;
-    roots.push(steam);
-    for (const m of fs.readFileSync(vdf, "utf8").matchAll(/"path"\s+"([^"]+)"/g)) roots.push(m[1].replace(/\\\\/g, "\\"));
+  if (process.platform === "win32") {
+    for (const [key, value] of [["HKCU\\Software\\Valve\\Steam", "SteamPath"],
+                                ["HKLM\\SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath"]]) {
+      try {
+        const out = execFileSync("reg", ["query", key, "/v", value], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+        const m = out.match(/REG_SZ\s+(.+)/);
+        if (m) roots.push(path.normalize(m[1].trim()));
+      } catch { /* key missing */ }
+    }
   }
-  return [...new Set(roots)];
+  roots.push("C:\\Program Files (x86)\\Steam", "C:\\Program Files\\Steam");
+  return uniquePaths(roots);
 }
 
-function detect() {
-  for (const lib of steamLibraries()) {
-    for (const name of ["TheCulling", "The Culling"]) {
+// Windows paths compare without case or trailing separators.
+function uniquePaths(list) {
+  const seen = new Map();
+  for (const p of list) {
+    const key = path.normalize(p).replace(/[\\/]+$/, "").toLowerCase();
+    if (!seen.has(key)) seen.set(key, path.normalize(p));
+  }
+  return [...seen.values()];
+}
+
+// Steam library folders, from each Steam install's libraryfolders.vdf.
+function steamLibraries(roots = steamRoots()) {
+  const libs = [];
+  for (const steam of roots) {
+    const vdf = path.join(steam, "steamapps", "libraryfolders.vdf");
+    if (!fs.existsSync(vdf)) continue;
+    libs.push(steam);
+    // vdf strings escape backslashes ("D:\\SteamLibrary")
+    for (const m of fs.readFileSync(vdf, "utf8").matchAll(/"path"\s+"([^"]+)"/g)) libs.push(path.normalize(m[1].replace(/\\\\/g, "\\")));
+  }
+  return uniquePaths(libs);
+}
+
+// The Culling's folder: Steam's manifest for app 437220 names it; the usual
+// folder names are the fallback.
+function detect(libraries = steamLibraries()) {
+  for (const lib of libraries) {
+    const names = ["TheCulling", "The Culling"];
+    const acf = path.join(lib, "steamapps", "appmanifest_" + APP_ID + ".acf");
+    if (fs.existsSync(acf)) {
+      const m = fs.readFileSync(acf, "utf8").match(/"installdir"\s+"([^"]+)"/);
+      if (m) names.unshift(m[1]);
+    }
+    for (const name of names) {
       const root = path.join(lib, "steamapps", "common", name);
       if (check(root).ok) return root;
     }
@@ -55,7 +92,7 @@ function launch(root, logDir) {
   const status = check(root);
   if (!status.ok) return Promise.reject(new Error(status.reason));
   if (!status.funcLauncher) return Promise.reject(new Error("Func launcher not found in the game folder"));
-  if (!status.clientDll) return Promise.reject(new Error("Remaster files missing: run Game Sync first"));
+  if (!status.clientDll) return Promise.reject(new Error("The Remaster client isn't set up (Func.Client.Local.dll)"));
   const dir = win64(root);
   const args = ["-FuncSkipUpdateCheck", "-FuncClientDll=" + path.join(dir, CLIENT_DLL)];
   if (logDir) args.push("-FuncClientLog=" + path.join(logDir, "Func.Client.log"));
@@ -71,4 +108,4 @@ function launch(root, logDir) {
   });
 }
 
-module.exports = { check, detect, launch, steamLibraries };
+module.exports = { check, detect, launch, steamLibraries, win64 };

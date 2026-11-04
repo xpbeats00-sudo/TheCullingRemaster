@@ -11,6 +11,7 @@ const path = require("path");
 const config = require("./lib/config");
 const game = require("./lib/game");
 const sync = require("./lib/sync");
+const clientdll = require("./lib/clientdll");
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
 const PAGES = { splash: "src/splash.html", main: "src/main.html" };
@@ -179,6 +180,12 @@ function registerIpc() {
 
   handle("play", async () => {
     if (busy) throw new Error("Wait for Game Sync to finish");
+    const check = game.check(settings.gamePath);
+    if (!check.ok) throw new Error(check.reason);
+    // The player's own Func client, pointed at the chosen server.
+    const servers = state().servers;
+    const server = servers.find((s) => s.id === settings.serverId) || servers[0];
+    clientdll.ensure(game.win64(settings.gamePath), server.api);
     await game.launch(settings.gamePath, app.getPath("logs"));
     if (settings.closeOnLaunch) setTimeout(() => app.quit(), 1500);
     else win.minimize();

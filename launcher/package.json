@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node test/sync.test.js && node test/config.test.js",
+    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js",
     "manifest": "node tools/make_manifest.js"
   },
   "devDependencies": {
