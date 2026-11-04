@@ -105,6 +105,10 @@ def main(base, version, out=None, game=None, setup=True):
     elif setup:
         print("no launcher setup at %s: launchers won't be offered an update (build it with npm run dist)" % setup_exe)
     subprocess.check_call(cmd)
+    # "Publish Release.bat" publishes the newest release built here unless told otherwise.
+    if out == os.path.join(ROOT, "releases", version):
+        with open(os.path.join(ROOT, "releases", "LATEST"), "w") as f:
+            f.write(version)
     print("release", version, "for", base, "->", publish)
 
 
