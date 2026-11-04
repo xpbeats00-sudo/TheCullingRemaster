@@ -34,12 +34,14 @@
     "#remaster-lobby { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 40; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); pointer-events: none; }",
     "#remaster-lobby.hidden { display: none; }",
     "body.rl-on #queue-widget { display: none !important; }",
-    "#remaster-lobby .rl-top { position: absolute; top: 4.5vh; left: 50%; transform: translateX(-50%); min-width: 22vw; padding: 1.4vh 1.6vw 1.6vh; text-align: center; border-radius: 1.8vh; background: rgba(10, 6, 8, 0.88); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.75), 0 0.8vh 2.4vh rgba(0, 0, 0, 0.6); }",
-    "#remaster-lobby .rl-state { font: 2.4vw Creepster, Impact, sans-serif; letter-spacing: 0.12vw; line-height: 1; white-space: nowrap; color: rgba(204, 0, 0, 1); }",
-    "#remaster-lobby .rl-what { margin-top: 0.7vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.85; }",
-    "#remaster-lobby .rl-clock { margin-top: 0.3vh; font: 2vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; color: white; }",
-    "#remaster-lobby .rl-cancel { display: inline-block; margin-top: 1vh; padding: 0.7vh 1.4vw; border-radius: 3vh; font: 0.8vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(204, 0, 0, 0.85); pointer-events: all; cursor: pointer; transition: background 0.15s; }",
-    "#remaster-lobby .rl-cancel:hover { background: rgba(255, 40, 30, 1); color: white; }",
+    "#remaster-lobby .rl-top { position: absolute; top: 1.8vh; left: 50%; transform: translateX(-50%); display: flex; align-items: center; padding: 0.8vh 0.8vw 0.8vh 1.3vw; border-radius: 4vh; white-space: nowrap; background: rgba(10, 6, 8, 0.82); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0.6vh 2vh rgba(0, 0, 0, 0.5); }",
+    "#remaster-lobby .rl-state { display: flex; align-items: center; font: 1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.18vw; text-transform: uppercase; white-space: nowrap; color: rgba(255, 70, 60, 1); }",
+    "#remaster-lobby .rl-state:before { content: \"\"; display: inline-block; width: 0.55vw; height: 0.55vw; margin-right: 0.6vw; border-radius: 50%; background: rgba(255, 70, 60, 1); animation: rl-pulse 1.2s ease-in-out infinite; }",
+    "@keyframes rl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }",
+    "#remaster-lobby .rl-what { margin-left: 1vw; font: 0.75vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.7; }",
+    "#remaster-lobby .rl-clock { margin-left: 1vw; min-width: 2.6vw; font: 1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; text-align: center; color: white; }",
+    "#remaster-lobby .rl-cancel { display: inline-block; margin-left: 1vw; padding: 0.55vh 1vw; border-radius: 3vh; font: 0.68vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(255, 255, 255, 0.1); pointer-events: all; cursor: pointer; transition: background 0.15s; }",
+    "#remaster-lobby .rl-cancel:hover { background: rgba(204, 0, 0, 0.9); color: white; }",
     "#remaster-lobby .rl-bottom { position: absolute; bottom: 6vh; left: 50%; transform: translateX(-50%); width: 32vw; text-align: center; }",
     "#remaster-lobby .rl-maps-title { margin-bottom: 0.8vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.14vw; text-transform: uppercase; text-shadow: 0 0 0.6vh black; }",
     "#remaster-lobby .rl-maps { display: flex; }",
@@ -244,7 +246,7 @@
       time = clock((last.startsInMs || 0) - elapsed);
     } else {
       state = last.players.length > 1 ? "Players Found" : "Searching";
-      what = (MODES[last.queue] || last.queue) + " · " + (last.players.length > 1 ? "searching for more" : "searching for players");
+      what = MODES[last.queue] || last.queue;
       time = clock((last.searchingMs || 0) + elapsed);
     }
     root.querySelector(".rl-state").textContent = state;
