@@ -23,6 +23,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { Readable, Transform } = require("stream");
 const { pipeline } = require("stream/promises");
+const RELEASE_KEY = require("./releasekey");
 
 const STATE_DIR = ".remaster";
 const STATE_FILE = "sync-state.json";
@@ -68,11 +69,24 @@ function validateManifest(m) {
   return m;
 }
 
-async function fetchManifest(manifestUrl) {
+// The manifest and its Ed25519 signature (manifest.json.sig, base64). Nothing
+// in a manifest is trusted until the signature verifies against the release
+// key built into the launcher, so a tampered server can't push files.
+async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY) {
   const url = checkUrl(manifestUrl);
-  const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new SyncError(`manifest request failed: HTTP ${res.status}`);
-  const m = validateManifest(await res.json());
+  const get = async (u) => {
+    const res = await fetch(u, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new SyncError(`${u.pathname.split("/").pop()} request failed: HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  };
+  const body = await get(url);
+  const sig = Buffer.from((await get(new URL(url.href + ".sig"))).toString("utf8").trim(), "base64");
+  let ok = false;
+  try { ok = crypto.verify(null, body, publicKey, sig); } catch { ok = false; }
+  if (!ok) throw new SyncError("the release's signature doesn't match: refusing it");
+  let parsed;
+  try { parsed = JSON.parse(body.toString("utf8")); } catch { throw new SyncError("manifest isn't valid JSON"); }
+  const m = validateManifest(parsed);
   m.baseUrl = url.href;
   return m;
 }
