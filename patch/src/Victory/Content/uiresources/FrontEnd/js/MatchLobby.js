@@ -20,6 +20,11 @@
   var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo" };
   var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
   var ROWS = 10;                    // player rows that fit at any resolution
+  // The bots' names: the same list the game draws from in the match
+  // (patch_assets.py BOT_NAMES, VictoryGameMode's BotNames).
+  var BOT_NAMES = ["Dominoss", "Bigred", "Riskybixnew", "Bongzilla", "Billybobjrjr", "999Jay", "Slugling",
+    "Sunsetwayboy", "HopelesslyNameless", "Arky", "ShadowRick",
+    "Tony The Ninja", "Mandroid 5000", "Lord Xeinous", "Dr. Bonesaw", "Big Purp", "Frank"];
   var CSS = [
     // Three parts over the menu: the state at the top middle (where the stock
     // queue widget sits; it is hidden while this is up), the map vote at the
@@ -159,12 +164,24 @@
     return cards;
   }
 
-  function botRow(n, cardID) {
-    var li = el("li", "rl-row bot" + (shownNames["bot " + n] ? "" : " joined"));
+  function botNames(seed, count) {
+    var names = BOT_NAMES.slice(), x = seed * 7919 + 104729;
+    for (var i = names.length - 1; i > 0; i--) {
+      x = (x * 9301 + 49297) % 233280;
+      var j = Math.floor(x / 233280 * (i + 1)), t = names[i];
+      names[i] = names[j]; names[j] = t;
+    }
+    var out = [];
+    for (var k = 0; k < count; k++) out.push(names[k % names.length]);
+    return out;
+  }
+
+  function botRow(name, cardID) {
+    var li = el("li", "rl-row bot" + (shownNames["bot " + name] ? "" : " joined"));
     li.style.backgroundImage = cardImage(cardID);
     animate(li);
     li.appendChild(el("span", "rl-level", "BOT"));
-    li.appendChild(el("span", "rl-name", "Bot " + n));
+    li.appendChild(el("span", "rl-name", name));
     return li;
   }
 
@@ -225,9 +242,9 @@
     if (!you) you = lobby.players[0];
     list.appendChild(row(you, true));
     names[you.name] = true;
-    var cards = botCards(lobby.id, lobby.matchBots);
+    var cards = botCards(lobby.id, lobby.matchBots), bots = botNames(lobby.id, lobby.matchBots);
     var shown = lobby.matchBots > ROWS - 1 ? ROWS - 2 : lobby.matchBots;
-    for (var b = 0; b < shown; b++) { list.appendChild(botRow(b + 1, cards[b])); names["bot " + (b + 1)] = true; }
+    for (var b = 0; b < shown; b++) { list.appendChild(botRow(bots[b], cards[b])); names["bot " + bots[b]] = true; }
     if (shown < lobby.matchBots) {
       var more = emptyRow("+" + (lobby.matchBots - shown) + " more bots");
       more.className = "rl-row more";
