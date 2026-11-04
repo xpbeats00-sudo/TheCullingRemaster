@@ -29,6 +29,9 @@ const CONFIG = {
   // The local bot match: the player and 50 bots (patch_assets.py BotsToSpawn).
   field: 51,
   botSpread: 150,          // bot ratings: player MMR +- this (normal sd)
+  // The season just opened: no bot is rated above the top of T4 (Hunter,
+  // 1200-1399); a bot at Executioner or higher would be implausible.
+  botMaxRating: 1399,
   historyLength: 50,
   processedLength: 100,    // match IDs remembered against duplicate results
   season: { id: 'S1', name: 'Season 1', start: '2026-11-01T00:00:00Z', end: '2027-02-01T00:00:00Z' }
@@ -87,7 +90,7 @@ function opponentsFor(matchId, mmr, field = CONFIG.field) {
   const rand = rng(matchId);
   const bots = [];
   for (let i = 0; i < field - 1; i++) {
-    const rating = Math.round(Math.max(100, mmr + CONFIG.botSpread * normal(rand)));
+    const rating = Math.round(Math.min(CONFIG.botMaxRating, Math.max(100, mmr + CONFIG.botSpread * normal(rand))));
     bots.push({ rating, performance: rating + 200 * normal(rand) });
   }
   bots.sort((a, b) => b.performance - a.performance);
