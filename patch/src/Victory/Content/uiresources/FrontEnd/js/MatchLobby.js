@@ -176,7 +176,9 @@
     return out;
   }
 
-  var RANKS = ["Scrapper", "Contender", "Blooded", "Hunter", "Executioner", "Reaper", "Warlord"];
+  // The season just opened: no contestant is above level 14 or rank T4 (Hunter).
+  var RANKS = ["Scrapper", "Contender", "Blooded", "Hunter"];
+  var MAX_LEVEL = 14;
 
   // A contestant row like a player's: level, name and, for some, a rank.
   function botRow(name, cardID, seed) {
@@ -187,7 +189,7 @@
     var key = name + "#" + seed, x = 5381;
     for (var c = 0; c < key.length; c++) x = (x * 33 + key.charCodeAt(c)) % 2147483647;
     x = x % 233280;
-    li.appendChild(el("span", "rl-level", String(1 + Math.floor(x / 233280 * 42))));
+    li.appendChild(el("span", "rl-level", String(1 + Math.floor(x / 233280 * MAX_LEVEL))));
     li.appendChild(el("span", "rl-name", name));
     if (x % 3 === 0) {
       var tier = RANKS[x % RANKS.length];

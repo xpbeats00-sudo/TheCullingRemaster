@@ -28,11 +28,11 @@ test('a new player completes five placements at K 48', () => {
   const p = profile();
   for (let i = 0; i < 5; i++) {
     R.startMatch(p);
-    const { entry } = R.finishMatch(p, { placement: 20 });
+    const { entry } = R.finishMatch(p, { placement: 10 });
     assert.strictEqual(entry.k, 48);
   }
   R.startMatch(p);
-  assert.strictEqual(R.finishMatch(p, { placement: 20 }).entry.k, 32);
+  assert.strictEqual(R.finishMatch(p, { placement: 10 }).entry.k, 32);
   assert.strictEqual(R.summary(p).placement, null);
 });
 
@@ -40,13 +40,13 @@ test('winning raises the rating, last place lowers it', () => {
   const a = profile(); R.startMatch(a);
   assert.ok(R.finishMatch(a, { placement: 1 }).entry.delta > 0);
   const b = profile(); R.startMatch(b);
-  assert.ok(R.finishMatch(b, { placement: 51 }).entry.delta < 0);
+  assert.ok(R.finishMatch(b, { placement: 16 }).entry.delta < 0);
 });
 
 test('better placement never gives less rating', () => {
   const order = R.opponentsFor('fixed', 1000);
   let last = Infinity;
-  for (let place = 1; place <= 51; place++) {
+  for (let place = 1; place <= 16; place++) {
     const d = R.ratingChange(1000, place, order, 32);
     assert.ok(d <= last + 1e-9, 'placement ' + place);
     last = d;
@@ -93,7 +93,7 @@ test('an abandoned match counts as last place', () => {
   R.startMatch(p);
   const { abandoned } = R.startMatch(p);
   assert.ok(abandoned && abandoned.abandoned);
-  assert.strictEqual(abandoned.placement, 51);
+  assert.strictEqual(abandoned.placement, 16);
   assert.ok(abandoned.delta < 0);
 });
 
@@ -124,9 +124,43 @@ test('history matches the displayed rating', () => {
 test('simulation: skill levels separate', () => {
   // Players who consistently place in the top 3 / mid / bottom drift apart.
   const run = (place) => { const p = profile(); for (let i = 0; i < 60; i++) { R.startMatch(p); R.finishMatch(p, { placement: place }); } return p.ranked.rating; };
-  const top = run(2), mid = run(26), bottom = run(48);
+  const top = run(2), mid = run(8), bottom = run(15);
   console.log('      simulated ratings after 60 matches: top', top, 'mid', mid, 'bottom', bottom);
   assert.ok(top > mid && mid > bottom);
+});
+
+test("bots are never rated above T4 (Hunter): the season just started", () => {
+  for (const mmr of [500, 1000, 1300, 1800, 2400]) {
+    const bots = R.opponentsFor("m-cap-" + mmr, mmr);
+    assert.ok(bots.every((r) => r <= 1399), "mmr " + mmr + ": max bot " + Math.max(...bots));
+  }
+  assert.ok(Math.max(...R.opponentsFor("m-cap-low", 1000)) > 1000, "below the cap the spread is unchanged");
+});
+
+test('a match is scored as the real 16 contestants: finishing last never climbs', () => {
+  assert.strictEqual(R.CONFIG.field, 16);
+  const p = profile();
+  for (let i = 0; i < 120; i++) { R.startMatch(p); R.finishMatch(p, { placement: 16 }); }
+  assert.ok(p.ranked.rating < R.CONFIG.startRating, 'always last: ' + p.ranked.rating);
+  R.startMatch(p);
+  assert.strictEqual(R.finishMatch(p, { placement: 17 }).error, 'invalid-placement', 'no 17th place in a 16-player match');
+});
+
+test('season cap: players stay at or below 1399 and no tier above Hunter is reached', () => {
+  const p = profile();
+  const rewards = [];
+  for (let i = 0; i < 300; i++) { R.startMatch(p, Date.now(), (tier) => { rewards.push(tier); return []; }); R.finishMatch(p, { placement: 1 }, Date.now(), (tier) => { rewards.push(tier); return []; }); }
+  assert.ok(p.ranked.rating <= 1399 && p.ranked.mmr <= 1399 && p.ranked.peakRating <= 1399, 'rating ' + p.ranked.rating);
+  assert.strictEqual(R.tierFor(p.ranked.rating).name, 'Hunter');
+  assert.ok(!['Executioner', 'Reaper', 'Warlord', 'Apex', 'Legend'].some((t) => p.ranked.tiersReached[t] || rewards.includes(t)), 'tiers: ' + Object.keys(p.ranked.tiersReached));
+});
+
+test('profiles from before the cap are brought within it', () => {
+  const p = profile();
+  R.ensure(p);
+  Object.assign(p.ranked, { rating: 1900, mmr: 2100, peakRating: 2050, peakTier: 'Apex' });
+  R.ensure(p);
+  assert.deepStrictEqual([p.ranked.rating, p.ranked.mmr, p.ranked.peakRating, p.ranked.peakTier], [1399, 1399, 1399, 'Hunter']);
 });
 
 if (failures) { console.log(failures + ' failing'); process.exit(1); }

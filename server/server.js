@@ -158,6 +158,23 @@ function levelForXP(xp) {
   return Math.min(level, levelXPHigh.length);
 }
 
+// Season start caps (raise as the season matures): no player above level 14,
+// so XP stops at the top of level 14. The game's own level curve is reported
+// by the menu (levelXPHigh); without it, level 15 starts above 79,749 XP.
+const SEASON = { maxLevel: 14, maxLevelXP: 79749 };
+function seasonXPCap() {
+  return levelXPHigh.length >= SEASON.maxLevel ? levelXPHigh[SEASON.maxLevel - 1] : SEASON.maxLevelXP;
+}
+function seasonClamp(p) {
+  if (!p || !p.stats) return p;
+  if (p.stats.xp > seasonXPCap()) p.stats.xp = seasonXPCap();
+  if (p.stats.level > SEASON.maxLevel) p.stats.level = SEASON.maxLevel;
+  return p;
+}
+// A win (or a ranked placement) needs the match to have run this long: the
+// ticket starts when the match is sent, so an instant "victory" is refused.
+const MIN_MATCH_SECONDS = parseInt(process.env.CULLING_MIN_MATCH_SECONDS || '120', 10);
+
 // ---------------------------------------------------------------- profiles
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -220,7 +237,7 @@ function getProfile(userID) {
     p.economy = ECONOMY_VERSION;
     saveProfiles();
   }
-  return p;
+  return seasonClamp(p);
 }
 
 function sendPlayer(socket, p) {
@@ -408,6 +425,7 @@ app.post('/api/matchqueue', (req, res) => {
 
 // XP for one match against bots, scaled to the game's level curve (level 2
 // at 2,000 XP): a win with a few kills is roughly a level early on.
+
 function matchXP(r) {
   return 250                                   // finishing a match
     + 150 * r.kills
@@ -431,10 +449,13 @@ app.post('/api/matchresult', (req, res) => {
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
   // Infinity/NaN credits or XP into profiles.json.
   const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
+  // Too short to be a real match: no win, and ranked counts it as last place.
+  const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const r = {
-    victory: body.victory === true || body.victory === 'true',
-    kills: bounded(parseInt(body.kills, 10), 200),
-    damage: bounded(Number(body.damage), 1e6),
+    victory: !tooShort && (body.victory === true || body.victory === 'true'),
+    // 15 opponents at most (16 contestants); damage within what 15 can take.
+    kills: bounded(parseInt(body.kills, 10), ranked.CONFIG.field - 1),
+    damage: bounded(Number(body.damage), 5000),
     // No longer than the match has actually run.
     timeAlive: bounded(Number(body.timeAlive), Math.min(4 * 3600, claim.elapsed + 30)),
     func: bounded(parseInt(body.func, 10), 1e6)
@@ -445,7 +466,8 @@ app.post('/api/matchresult', (req, res) => {
   p.cullCredits += credits;
   let rankedResult = null;
   if (p.ranked && p.ranked.pending) {
-    const placement = body.victory === true || body.victory === 'true' ? 1 : parseInt(body.placement, 10);
+    const placement = tooShort ? ranked.CONFIG.field : r.victory ? 1 : parseInt(body.placement, 10);
+    if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
     const out = ranked.finishMatch(p, { matchId: body.matchId, placement, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
       Date.now(), rankedGrant(p));
     if (out.error) log('ranked result rejected', out.error, JSON.stringify(body).slice(0, 200));
@@ -456,8 +478,8 @@ app.post('/api/matchresult', (req, res) => {
     }
   }
   const s = p.stats;
-  s.xp += earned;
-  const level = levelForXP(s.xp);
+  s.xp = Math.min(seasonXPCap(), s.xp + earned);
+  const level = Math.min(SEASON.maxLevel, levelForXP(s.xp) || s.level);
   if (level && level !== s.level) {
     log('level', userID, s.level, '->', level);
     s.level = level;
@@ -481,8 +503,11 @@ app.post('/api/setlevel', (req, res) => {
   const level = parseInt(bodyObject(req).level, 10);
   const userID = userFromRequest(req) || tickets.recentUser(requestIp(req));
   if (!userID) return res.status(409).json({ error: 'no-recent-match' });
-  if (level > 0 && level <= 1000) {
-    const p = getProfile(userID);
+  // Within the season cap and never above what the player's XP gives.
+  const p0 = getProfile(userID);
+  const allowed = Math.min(SEASON.maxLevel, levelForXP(p0.stats.xp) || SEASON.maxLevel);
+  if (level > 0 && level <= allowed) {
+    const p = p0;
     if (level !== p.stats.level) log('level', userID, p.stats.level, '->', level);
     p.stats.level = level;
     saveProfiles();
@@ -890,10 +915,10 @@ function lobbyCard(userID) {
   const p = peekProfile(userID);
   const key = accounts.keyForUserID(userID);
   const a = key ? accounts.get(key) : null;
-  const rating = p && p.ranked && Number.isFinite(p.ranked.rating) ? p.ranked.rating : null;
+  const rating = p && p.ranked && Number.isFinite(p.ranked.rating) ? Math.min(ranked.CONFIG.maxRating, p.ranked.rating) : null;
   return {
     name: a ? a.username : 'Player',
-    level: p && p.stats ? p.stats.level || 1 : 1,
+    level: p && p.stats ? Math.min(SEASON.maxLevel, p.stats.level || 1) : 1,
     cardID: p ? p.cardID || 0 : 0,
     rank: rating === null ? null : ranked.tierFor(rating).name
   };
