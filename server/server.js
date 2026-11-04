@@ -36,6 +36,7 @@ const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
 const { createMetrics, metricsAllowed } = require('./metrics');
+const acc = require('./accounts');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -50,6 +51,13 @@ const MAX_USERID_LENGTH = 64;
 const MAX_SOCKETS_PER_IP = parseInt(process.env.CULLING_MAX_SOCKETS_PER_IP || '32', 10);
 const LOGIN_TIMEOUT_MS = 60 * 1000;
 const MAX_PROFILES = parseInt(process.env.CULLING_MAX_PROFILES || '100000', 10);
+const MAX_ACCOUNTS = parseInt(process.env.CULLING_MAX_ACCOUNTS || String(MAX_PROFILES), 10);
+// Accounts are required to play online: the game's own /api/login is only
+// accepted for an account that pressed PLAY in the launcher from the same
+// address (a play grant, see accounts.js and docs/ACCOUNTS.md). 0 turns that
+// off (local play, tests, and the window before the launcher with accounts
+// is published).
+const REQUIRE_ACCOUNT = process.env.CULLING_REQUIRE_ACCOUNT !== '0';
 
 function log(...args) {
   console.log(new Date().toISOString().slice(11, 19), ...args);
@@ -176,25 +184,29 @@ function saveProfiles() {
   profileStore.markDirty();
 }
 
+function newProfile(userID) {
+  return {
+    userID,
+    cullCredits: STARTING_CREDITS,
+    premiumCurrency: 999999,
+    owned: [],
+    economy: ECONOMY_VERSION,
+    cardID: 0,
+    createdAt: Date.now(),
+    stats: {
+      damage_Axe: 0, damage_Blade: 0, damage_Bleed: 0, damage_Bludgeon: 0,
+      damage_Bow: 0, damage_Explosion: 0, damage_Fists: 0, damage_Gun: 0,
+      damage_Other: 0, damage_Self: 0, damage_Spear: 0, damage_Throw: 0,
+      damage_Trap: 0, funcEarned: 0, gamesPlayed: 0, kills: 0, level: 1,
+      minutesAlive: 0, mmr: 0, mmrUncertainty: 0, rank: 0, rp: 0,
+      rpForNextRank: 100, rpTowardsNextRank: 0, totalDamage: 0, wins: 0, xp: 0
+    }
+  };
+}
+
 function getProfile(userID) {
   if (!hasProfile(userID)) {
-    profiles[userID] = {
-      userID,
-      cullCredits: STARTING_CREDITS,
-      premiumCurrency: 999999,
-      owned: [],
-      economy: ECONOMY_VERSION,
-      cardID: 0,
-      createdAt: Date.now(),
-      stats: {
-        damage_Axe: 0, damage_Blade: 0, damage_Bleed: 0, damage_Bludgeon: 0,
-        damage_Bow: 0, damage_Explosion: 0, damage_Fists: 0, damage_Gun: 0,
-        damage_Other: 0, damage_Self: 0, damage_Spear: 0, damage_Throw: 0,
-        damage_Trap: 0, funcEarned: 0, gamesPlayed: 0, kills: 0, level: 1,
-        minutesAlive: 0, mmr: 0, mmrUncertainty: 0, rank: 0, rp: 0,
-        rpForNextRank: 100, rpTowardsNextRank: 0, totalDamage: 0, wins: 0, xp: 0
-      }
-    };
+    profiles[userID] = newProfile(userID);
     saveProfiles();
   }
   const p = profiles[userID];
@@ -220,6 +232,13 @@ function peekProfile(userID) {
   return hasProfile(userID) ? profiles[userID] : null;
 }
 
+// Player accounts (launcher sign-in, play grants); see accounts.js.
+const accounts = new acc.Accounts(path.join(DATA_DIR, 'accounts.json'), {
+  secretFile: path.join(DATA_DIR, 'ip-hash-secret.txt'),
+  saveDelayMs: SAVE_DELAY_MS,
+  onSaveError: (e) => { metrics.error('save'); log('saving accounts failed:', e.message); }
+});
+
 // Login tokens (persisted) and the match tickets results are paid against.
 const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
   saveDelayMs: SAVE_DELAY_MS,
@@ -230,11 +249,24 @@ const allowHttp = rateLimiter(20, 60);
 const allowSocket = rateLimiter(30, 90);
 // New profiles per address: a burst of 10, then one a minute.
 const allowNewProfile = rateLimiter(1 / 60, 10);
+// Accounts per address: well-formed sign-up attempts (bounds probing which
+// names / emails are taken) 20, then one a minute; accounts created 5, then
+// one every 10 minutes. Wrong passwords: per address 10, then one a minute;
+// per username 10, then one every 5 minutes (right passwords don't count).
+const allowRegisterAttempt = rateLimiter(1 / 60, 20);
+const allowRegister = rateLimiter(1 / 600, 5);
+const allowLoginIp = rateLimiter(1 / 60, 10);
+const allowLoginUser = rateLimiter(1 / 300, 10);
 
-function userFromRequest(req) {
+function bearerToken(req) {
   const auth = req.headers.authorization || '';
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  return m ? sessions.userFor(m[1]) : null;
+  return m ? m[1].trim() : null;
+}
+
+function userFromRequest(req) {
+  const token = bearerToken(req);
+  return token ? sessions.userFor(token) : null;
 }
 
 const requestIp = (req) => clientIp(req.socket.remoteAddress, req.headers['x-forwarded-for']);
@@ -334,12 +366,20 @@ app.post('/api/login', (req, res) => {
   const body = bodyObject(req);
   const userID = normalizeUserID(body.userid);
   if (!validUserID(userID)) return res.status(400).json({ error: 'invalid-userid' });
+  const ipHash = accounts.hashIp(requestIp(req));
+  if (REQUIRE_ACCOUNT && !accounts.useGrant(userID, ipHash)) {
+    log('login refused (no play grant)', userID);
+    return res.status(403).json({ errorCode: 'account-required', error: 'account-required' });
+  }
   if (!hasProfile(userID)) {
     if (Object.keys(profiles).length >= MAX_PROFILES) return res.status(503).json({ error: 'server-full' });
     if (!allowNewProfile(requestIp(req))) return res.status(429).json({ error: 'too-many-new-players' });
   }
   const token = sessions.issue(userID);
-  getProfile(userID);
+  const p = getProfile(userID);
+  // Where this profile last played from (hashed): an account can claim an
+  // existing profile only from that address.
+  if (p.lastLoginIpHash !== ipHash) { p.lastLoginIpHash = ipHash; saveProfiles(); }
   log('login', userID, 'authType=' + body.authType, 'appid=' + body.appid, 'build=' + body.build);
   res.json({ token, redirect: `${BASE}/api`, userID, build: body.build || '0' });
 });
@@ -475,6 +515,208 @@ app.post('/api/levelcurve', (req, res) => {
   res.json({ ok: true, levels: curve.length });
 });
 
+// ---------------------------------------------------------------- accounts
+
+// Async handlers: a rejection goes to the error handler (JSON 500) instead of
+// leaving the request hanging; too many password hashes queued is a 503.
+const asyncRoute = (fn) => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch((e) => {
+  if (e && e.code === 'busy' && !res.headersSent) return res.status(503).json({ error: 'busy' });
+  next(e);
+});
+
+// The signed-in account of a request (Authorization: Bearer <account token>).
+const accountFromRequest = (req) => accounts.accountForToken(bearerToken(req));
+
+app.use(['/api/account', '/admin'], (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+app.post('/api/account/register', asyncRoute(async (req, res) => {
+  const body = bodyObject(req);
+  const ip = requestIp(req);
+  const username = acc.normalizeUsername(body.username);
+  if (username === null) return res.status(400).json({ error: 'invalid-username' });
+  const email = acc.normalizeEmail(body.email);
+  if (email === null) return res.status(400).json({ error: 'invalid-email' });
+  if (!acc.validPassword(body.password)) return res.status(400).json({ error: 'weak-password' });
+  if (!allowRegisterAttempt(ip)) return res.status(429).json({ error: 'too-many-attempts' });
+  const key = username.toLowerCase();
+  const conflict = () => (accounts.get(key) ? 'username-taken' : accounts.emailTaken(email) ? 'email-taken' : null);
+  if (conflict()) return res.status(409).json({ error: conflict() });
+  if (accounts.count >= MAX_ACCOUNTS) return res.status(503).json({ error: 'server-full' });
+  if (!allowRegister(ip)) return res.status(429).json({ error: 'too-many-attempts' });
+  let hash;
+  try { hash = await acc.hashPassword(body.password); } catch (e) { allowRegister.refund(ip); throw e; }
+  // Checked again: another sign-up may have taken the name while this one hashed.
+  if (conflict()) { allowRegister.refund(ip); return res.status(409).json({ error: conflict() }); }
+  if (accounts.count >= MAX_ACCOUNTS) { allowRegister.refund(ip); return res.status(503).json({ error: 'server-full' }); }
+  // An existing profile is linked only if nobody owns it yet and its last game
+  // login came from this address; otherwise the account gets a fresh ID.
+  const claim = body.claimUserID;
+  let userID;
+  let claimed = false;
+  if (acc.validSteamID(claim) && hasProfile(claim) && !accounts.ownsUserID(claim)
+    && profiles[claim].lastLoginIpHash === accounts.hashIp(ip)) {
+    userID = claim;
+    claimed = true;
+  } else {
+    if (Object.keys(profiles).length >= MAX_PROFILES) { allowRegister.refund(ip); return res.status(503).json({ error: 'server-full' }); }
+    do userID = acc.randomSteamID(); while (hasProfile(userID) || accounts.ownsUserID(userID));
+  }
+  accounts.create({ username, email, userID, password: hash });
+  getProfile(userID);
+  const token = accounts.issueToken(key);
+  log('account created', JSON.stringify(username), userID, claimed ? '(claimed an existing profile)' : '');
+  res.json({ token, username, userID, claimed });
+}));
+
+app.post('/api/account/login', asyncRoute(async (req, res) => {
+  const body = bodyObject(req);
+  const ip = requestIp(req);
+  const key = acc.usernameKey(body.username);
+  // Every attempt counts against the limits; a right password is given back.
+  if (!allowLoginIp(ip)) return res.status(429).json({ error: 'too-many-attempts' });
+  if (key && !allowLoginUser(key)) { allowLoginIp.refund(ip); return res.status(429).json({ error: 'too-many-attempts' }); }
+  const password = body.password;
+  // No account can have a malformed name or an over-long password: no hash needed.
+  if (!key || typeof password !== 'string' || password.length > 128) return res.status(401).json({ error: 'wrong-credentials' });
+  const a = accounts.get(key);
+  // An unknown name costs the same scrypt as a wrong password.
+  const ok = await acc.verifyPassword(password, a ? a.password : await acc.dummyPasswordHash());
+  if (!ok || !a) return res.status(401).json({ error: 'wrong-credentials' });
+  allowLoginIp.refund(ip);
+  allowLoginUser.refund(key);
+  a.lastLoginAt = Date.now();
+  const token = accounts.issueToken(key);
+  res.json({ token, username: a.username, userID: a.userID });
+}));
+
+app.get('/api/account/me', (req, res) => {
+  const s = accountFromRequest(req);
+  if (!s) return res.status(401).json({ error: 'signed-out' });
+  res.json({ username: s.account.username, userID: s.account.userID, email: s.account.email });
+});
+
+// The launcher, right before starting the game: the game's own /api/login for
+// this account is accepted from this address for the next 12 hours.
+app.post('/api/account/play', (req, res) => {
+  const s = accountFromRequest(req);
+  if (!s) return res.status(401).json({ error: 'signed-out' });
+  accounts.grant(s.account.userID, accounts.hashIp(requestIp(req)));
+  log('play grant', s.account.userID);
+  res.json({ username: s.account.username, userID: s.account.userID });
+});
+
+app.post('/api/account/logout', (req, res) => {
+  accounts.revokeToken(bearerToken(req));
+  res.json({});
+});
+
+// ---------------------------------------------------------------- operator
+
+// Operator tools (tools/account_admin.js on the VPS): loopback without proxy
+// headers only, like /metrics; anything else gets the same 404 as /metrics.
+const operator = (req) => metricsAllowed(req.socket.remoteAddress, req.headers);
+
+const STAT_KEYS = Object.keys(newProfile('').stats);
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+// A JSON value made safe to store: finite numbers (non-negative unless
+// `negatives`), bounded strings, arrays and nesting.
+function cleanValue(v, negatives, depth = 0) {
+  if (typeof v === 'number') return Number.isFinite(v) ? (negatives ? v : Math.max(0, v)) : 0;
+  if (typeof v === 'string') return v.slice(0, 200);
+  if (typeof v === 'boolean' || v === null) return v;
+  if (depth >= 6 || typeof v !== 'object') return null;
+  if (Array.isArray(v)) return v.slice(0, 100).map((x) => cleanValue(x, negatives, depth + 1));
+  const out = {};
+  for (const k of Object.keys(v).slice(0, 200)) {
+    if (!UNSAFE_KEYS.has(k)) out[k] = cleanValue(v[k], negatives, depth + 1);
+  }
+  return out;
+}
+
+const isPlainObject = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+const nonNegative = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback);
+
+// A profile from somewhere else (the owner's local server), reduced to the
+// fields this server knows, with the account's user ID.
+function sanitizeProfile(raw, userID) {
+  const p = newProfile(userID);
+  p.cullCredits = nonNegative(raw.cullCredits, p.cullCredits);
+  p.premiumCurrency = nonNegative(Number(raw.premiumCurrency), p.premiumCurrency);
+  // Missing: the profile predates the shop, and getProfile applies that rule.
+  p.economy = nonNegative(raw.economy, 0);
+  p.createdAt = nonNegative(raw.createdAt, p.createdAt);
+  const card = raw.cardID;
+  p.cardID = (Number.isSafeInteger(card) && card >= 0) || (typeof card === 'string' && /^\d{1,12}$/.test(card)) ? card : 0;
+  const owned = Array.isArray(raw.owned) ? raw.owned : [];
+  p.owned = [...new Set(owned.filter((t) => Number.isSafeInteger(t) && t >= 0 && (!catalog.length || catalogByTid.has(t))))];
+  const stats = isPlainObject(raw.stats) ? raw.stats : {};
+  for (const k of STAT_KEYS) p.stats[k] = nonNegative(stats[k], p.stats[k]);
+  const level = levelForXP(p.stats.xp);
+  if (level) p.stats.level = level;
+  if (isPlainObject(raw.ranked)) {
+    // Rating changes in the history can be negative; everything else not.
+    const r = cleanValue(raw.ranked, false);
+    r.history = Array.isArray(raw.ranked.history) ? raw.ranked.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
+    if (!isPlainObject(r.processed)) r.processed = {};
+    if (!isPlainObject(r.tiersReached)) r.tiersReached = {};
+    // A match left running on another server can't be finished here.
+    r.pending = null;
+    p.ranked = r;
+  }
+  if (isPlainObject(raw.lastMatch)) p.lastMatch = cleanValue(raw.lastMatch, false);
+  return p;
+}
+
+const profileSummary = (p) => (p ? { credits: p.cullCredits, xp: p.stats.xp, level: p.stats.level, wins: p.stats.wins,
+  kills: p.stats.kills, owned: (p.owned || []).length } : null);
+
+app.post('/admin/import-profile', (req, res) => {
+  if (!operator(req)) return res.status(404).json({});
+  const body = bodyObject(req);
+  const key = acc.usernameKey(body.username);
+  const a = key && accounts.get(key);
+  if (!a) return res.status(404).json({ error: 'no-such-account' });
+  if (!isPlainObject(body.profile)) return res.status(400).json({ error: 'invalid-profile' });
+  const userID = a.userID;
+  const old = peekProfile(userID);
+  let backup = null;
+  if (old) {
+    const dir = path.join(DATA_DIR, 'import-backups');
+    fs.mkdirSync(dir, { recursive: true });
+    backup = path.join(dir, userID.replace(/[^A-Za-z0-9_-]/g, '_') + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
+    writeAtomicSync(backup, JSON.stringify(old));
+  }
+  const before = profileSummary(old);
+  const p = sanitizeProfile(body.profile, userID);
+  if (old && old.lastLoginIpHash) p.lastLoginIpHash = old.lastLoginIpHash;
+  profiles[userID] = p;
+  saveProfiles();
+  getProfile(userID);                 // applies the pre-shop rule if needed
+  const socket = socketsByUser.get(userID);
+  if (socket) sendPlayer(socket, profiles[userID]);
+  const after = profileSummary(profiles[userID]);
+  log('profile imported for', userID, JSON.stringify(before), '->', JSON.stringify(after));
+  res.json({ username: a.username, userID, backup, before, after });
+});
+
+app.post('/admin/reset-password', asyncRoute(async (req, res) => {
+  if (!operator(req)) return res.status(404).json({});
+  const key = acc.usernameKey(bodyObject(req).username);
+  const a = key && accounts.get(key);
+  if (!a) return res.status(404).json({ error: 'no-such-account' });
+  const password = acc.randomPassword(16);
+  accounts.setPassword(key, await acc.hashPassword(password));
+  const revoked = accounts.revokeAll(key);
+  // Signed out everywhere, and the game can't log in on an old grant either.
+  accounts.revokeGrant(a.userID);
+  log('password reset for', a.userID, '(' + revoked + ' tokens revoked)');
+  res.json({ username: a.username, password, revokedTokens: revoked });
+}));
+
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
 app.get(['/health', '/api/health'], (req, res) => res.json({ ok: true, users: socketsByUser.size }));
@@ -496,7 +738,10 @@ app.post('/api/uitrace', (req, res) => {
 });
 
 app.use((req, res) => {
-  accessLog('  (unhandled HTTP route)', req.method, req.originalUrl.slice(0, 200), JSON.stringify(bodyObject(req)).slice(0, 300));
+  // Never log what might be a password (a mistyped account or operator URL).
+  const quiet = /^\/(api\/account|admin)(\/|$)/i.test(req.path);
+  accessLog('  (unhandled HTTP route)', req.method, req.originalUrl.slice(0, 200),
+    quiet ? '(body not logged)' : JSON.stringify(bodyObject(req)).slice(0, 300));
   res.json({});
 });
 
@@ -530,8 +775,12 @@ function gauges() {
     profiles: Object.keys(profiles).length,
     sessionTokens: sessions.size,
     openMatchTickets: tickets.open.size,
-    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size() },
-    saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null },
+    accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
+    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
+      registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
+      loginUser: allowLoginUser.size() },
+    saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null,
+      accounts: accounts.store ? accounts.store.stats : null },
     stopping
   };
 }
@@ -851,8 +1100,10 @@ const BLANK_PROFILE = { stats: { wins: 0, kills: 0, level: 1, rank: 0 }, cardID:
 function flushAll(why) {
   const wroteProfiles = profileStore.flushSync();
   const wroteSessions = sessions.flushSync();
-  if (wroteProfiles || wroteSessions) {
-    log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions'].filter(Boolean).join(', '));
+  const wroteAccounts = accounts.flushSync();
+  if (wroteProfiles || wroteSessions || wroteAccounts) {
+    log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
+      .filter(Boolean).join(', '));
   }
 }
 
@@ -875,6 +1126,7 @@ function shutdown(signal) {
   // new requests and socket events are refused while stopping).
   profileStore.close();
   if (sessions.store) sessions.store.close();
+  accounts.close();
   // Let replies already in flight go out, then exit.
   io.close();
   server.close();

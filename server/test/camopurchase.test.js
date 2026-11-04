@@ -68,7 +68,8 @@ function credits() {
     stats: { xp: 0, level: 1, gamesPlayed: 0, kills: 0, wins: 0, totalDamage: 0, minutesAlive: 0, funcEarned: 0 } } }));
 
   const server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: Object.assign({}, process.env, { CULLING_PORT: String(PORT), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: '0' }), stdio: 'ignore' });
+    env: Object.assign({}, process.env, { CULLING_PORT: String(PORT), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: '0',
+      CULLING_REQUIRE_ACCOUNT: '0' }), stdio: 'ignore' });
   const socket = ioClient('http://127.0.0.1:' + PORT, { transports: ['websocket'], forceNew: true });
   try {
     await waitUp();

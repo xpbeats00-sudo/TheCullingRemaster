@@ -235,7 +235,7 @@ async function startServer(port, serverFile) {
   const out = fs.openSync(path.join(dir, "server.log"), "a");
   const proc = spawn(process.execPath, ["--expose-gc", serverFile], {
     env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir, NODE_ENV: "production",
-      CULLING_UITRACE: "0", NODE_PATH: path.join(__dirname, "..", "node_modules") }),
+      CULLING_UITRACE: "0", CULLING_REQUIRE_ACCOUNT: "0", NODE_PATH: path.join(__dirname, "..", "node_modules") }),
     stdio: ["ignore", out, out]
   });
   for (let i = 0; i < 100; i++) {
