@@ -11,6 +11,15 @@ const path = require("path");
 const http = require("http");
 const sync = require("../lib/sync");
 const { main: makeManifest } = require("../tools/make_manifest");
+const crypto = require("crypto");
+
+// A throwaway signing key: releases in these tests are signed with it and the
+// launcher side is told to trust it (the real key lives outside the repo).
+const tmpKeyDir = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-key-"));
+const TEST_KEY = path.join(tmpKeyDir, "test.pem");
+const pair = crypto.generateKeyPairSync("ed25519");
+fs.writeFileSync(TEST_KEY, pair.privateKey.export({ type: "pkcs8", format: "pem" }));
+const TEST_PUB = pair.publicKey.export({ type: "spki", format: "pem" });
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-sync-"));
 const release = path.join(tmp, "release");
@@ -34,6 +43,13 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(f).pipe(res);
 });
 
+// Serve a hand-made manifest and its signature (test key) at a route.
+function signedManifest(route, manifest) {
+  const body = Buffer.from(JSON.stringify(manifest));
+  routes[route] = (req, res) => res.end(body);
+  routes[route + ".sig"] = (req, res) => res.end(crypto.sign(null, body, pair.privateKey).toString("base64"));
+}
+
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
 
@@ -44,12 +60,12 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
   put("Victory/Binaries/Win64/Func.Client.Local.dll", "dll v1");
   fs.mkdirSync(game, { recursive: true });
   const silent = console.log; console.log = () => {};
-  await makeManifest(release, "1.0.0", publish);
+  await makeManifest(release, "1.0.0", publish, TEST_KEY);
   console.log = silent;
 
   try {
     await test("fresh install downloads every file and verifies it", async () => {
-      const m = await sync.fetchManifest(base + "/manifest.json");
+      const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
       const todo = await sync.plan(m, game);
       assert.strictEqual(todo.length, 2);
       let last = null;
@@ -61,14 +77,14 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     });
 
     await test("an up-to-date install needs nothing", async () => {
-      const m = await sync.fetchManifest(base + "/manifest.json");
+      const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
       assert.deepStrictEqual(await sync.plan(m, game), []);
     });
 
     await test("a tampered file of the same size is detected and repaired", async () => {
       const f = path.join(game, "Victory/Binaries/Win64/Func.Client.Local.dll");
       fs.writeFileSync(f, "dll XX");
-      const m = await sync.fetchManifest(base + "/manifest.json");
+      const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
       const todo = await sync.plan(m, game);
       assert.deepStrictEqual(todo.map((x) => x.path), ["Victory/Binaries/Win64/Func.Client.Local.dll"]);
       await sync.apply(m, todo, game);
@@ -78,9 +94,9 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     await test("a new release replaces only what changed", async () => {
       put("Victory/Binaries/Win64/Func.Client.Local.dll", "dll v2!");
       console.log = () => {};
-      await makeManifest(release, "1.0.1", publish);
+      await makeManifest(release, "1.0.1", publish, TEST_KEY);
       console.log = silent;
-      const m = await sync.fetchManifest(base + "/manifest.json");
+      const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
       const todo = await sync.plan(m, game);
       assert.deepStrictEqual(todo.map((x) => x.path), ["Victory/Binaries/Win64/Func.Client.Local.dll"]);
       await sync.apply(m, todo, game);
@@ -91,7 +107,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       const f = path.join(game, "Victory/Binaries/Win64/Func.Client.Local.dll");
       fs.writeFileSync(f, "old");
       served["/files/Victory/Binaries/Win64/Func.Client.Local.dll"] = "evil!!!";
-      const m = await sync.fetchManifest(base + "/manifest.json");
+      const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
       const todo = await sync.plan(m, game);
       await assert.rejects(sync.apply(m, todo, game), /failed verification/);
       assert.strictEqual(fs.readFileSync(f, "utf8"), "old");
@@ -109,7 +125,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       }
       assert.throws(() => sync.checkUrl("http://xplab.shop/manifest.json"), sync.SyncError);
       assert.ok(sync.checkUrl("https://xplab.shop/remaster/manifest.json"));
-      const m = await sync.fetchManifest(base + "/manifest.json");
+      const m = await sync.fetchManifest(base + "/manifest.json", TEST_PUB);
       m.files[0] = Object.assign({}, m.files[0], { path: "Victory/../../../evil.pak" });
       await assert.rejects(sync.plan(m, game), sync.SyncError);
     });
@@ -125,10 +141,10 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
         fs.writeFileSync(f, data);
       }
       console.log = () => {};
-      await makeManifest(rel2, "2.0.0", pub2);
+      await makeManifest(rel2, "2.0.0", pub2, TEST_KEY);
       console.log = silent;
       const target = path.join(tmp, "fresh", "The Culling Remaster");
-      const m = await sync.fetchManifest(base + "/full/manifest.json");
+      const m = await sync.fetchManifest(base + "/full/manifest.json", TEST_PUB);
       const todo = await sync.plan(m, target);
       assert.strictEqual(todo.length, 5);
       assert.ok(!fs.existsSync(target), "planning doesn't create the folder");
@@ -146,8 +162,8 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       const sha = require("crypto").createHash("sha256").update(big).digest("hex");
       const ranges = [];
       let calls = 0;
-      routes["/resume/manifest.json"] = (req, res) => res.end(JSON.stringify({ version: "3", files: [
-        { path: "Victory/Content/Paks/big.pak", size: big.length, sha256: sha, url: "big.pak" }] }));
+      signedManifest("/resume/manifest.json", { version: "3", files: [
+        { path: "Victory/Content/Paks/big.pak", size: big.length, sha256: sha, url: "big.pak" }] });
       routes["/resume/big.pak"] = (req, res) => {
         calls++;
         const range = req.headers.range;
@@ -162,7 +178,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
         res.end(big.subarray(from));
       };
       const target = path.join(tmp, "resume-game");
-      const m = await sync.fetchManifest(base + "/resume/manifest.json");
+      const m = await sync.fetchManifest(base + "/resume/manifest.json", TEST_PUB);
       let last = null;
       await sync.apply(m, await sync.plan(m, target), target, (p) => { last = p; }, { retryDelayMs: 10 });
       assert.ok(fs.readFileSync(path.join(target, "Victory/Content/Paks/big.pak")).equals(big));
@@ -174,13 +190,13 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     await test("a server without ranges restarts the file instead of corrupting it", async () => {
       const data = Buffer.alloc(300000, 9);
       const sha = require("crypto").createHash("sha256").update(data).digest("hex");
-      routes["/norange/manifest.json"] = (req, res) => res.end(JSON.stringify({ version: "1", files: [
-        { path: "Victory/x.bin", size: data.length, sha256: sha, url: "x.bin" }] }));
+      signedManifest("/norange/manifest.json", { version: "1", files: [
+        { path: "Victory/x.bin", size: data.length, sha256: sha, url: "x.bin" }] });
       routes["/norange/x.bin"] = (req, res) => res.end(data);       // ignores Range: always the whole file
       const target = path.join(tmp, "norange-game");
       fs.mkdirSync(path.join(target, "Victory"), { recursive: true });
       fs.writeFileSync(path.join(target, "Victory", "x.bin.part"), Buffer.alloc(1000, 1));   // stale partial
-      const m = await sync.fetchManifest(base + "/norange/manifest.json");
+      const m = await sync.fetchManifest(base + "/norange/manifest.json", TEST_PUB);
       let last = null;
       await sync.apply(m, await sync.plan(m, target), target, (p) => { last = p; }, { retryDelayMs: 10 });
       assert.ok(fs.readFileSync(path.join(target, "Victory/x.bin")).equals(data));
@@ -192,9 +208,33 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(sync.freeBytes(path.join(tmp, "not", "made", "yet")) > 0, "free space of a folder that doesn't exist yet");
     });
 
+    await test("a manifest edited on the server is refused (signature)", async () => {
+      const body = fs.readFileSync(path.join(publish, "manifest.json"), "utf8");
+      served["/manifest.json"] = body.replace('"version": "1.0.1"', '"version": "6.6.6"');
+      await assert.rejects(sync.fetchManifest(base + "/manifest.json", TEST_PUB), /signature/);
+      served = {};
+    });
+
+    await test("a bad or missing signature is refused", async () => {
+      served["/manifest.json.sig"] = "bm90IGEgc2lnbmF0dXJl";     // base64 of "not a signature"
+      await assert.rejects(sync.fetchManifest(base + "/manifest.json", TEST_PUB), /signature/);
+      served = {};
+      fs.renameSync(path.join(publish, "manifest.json.sig"), path.join(publish, "sig.bak"));
+      await assert.rejects(sync.fetchManifest(base + "/manifest.json", TEST_PUB), /HTTP 404/);
+      fs.renameSync(path.join(publish, "sig.bak"), path.join(publish, "manifest.json.sig"));
+    });
+
+    await test("a release signed with another key is refused, including by the real launcher key", async () => {
+      const other = crypto.generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" });
+      await assert.rejects(sync.fetchManifest(base + "/manifest.json", other), /signature/);
+      await assert.rejects(sync.fetchManifest(base + "/manifest.json"), /signature/);
+      assert.ok(await sync.fetchManifest(base + "/manifest.json", TEST_PUB));
+    });
+
     console.log("all %d sync tests passed", passed);
   } finally {
     server.close();
     fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmpKeyDir, { recursive: true, force: true });
   }
 })().catch((e) => { console.error("FAIL", e.message); process.exitCode = 1; server.close(); });

@@ -8,14 +8,20 @@
 // the publish folder when it is on the same drive (a full release doesn't
 // need its gigabytes twice), copied otherwise.
 //
-// usage: node tools/make_manifest.js <release dir> <version> [out dir]
-//   writes <out dir>/manifest.json and <out dir>/files/...
+// The manifest is signed with the release key (tools/make_release_key.js):
+// manifest.json.sig holds its Ed25519 signature, which launchers require.
+//
+// usage: node tools/make_manifest.js <release dir> <version> [out dir] [private key]
+//   writes <out dir>/manifest.json(.sig) and <out dir>/files/...
+//   key: the argument, else CULLING_RELEASE_KEY, else <home>/.culling-release/release_ed25519.pem
 
 "use strict";
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { sha256File, targetPath, STATE_DIR } = require("../lib/sync");
+const { DEFAULT_KEY } = require("./make_release_key");
 
 // Release files, skipping Game Sync's own state and unfinished downloads.
 function walk(dir, base = dir, out = []) {
@@ -33,11 +39,14 @@ function place(src, dst) {
   try { fs.linkSync(src, dst); } catch { fs.copyFileSync(src, dst); }
 }
 
-async function main(release, version, outDir = path.join(release, "..", "publish")) {
+async function main(release, version, outDir = path.join(release, "..", "publish"),
+  keyPath = process.env.CULLING_RELEASE_KEY || DEFAULT_KEY) {
   if (!release || !version) {
-    console.error("usage: node tools/make_manifest.js <release dir> <version> [out dir]");
+    console.error("usage: node tools/make_manifest.js <release dir> <version> [out dir] [private key]");
     process.exit(2);
   }
+  if (!fs.existsSync(keyPath)) throw new Error("no release key at " + keyPath + ": run node tools/make_release_key.js once");
+  const key = crypto.createPrivateKey(fs.readFileSync(keyPath));
   const files = [];
   for (const rel of walk(release).sort()) {
     targetPath(release, rel);                    // the same path rules the launcher applies
@@ -51,7 +60,9 @@ async function main(release, version, outDir = path.join(release, "..", "publish
   const serversFile = path.join(release, "..", "servers.json");
   if (fs.existsSync(serversFile)) servers = JSON.parse(fs.readFileSync(serversFile, "utf8"));
   const manifest = { version, released: new Date().toISOString(), files, servers };
-  fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 1));
+  const body = Buffer.from(JSON.stringify(manifest, null, 1));
+  fs.writeFileSync(path.join(outDir, "manifest.json"), body);
+  fs.writeFileSync(path.join(outDir, "manifest.json.sig"), crypto.sign(null, body, key).toString("base64"));
   console.log(`manifest ${version}: ${files.length} files, ${files.reduce((s, f) => s + f.size, 0)} bytes -> ${outDir}`);
 }
 
