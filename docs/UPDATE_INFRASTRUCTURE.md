@@ -29,7 +29,7 @@ From this version, `tools/make_manifest.js` publishes each file once, as `object
 - **Deduplicated:** identical files are stored once.
 - **Differential:** a new release only adds the objects that changed.
 
-**Cache policy (to apply):** `objects/*` → `Cache-Control: public, max-age=31536000, immutable`; `manifest.json(.sig)` → `no-cache`. The manifest rule is live. The objects rule is in `deploy/install_vps.ps1` from this version and applies the next time `Update Culling Server.bat` runs. *(Not verified on the VPS.)*
+**Cache policy (to apply):** `objects/*` → `Cache-Control: public, max-age=31536000, immutable`; `manifest.json(.sig)` → `no-cache`. Live today: `no-cache` on `manifest.json` only. Both rules (objects immutable; `manifest.json` and its `.sig` no-cache) are in `deploy/install_vps.ps1` on the `server-hardening` branch and apply the next time `Update Culling Server.bat` runs after it's merged. *(Not verified on the VPS; the installer runs `caddy validate` before reloading.)*
 
 ## Signing
 

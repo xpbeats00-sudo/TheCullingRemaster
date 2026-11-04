@@ -21,6 +21,9 @@
 - A half-finished install can't be started by accident.
 - Stricter checks on release files, and redirects are refused.
 - The launcher exe is hardened: it can't be run as a Node.js runtime, it loads only its own code, and the menu and DevTools are gone.
+- Error messages say what to do ("Can't reach the update server…", "Your drive is full…") instead of showing raw network codes.
+- A paused install shows its kept progress while offline.
+- Every control shows a clear focus ring for keyboard use.
 - Copy diagnostics (Settings) puts support information on the clipboard. There's also a log at `%APPDATA%\The Culling Remaster\logs\launcher.log`.
 
 **Fixes**
@@ -32,6 +35,16 @@
 
 - Releases publish each file by content hash (`objects/<sha256>`). Publishing a new release uploads only the files that changed; republishing 1.1.0 this way uploads nothing.
 - The publish script checks every upload against its hash, and never overwrites a published object.
+
+## Account server (branch `server-hardening`, not deployed)
+
+- Fixes a remote crash: one malformed message from a logged-in client could stop the server.
+- Players can no longer change the level curve for everyone.
+- Saves are atomic and batched to at most one per second; nothing is lost on a service stop.
+- Everything clients can make the server hold is bounded (profiles, tokens, sockets, message size).
+- Operator telemetry at `/metrics` (on the VPS only), and a watchdog that restarts a hung server with backoff.
+- About 60 times lower p95 latency at 1,000 clients in a local test (733 ms to 11.5 ms).
+- Dependencies (branch `server-deps`): Express 4.22.3 and socket.io 2.5.1 fix 3 high-severity denial-of-service issues.
 
 ## Bot AI (draft PR #10, not released)
 

@@ -20,11 +20,14 @@
 | Suite | Tests | Result |
 |---|---|---|
 | sync | 16 | pass |
-| update | 19 | pass |
+| update | 21 | pass |
 | config | 5 | pass |
 | game | 6 | pass |
 | player name | 4 | pass |
-| **Total** | **50** | **pass** |
+| errors | 5 | pass |
+| **Total** | **57** | **pass** |
+
+The 50 tests before the Phase A additions also pass from a clean checkout of the branch.
 
 The release staging script (`deploy/stage_objects.test.js`) passed all 4 checks.
 
@@ -67,6 +70,7 @@ The release staging script (`deploy/stage_objects.test.js`) passed all 4 checks.
 - **Fuses:** verified on the exe. RunAsNode, NODE_OPTIONS and inspect are off; OnlyLoadAppFromAsar and cookie encryption are on.
 - **Boot:** online, release 1.1.0 installed, 0 pending, "Game Up to Date", PLAY ready, name kept.
 - **PLAY:** the game starts. The name file holds "XP" and the client DLL was generated.
+- **Error messages:** with the update server unreachable, the real app showed "Can't reach the update server…" instead of `net::ERR_…`.
 - **In-game login to the VPS: not confirmed.**
   - **The symptom:** the game ran and responded, but never reached the server-discovery step within 3 minutes.
   - **The same happened with:** release 1.0.0's patch in the same install, and the user's original known-good folder launched the same way.
@@ -74,9 +78,24 @@ The release staging script (`deploy/stage_objects.test.js`) passed all 4 checks.
   - **Needed:** a person at the screen to confirm.
 - **Repair:** found the one deliberately swapped file and restored it (hash verified).
 
-## Account server
+## Account server (branch `server-hardening`)
 
-Recorded in SERVER_PERFORMANCE_AUDIT.md: the load test, the soak test and the breaking point.
+All 8 test files pass (`node test/<file>` in `server/`): camo purchase, last breath (11), match result (8), metrics (8), ranked, session (6), shutdown (2), store (11).
+
+Load tests, all local (i7-14650HX, Node 24); the VPS hasn't been measured:
+
+| Run | Errors | p95 |
+|---|---|---|
+| 30 clients, 5 min (the planned 10 players + 20 bots is lighter) | 0 | 1.82 ms |
+| 30 clients, 20-min soak | 0 | 0.94 ms; heap after GC 14.2 → 15.7 → 15.7 MB, so no leak |
+| 1,000 clients: production code → new code | 240 → 0 | 733 ms → 11.5 ms |
+| 2,000 clients logging in within 10 s | 615 | 331 ms: the breaking point, each login sends the 0.73 MB catalog |
+
+- **Graceful stop:** a WinSW-style Ctrl+C saved everything and node exited 0 (unit, `winsw_stop.ps1`). The real service stop was not run.
+- **Watchdog:** a dry run against a dead port restarted once, then backed off ("backoff 5 min") instead of looping. The real scheduled task was not run.
+- **Remote crash:** both `get-cards` crashes reproduced on the production code (exit code 1), and are refused on the new code.
+
+Details: SERVER_PERFORMANCE_AUDIT.md.
 
 ## Bot AI (draft PR #10)
 - **Asset values:** the stock values were confirmed before patching, and a test pak contains all 7 new values plus the 2 ini budgets.

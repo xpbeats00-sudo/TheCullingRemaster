@@ -126,7 +126,7 @@ An independent review of the 1.1.0 launcher (launcher 1.1.0 plus the first Pause
 | L6 | A state-save error became a download failure, or hid a pause | ✔ Logged, not fatal |
 | L7 | DevTools and reload shortcuts available | ✔ No menu; DevTools off in the packaged app |
 | L8 | A kill in the first seconds left an unusable folder | ✔ `.remaster` is created before anything else (write probe) |
-| L9 | After a paused install, an offline boot showed "Not installed" | Partly fixed: the paused progress shows once online. Offline it still reads "Offline" |
+| L9 | After a paused install, an offline boot showed "Not installed" | Fixed: offline it reads "Download paused · 2.6 GB kept · reconnect to resume" (from the staging folder's size) |
 | L10 | Publish swapped `.sig` before `manifest.json` | ✔ The launcher re-reads once on mismatch |
 | S1 | Downgrades and frozen releases were accepted | ✔ Downgrades refused. Freeze (no expiry) is not addressed: see KNOWN_ISSUES |
 | S2 | Windows path-rule gaps | ✔ All reproduced cases refused (unit-tested) |
