@@ -1,6 +1,6 @@
 # Necro Mist skins
 
-The Resurrection skull's animated mist eyes (`M_NecroMist`) in eight colours. Each colour comes as a full outfit (skull mask, hood, top and pants, male and female) and as a weapon camo. They replace the animated camo attempt (see below).
+The Resurrection skull's animated mist eyes (`M_NecroMist`) in eight colours. Each colour comes as a full outfit (skull mask with its hood, top and pants, male and female) and as a weapon camo. Hats take one slot, so the hood and the glowing eyes are one item: the skull mask, with its hood dyed to match. They replace the animated camo attempt (see below).
 
 ## Build
 
@@ -19,21 +19,21 @@ The generated packages are git-ignored, like every other generator's output, so 
 
 `python patch/make_eye_skins.py <Paks dir> --preview` redraws only the two swatch sheets (git-ignored, in `patch/branding/`). They show the textures, not in-game renders:
 
-- `eye_skins_preview.png`: each colour's skull-mask eyes, hood, top and pants;
+- `eye_skins_preview.png`: each colour's skull-mask eyes, the mask's dyed hood atlas, the top and the pants;
 - `necro_mist_camos_preview.png`: each camo on the Ice Axe, Katana and Revolver texture atlases, composited as the weapon material does it.
 
 ## Colours and item IDs
 
-| # | Colour | Mask | Hood | Top (M / F) | Pants (M / F) | Weapon camo key |
-|---|---|---|---|---|---|---|
-| 1 | Blood Red | 119001 | 119101 | 129001 / 229001 | 139001 / 239001 | `Necro_Mist_Blood_Red` |
-| 2 | Toxic Green | 119002 | 119102 | 129002 / 229002 | 139002 / 239002 | `Necro_Mist_Toxic_Green` |
-| 3 | Violet | 119003 | 119103 | 129003 / 229003 | 139003 / 239003 | `Necro_Mist_Violet` |
-| 4 | Gold | 119004 | 119104 | 129004 / 229004 | 139004 / 239004 | `Necro_Mist_Gold` |
-| 5 | Ice White | 119005 | 119105 | 129005 / 229005 | 139005 / 239005 | `Necro_Mist_Ice_White` |
-| 6 | Hot Pink | 119006 | 119106 | 129006 / 229006 | 139006 / 239006 | `Necro_Mist_Hot_Pink` |
-| 7 | Ember Orange | 119007 | 119107 | 129007 / 229007 | 139007 / 239007 | `Necro_Mist_Ember_Orange` |
-| 8 | Abyss Blue | 119008 | 119108 | 129008 / 229008 | 139008 / 239008 | `Necro_Mist_Abyss_Blue` |
+| # | Colour | Skull mask + hood | Top (M / F) | Pants (M / F) | Weapon camo key |
+|---|---|---|---|---|---|
+| 1 | Blood Red | 119001 | 129001 / 229001 | 139001 / 239001 | `Necro_Mist_Blood_Red` |
+| 2 | Toxic Green | 119002 | 129002 / 229002 | 139002 / 239002 | `Necro_Mist_Toxic_Green` |
+| 3 | Violet | 119003 | 129003 / 229003 | 139003 / 239003 | `Necro_Mist_Violet` |
+| 4 | Gold | 119004 | 129004 / 229004 | 139004 / 239004 | `Necro_Mist_Gold` |
+| 5 | Ice White | 119005 | 129005 / 229005 | 139005 / 239005 | `Necro_Mist_Ice_White` |
+| 6 | Hot Pink | 119006 | 129006 / 229006 | 139006 / 239006 | `Necro_Mist_Hot_Pink` |
+| 7 | Ember Orange | 119007 | 129007 / 229007 | 139007 / 239007 | `Necro_Mist_Ember_Orange` |
+| 8 | Abyss Blue | 119008 | 129008 / 229008 | 139008 / 239008 | `Necro_Mist_Abyss_Blue` |
 
 - IDs follow the stock scheme: 11xxxx hats, 12xxxx and 13xxxx male top and legs, 22xxxx and 23xxxx female.
 - Weapon camo IDs come from make_camos: `800000 + weapon × 100 + 59..66`.
@@ -41,9 +41,8 @@ The generated packages are git-ignored, like every other generator's output, so 
 
   | Item | Price |
   |---|---|
-  | Mask | 2,500 |
+  | Skull mask + hood | 2,500 |
   | Top | 2,000 |
-  | Hood | 1,500 |
   | Pants | 1,500 |
   | Camo (unlocks that colour on every weapon) | 2,500 |
 
@@ -53,7 +52,7 @@ The generated packages are git-ignored, like every other generator's output, so 
 |---|---|---|
 | Mask eyes | A MaterialInstanceConstant of `M_NecroMist` with both `Fog Tint` parameters set (colour ×2 and ×5, the stock magnitudes). It keeps M_NecroMist's panning-cloud animation. The mesh copy's eye slot points at it. | `MI_EyeMist<nn>`, `NecroskullHatEye<nn>` |
 | Top and pants | The data asset's Primary/Secondary/Tertiary colours, which PlayerPawn writes to the clothing material's `ClothingColor_A/B/C`. The top also gets a child MIC of `MI_Top_Necro` with its glowing trim's `Emissive Color` in the colour. | `MI_EyeTop<nn>`, `MI_EyeTopF<nn>` |
-| Hood | The hat material has no ClothingColor parameters, so the data asset overrides its `BaseColor` texture instead, as the stock camo balaclavas do. | `T_NecroHood<nn>` |
+| Mask hood | The skull mask mesh carries the hood too, on one atlas (`Necro_BC`). The hat material has no ClothingColor parameters, so the mask's data asset overrides its `BaseColor` texture, as the stock camo balaclavas do. That texture dyes the hood's cloth and emblem and leaves the skull's bone in its stock colour. | `T_NecroHood<nn>` |
 | Weapons | Static camo from M_NecroMist's cloud texture (`T_Clouds_01`). | `Camo_XP_Necro_Mist_*` (make_camos) |
 
 The data assets are `/Game/Cosmetics/Clothing/XP_Eye*_<Colour>` and `F_XP_Eye*_<Colour>`. The game lists clothing from that folder only (the path is compiled into the exe).
