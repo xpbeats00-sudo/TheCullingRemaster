@@ -57,6 +57,20 @@ TUNING = {
     },
 }
 
+# The names bots get in a match (VictoryGameMode's BotNames; the game draws
+# from this list). The stock list has 17 names (Tony The Ninja, Mandroid 5000,
+# ...); the edit keeps the asset's size, so the new list is 17 names with the
+# same total length: the community's names, then stock ones that fill the
+# space exactly. MatchLobby.js shows the same names in the pregame lobby.
+BOT_NAMES = [
+    "Dominoss", "Bigred", "Riskybixnew", "Bongzilla", "Billybobjrjr", "999Jay", "Slugling",
+    "Sunsetwayboy", "HopelesslyNameless", "Arky", "ShadowRick",
+    "Tony The Ninja", "Mandroid 5000", "Lord Xeinous", "Dr. Bonesaw", "Big Purp", "Frank",
+]
+STR_ARRAYS = {
+    ("Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset", "Default__VictoryGameMode_C", "BotNames"): BOT_NAMES,
+}
+
 # Behaviour tree EQS parameters: (asset, task node, param) -> value.
 EQS_TUNING = {
     # "Find Wander Position": pull wandering bots toward the middle, using the
@@ -96,6 +110,30 @@ def patch_props(pkg, data, export, values):
         print("  %s.%s: %s -> %s" % (export, prop, old, value))
 
 
+def patch_str_array(pkg, data, export, prop, values):
+    """Replace an array of strings in place. The new array must take exactly
+    the bytes the old one did (count, then each string as length + ASCII +
+    NUL), so nothing else in the asset moves."""
+    for pname, ptype, idx, voff, size, extra, value in pkg.props(export):
+        if pname == prop:
+            break
+    else:
+        sys.exit("%s.%s is not stored in the asset" % (export, prop))
+    if ptype != "ArrayProperty" or extra != "StrProperty":
+        sys.exit("%s.%s is %s of %s, not an array of strings" % (export, prop, ptype, extra))
+    old = Reader(bytes(data), voff)
+    old_values = [old.fstr() for _ in range(old.i32())]
+    new = struct.pack("<i", len(values))
+    for v in values:
+        b = v.encode("ascii") + b"\0"
+        new += struct.pack("<i", len(b)) + b
+    if len(new) != size:
+        sys.exit("%s.%s: the new list takes %d bytes, the asset has room for exactly %d (%+d): adjust the names"
+                 % (export, prop, len(new), size, len(new) - size))
+    data[voff:voff + size] = new
+    print("  %s.%s: %d names -> %s" % (export, prop, len(old_values), ", ".join(values)))
+
+
 def patch_eqs_param(pkg, data, export, param, value):
     """Set Value of every FAIDynamicParam named `param` inside an export
     (both the QueryConfig array and the EQSRequest copy)."""
@@ -124,7 +162,7 @@ def patch_eqs_param(pkg, data, export, param, value):
 
 
 def main(paks_dir):
-    assets = set(TUNING) | {k[0] for k in EQS_TUNING}
+    assets = set(TUNING) | {k[0] for k in EQS_TUNING} | {k[0] for k in STR_ARRAYS}
     originals = find_in_paks(paks_dir, assets)
     for rel in sorted(assets):
         data = bytearray(originals[rel])
@@ -135,6 +173,9 @@ def main(paks_dir):
         for (asset, export, param), value in EQS_TUNING.items():
             if asset == rel:
                 patch_eqs_param(pkg, data, export, param, value)
+        for (asset, export, prop), values in STR_ARRAYS.items():
+            if asset == rel:
+                patch_str_array(pkg, data, export, prop, values)
         assert len(data) == len(originals[rel])
         out = os.path.join(SRC, rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)

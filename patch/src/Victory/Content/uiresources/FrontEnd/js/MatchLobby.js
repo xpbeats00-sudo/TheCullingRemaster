@@ -12,7 +12,8 @@
 // When the countdown starts it becomes the pregame lobby: the map is locked
 // and the right column is the roster of the match about to load, you and the
 // bots the game fills it with (matches run on each player's PC, so the other
-// players in the lobby start their own). It replaces the stock queue widget
+// players in the lobby start their own); the bots are shown like players,
+// with a name, a level and sometimes a rank. It replaces the stock queue widget
 // while it is up.
 // Self-contained: builds its own markup and styles (only .js files are kept
 // in the patch tree), so it can also be previewed outside the game.
@@ -20,6 +21,11 @@
   var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo" };
   var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
   var ROWS = 10;                    // player rows that fit at any resolution
+  // The bots' names: the same list the game draws from in the match
+  // (patch_assets.py BOT_NAMES, VictoryGameMode's BotNames).
+  var BOT_NAMES = ["Dominoss", "Bigred", "Riskybixnew", "Bongzilla", "Billybobjrjr", "999Jay", "Slugling",
+    "Sunsetwayboy", "HopelesslyNameless", "Arky", "ShadowRick",
+    "Tony The Ninja", "Mandroid 5000", "Lord Xeinous", "Dr. Bonesaw", "Big Purp", "Frank"];
   var CSS = [
     // Three parts over the menu: the state at the top middle (where the stock
     // queue widget sits; it is hidden while this is up), the map vote at the
@@ -57,7 +63,6 @@
     "#remaster-lobby .rl-row::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 70%; background: linear-gradient(90deg, rgba(8, 6, 8, 0.92), rgba(8, 6, 8, 0)); }",
     "#remaster-lobby .rl-row > * { position: relative; }",
     "#remaster-lobby .rl-level { width: 2.8vw; text-align: center; font: 1.3vw Sucrose-Bold, Arial, sans-serif; }",
-    "#remaster-lobby .rl-row.bot .rl-level { font: 0.75vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; opacity: 0.8; }",
     "#remaster-lobby .rl-name { flex: 1 1 auto; font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.4vh black; }",
     "#remaster-lobby .rl-vote { margin-right: 0.5vw; padding: 0.2vh 0.5vw; border-radius: 2vh; font: 0.65vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; text-transform: uppercase; background: rgba(8, 6, 8, 0.75); border: 1px solid rgba(255, 255, 255, 0.25); }",
     "#remaster-lobby .rl-rank { width: 2.4vw; height: 2.4vw; margin-right: 0.5vw; flex: 0 0 auto; }",
@@ -159,12 +164,38 @@
     return cards;
   }
 
-  function botRow(n, cardID) {
-    var li = el("li", "rl-row bot" + (shownNames["bot " + n] ? "" : " joined"));
+  function botNames(seed, count) {
+    var names = BOT_NAMES.slice(), x = seed * 7919 + 104729;
+    for (var i = names.length - 1; i > 0; i--) {
+      x = (x * 9301 + 49297) % 233280;
+      var j = Math.floor(x / 233280 * (i + 1)), t = names[i];
+      names[i] = names[j]; names[j] = t;
+    }
+    var out = [];
+    for (var k = 0; k < count; k++) out.push(names[k % names.length]);
+    return out;
+  }
+
+  var RANKS = ["Scrapper", "Contender", "Blooded", "Hunter", "Executioner", "Reaper", "Warlord"];
+
+  // A contestant row like a player's: level, name and, for some, a rank.
+  function botRow(name, cardID, seed) {
+    var li = el("li", "rl-row" + (shownNames["bot " + name] ? "" : " joined"));
     li.style.backgroundImage = cardImage(cardID);
     animate(li);
-    li.appendChild(el("span", "rl-level", "BOT"));
-    li.appendChild(el("span", "rl-name", "Bot " + n));
+    // From the name and the lobby (djb2), so levels and ranks look unrelated.
+    var key = name + "#" + seed, x = 5381;
+    for (var c = 0; c < key.length; c++) x = (x * 33 + key.charCodeAt(c)) % 2147483647;
+    x = x % 233280;
+    li.appendChild(el("span", "rl-level", String(1 + Math.floor(x / 233280 * 42))));
+    li.appendChild(el("span", "rl-name", name));
+    if (x % 3 === 0) {
+      var tier = RANKS[x % RANKS.length];
+      var img = el("img", "rl-rank");
+      img.src = "/images/ranked/" + tier.toLowerCase() + ".png";
+      img.alt = tier;
+      li.appendChild(img);
+    }
     return li;
   }
 
@@ -225,17 +256,17 @@
     if (!you) you = lobby.players[0];
     list.appendChild(row(you, true));
     names[you.name] = true;
-    var cards = botCards(lobby.id, lobby.matchBots);
+    var cards = botCards(lobby.id, lobby.matchBots), bots = botNames(lobby.id, lobby.matchBots);
     var shown = lobby.matchBots > ROWS - 1 ? ROWS - 2 : lobby.matchBots;
-    for (var b = 0; b < shown; b++) { list.appendChild(botRow(b + 1, cards[b])); names["bot " + (b + 1)] = true; }
+    for (var b = 0; b < shown; b++) { list.appendChild(botRow(bots[b], cards[b], lobby.id * 31 + b + 1)); names["bot " + bots[b]] = true; }
     if (shown < lobby.matchBots) {
-      var more = emptyRow("+" + (lobby.matchBots - shown) + " more bots");
+      var more = emptyRow("+" + (lobby.matchBots - shown) + " more contestants");
       more.className = "rl-row more";
       list.appendChild(more);
     }
     var others = lobby.players.length - 1;
     build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
-    build().querySelector(".rl-count").textContent = "1 player · " + lobby.matchBots + " bots";
+    build().querySelector(".rl-count").textContent = (lobby.matchBots + 1) + " contestants";
     build().querySelector(".rl-note").textContent = others > 0
       ? others + (others === 1 ? " other player" : " other players") + " from this lobby start their own match. " + (lobby.note || "")
       : (lobby.note || "");
