@@ -19,6 +19,14 @@ try {
     assert.deepStrictEqual(config.load(file), config.DEFAULTS);
   });
 
+  test("a settings file with a byte-order mark keeps its settings", () => {
+    const bom = path.join(tmp, "bom.json");
+    fs.writeFileSync(bom, "\uFEFF" + JSON.stringify({ gamePath: "D:\\Games\\TheCulling", playIntro: false }));
+    const s = config.load(bom);
+    assert.strictEqual(s.gamePath, "D:\\Games\\TheCulling");
+    assert.strictEqual(s.playIntro, false);
+  });
+
   test("settings round-trip and unknown or mistyped keys are dropped", () => {
     const saved = config.save(file, { gamePath: "D:\\Games\\TheCulling", closeOnLaunch: true, playIntro: "yes", evil: 1 });
     assert.strictEqual(saved.gamePath, "D:\\Games\\TheCulling");

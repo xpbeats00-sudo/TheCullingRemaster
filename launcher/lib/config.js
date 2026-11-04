@@ -26,7 +26,9 @@ const CHOICES = { parallel: [2, 4, 8, 16], maxMBps: [0, 1, 2, 4, 8, 16] };
 
 function load(file) {
   let saved = {};
-  try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* first run or unreadable */ }
+  // A byte-order mark (Notepad, PowerShell) would otherwise make the file
+  // unreadable and reset every setting.
+  try { saved = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")); } catch { /* first run or unreadable */ }
   return sanitize(Object.assign({}, DEFAULTS, saved));
 }
 
