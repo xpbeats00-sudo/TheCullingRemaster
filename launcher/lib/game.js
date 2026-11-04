@@ -23,7 +23,9 @@ function win64(root) { return path.join(root, ...WIN64); }
 // Where a fresh install goes by default: per user, no admin rights needed.
 function defaultInstallDir() {
   const base = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-  return path.join(base, "Programs", INSTALL_NAME);
+  // Not under Programs\The Culling Remaster: that is where the launcher itself
+  // installs, and its uninstaller removes that folder.
+  return path.join(base, "TheCullingRemaster", "Game");
 }
 
 // ok: the game is there. installable: nothing is there yet (missing or empty

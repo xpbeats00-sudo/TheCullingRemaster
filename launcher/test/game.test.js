@@ -81,7 +81,8 @@ try {
     assert.strictEqual(game.installTarget(path.join(tmp, "TheCulling")), path.join(tmp, "TheCulling"));
     assert.strictEqual(game.installTarget(path.join(tmp, "Empty")), path.join(tmp, "Empty"));
     assert.strictEqual(game.installTarget(path.join(tmp, "MyStuff")), path.join(tmp, "MyStuff", game.INSTALL_NAME));
-    assert.ok(game.defaultInstallDir().endsWith(path.join("Programs", game.INSTALL_NAME)));
+    assert.ok(game.defaultInstallDir().endsWith(path.join("TheCullingRemaster", "Game")));
+    assert.ok(!game.defaultInstallDir().includes(path.join("Programs", game.INSTALL_NAME)), "not inside the launcher's own folder");
   });
 
   console.log("all %d game tests passed", passed);
