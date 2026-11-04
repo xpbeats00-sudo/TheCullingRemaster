@@ -111,6 +111,44 @@ function setup(options = {}) {
     assert.deepStrictEqual(started, [{ queue: "ffa", players: ["a"] }]);
   });
 
+  // Map vote.
+  function voting(random = () => 0) {
+    const s = setup({ maps: ["jungle", "prison"], random, maxPlayers: 16 });
+    s.maps = [];
+    s.lobbies.startMatch = (lobby) => s.maps.push(lobby.map);
+    return s;
+  }
+
+  await test("map vote: the queue's map is the first vote; the majority map is locked in at the countdown", () => {
+    const { time, lobbies, last, maps } = voting();
+    lobbies.join("ffa", { id: "a" }, "jungle");
+    lobbies.join("ffa", { id: "b" }, "prison");
+    lobbies.join("ffa", { id: "c" }, "prison");
+    assert.deepStrictEqual(last("a").maps, { jungle: 1, prison: 2 });
+    assert.deepStrictEqual(last("a").players.map((p) => p.vote), ["jungle", "prison", "prison"]);
+    assert.strictEqual(last("a").map, null, "not decided while searching");
+    assert.ok(lobbies.vote("c", "jungle"));
+    assert.deepStrictEqual(last("a").maps, { jungle: 2, prison: 1 }, "changing a vote updates everyone");
+    time.advance(10000);
+    assert.strictEqual(last("a").map, "jungle");
+    assert.ok(!lobbies.vote("b", "prison"), "votes are locked once the countdown starts");
+    time.advance(5000);
+    assert.deepStrictEqual(maps, ["jungle"]);
+  });
+
+  await test("map vote: a tie or no votes is drawn among the leaders; bad maps are ignored", () => {
+    let s = voting(() => 0.99);
+    s.lobbies.join("ffa", { id: "a" }, "jungle");
+    s.lobbies.join("ffa", { id: "b" }, "prison");
+    s.time.advance(15000);
+    assert.deepStrictEqual(s.maps, ["prison"], "tie: drawn (random 0.99 -> the second leader)");
+    s = voting(() => 0);
+    s.lobbies.join("ffa", { id: "a" }, "mars");
+    assert.ok(!s.lobbies.vote("a", "__proto__"));
+    s.time.advance(15000);
+    assert.deepStrictEqual(s.maps, ["jungle"], "no votes: drawn among both maps");
+  });
+
   // On the real server (gather 300 ms, countdown 100 ms in tests).
   const srv = startServer(8141);
   const sockets = [];
@@ -146,6 +184,23 @@ function setup(options = {}) {
       assert.strictEqual(started, false);
       const m = (await srv.request("GET", "/metrics")).json;
       assert.deepStrictEqual(m.gauges ? m.gauges.matchLobbies : m.matchLobbies, { lobbies: 0, waiting: 0 });
+    });
+
+    await test("on the server: Jungle and Prison queues share one lobby; the vote picks the match's map", async () => {
+      const seen = [];
+      b.on("remaster-lobby", (l) => seen.push(l));
+      a.emit("join-mm", { queueName: "ffa_jungle" });
+      await next(a, "join-mm-ack");
+      b.emit("join-mm", { queueName: "ffa_prison" });
+      await next(b, "join-mm-ack");
+      a.emit("lobby-vote-map", { map: "prison" });
+      const [ma, mb] = await Promise.all([next(a, "match-ready"), next(b, "match-ready")]);
+      assert.strictEqual(ma.gameServer, "offline:1", "Prison is the game's second offline match");
+      assert.strictEqual(mb.gameServer, "offline:1");
+      const final = seen.filter((l) => l.state === "starting").pop();
+      assert.strictEqual(final.map, "prison");
+      assert.deepStrictEqual(final.maps, { jungle: 0, prison: 2 });
+      assert.strictEqual(final.players.length, 2, "one lobby for both map queues");
     });
 
     console.log("all %d match lobby tests passed", passed);
