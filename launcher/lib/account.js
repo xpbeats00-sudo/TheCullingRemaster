@@ -16,7 +16,7 @@ const path = require("path");
 // The same rules as the server (it checks again).
 function checkUsername(raw) {
   const name = String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
-  if (name.length < 3 || name.length > 20) return { error: "Usernames are 3 to 20 characters" };
+  if (name.length < 2 || name.length > 20) return { error: "Usernames are 2 to 20 characters" };
   if (!/^[A-Za-z0-9_.\- ]+$/.test(name)) return { error: "Use letters, numbers, spaces and _ . -" };
   return { name };
 }
@@ -36,7 +36,7 @@ function checkPassword(raw) {
 
 // The server's error codes, as players read them.
 const MESSAGES = {
-  "invalid-username": "Usernames are 3 to 20 characters: letters, numbers, spaces and _ . -",
+  "invalid-username": "Usernames are 2 to 20 characters: letters, numbers, spaces and _ . -",
   "username-taken": "That username is taken: choose another",
   "invalid-email": "Enter a valid email address",
   "email-taken": "That email already has an account: sign in instead",

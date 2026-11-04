@@ -64,7 +64,7 @@ function install(root) {
   try {
     await test("form rules match the server's", () => {
       assert.deepStrictEqual(account.checkUsername("  Reaper   99 "), { name: "Reaper 99" });
-      for (const bad of ["ab", "x".repeat(21), "Ñandú", "a<b", "emoji 😀", ""]) assert.ok(account.checkUsername(bad).error, bad);
+      for (const bad of ["a", "x".repeat(21), "Ñandú", "a<b", "emoji 😀", ""]) assert.ok(account.checkUsername(bad).error, bad);
       assert.deepStrictEqual(account.checkEmail(" Player@Example.COM "), { email: "player@example.com" });
       for (const bad of ["player", "a@b", "a@b.c", "a b@c.de", "@c.de"]) assert.ok(account.checkEmail(bad).error, bad);
       assert.ok(account.checkPassword("short").error);
@@ -81,7 +81,7 @@ function install(root) {
 
     await test("bad forms are refused before anything is sent", async () => {
       const before = seen.length;
-      await assert.rejects(client.register(api, { username: "ab", email: "a@b.cd", password: "long enough" }), /3 to 20/);
+      await assert.rejects(client.register(api, { username: "a", email: "a@b.cd", password: "long enough" }), /2 to 20/);
       await assert.rejects(client.register(api, { username: "Fine", email: "nope", password: "long enough" }), /valid email/);
       await assert.rejects(client.login(api, { username: "", password: "" }), /username and password/);
       assert.strictEqual(seen.length, before);
