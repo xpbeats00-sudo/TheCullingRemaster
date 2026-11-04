@@ -55,7 +55,9 @@ GAIN = 2.0                      # 1 / the weapons' mean base-texture brightness 
 CAMO_SCALE = 3.0
 FIRST_ID = 800000               # + weapon * 100 + camo
 RARITY = {"Magic Energy": 5, "Gewehr": 4, "BoneCrusher": 3}
-PRICE = {"Magic Energy": 600, "Gewehr": 400, "BoneCrusher": 250}     # cull credits, per weapon
+# Cull credits per camo. One purchase unlocks the camo on every weapon
+# (server.js ownsItem), so each skin carries the whole-camo price.
+PRICE = {"Magic Energy": 2500, "Gewehr": 1500, "BoneCrusher": 1000}
 
 # Gewehr's pack: folder -> label (the color texture is ~-gcamo_<x>_col).
 GEWEHR = {"amethsyrt(afterlife)": "Amethyst", "bloodlust v2(dragon)": "Bloodlust",

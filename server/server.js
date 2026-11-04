@@ -24,7 +24,7 @@ eioParser.encodePayload = function (packets, supportsBinary, callback) {
 const HOST = process.env.CULLING_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.CULLING_PORT || '8000', 10);
 const BASE = `http://${HOST}:${PORT}`;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.CULLING_DATA_DIR || path.join(__dirname, 'data');
 const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 
 // Queue name -> offline map index understood by the game's StartOfflineMatch
@@ -74,14 +74,27 @@ function inventoryTypes() {
   }));
 }
 
-// TEST: calling cards owned regardless of purchases (does the card page
-// freeze only with ~700 locked cards?).
-const CARDS_OWNED_TEST = true;
+// Custom camos are a one-time purchase: owning a camo's skin on one weapon
+// owns that camo on every weapon. The camo is the part of the asset name after
+// "_XP_" (".../IceAxe_XP_Lava_Storm" -> "Lava_Storm").
+const camoKey = (i) => (i.source === 'xp-camos' ? String(i.asset).split('_XP_')[1] || null : null);
+
+function ownedCamos(p) {
+  const out = new Set();
+  for (const tid of p.owned || []) {
+    const key = camoKey(catalogByTid.get(tid) || {});
+    if (key) out.add(key);
+  }
+  return out;
+}
+
+function ownsItem(p, i, camos = ownedCamos(p)) {
+  return (p.owned || []).includes(i.tid) || camos.has(camoKey(i));
+}
 
 function ownedItems(p) {
-  const bought = new Set(p.owned || []);
-  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) &&
-      (!isCustom(i) || bought.has(i.tid) || (CARDS_OWNED_TEST && i.class === 'CullingCardDataAsset')))
+  const camos = ownedCamos(p);
+  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && (!isCustom(i) || ownsItem(p, i, camos)))
     .map((i) => ({ i: i.tid, q: 1 }));
 }
 
@@ -117,8 +130,12 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 let profiles = {};
 try { profiles = JSON.parse(fs.readFileSync(PROFILE_FILE, 'utf8')); } catch (e) { profiles = {}; }
 
+// Written to a temp file and renamed over the old one, so a crash mid-write
+// can't leave a truncated profiles.json (which would reset every profile).
 function saveProfiles() {
-  fs.writeFileSync(PROFILE_FILE, JSON.stringify(profiles, null, 2));
+  const tmp = PROFILE_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(profiles, null, 2));
+  fs.renameSync(tmp, PROFILE_FILE);
 }
 
 function getProfile(userID) {
@@ -263,12 +280,15 @@ app.post('/api/matchresult', (req, res) => {
   const body = bodyObject(req);
   const userID = lastUserID || normalizeUserID();
   const p = getProfile(userID);
+  // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
+  // Infinity/NaN credits or XP into profiles.json.
+  const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
   const r = {
     victory: body.victory === true || body.victory === 'true',
-    kills: Math.max(0, parseInt(body.kills, 10) || 0),
-    damage: Math.max(0, Number(body.damage) || 0),
-    timeAlive: Math.max(0, Number(body.timeAlive) || 0),
-    func: Math.max(0, parseInt(body.func, 10) || 0)
+    kills: bounded(parseInt(body.kills, 10), 200),
+    damage: bounded(Number(body.damage), 1e6),
+    timeAlive: bounded(Number(body.timeAlive), 4 * 3600),
+    func: bounded(parseInt(body.func, 10), 1e6)
   };
   const startXP = p.stats.xp;
   const earned = matchXP(r);
@@ -346,6 +366,14 @@ app.get('/health', (req, res) => res.json({ ok: true, users: socketsByUser.size 
 app.get('/api/ranked', (req, res) => {
   const p = getProfile(lastUserID || normalizeUserID());
   res.json(ranked.summary(p));
+});
+
+// Breadcrumbs from the menus (UiTrace.js): the last one before a UI freeze
+// says which step hung.
+app.post('/api/uitrace', (req, res) => {
+  const body = typeof req.body === 'string' ? req.body : JSON.stringify(bodyObject(req));
+  log('  ui-trace', body.slice(0, 300));
+  res.json({});
 });
 
 app.use((req, res) => {
@@ -519,7 +547,7 @@ io.on('connection', (socket) => {
       socket.emit('purchase-fail', { reason: 'ranked-reward' });
       return;
     }
-    if (item && isForSale(item) && !p.owned.includes(typeId)) {
+    if (item && isForSale(item) && !ownsItem(p, item)) {
       const price = Math.round(item.purchaseCost);
       if (p.cullCredits < price) {
         log('purchase refused', socket.userID, typeId, `${p.cullCredits} < ${price}`);

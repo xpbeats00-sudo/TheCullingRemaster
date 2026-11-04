@@ -120,7 +120,7 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 .play-tiled-menu-options-container ul li.play-ranked-bg:hover { background-image: url("../images/RankedPlay_sel.png") !important; }
 #ranked-menu-options li.ranked-teams-bg { display: none; }
 /* Player card: level, rank emblem, name. */
-#player-card .culling-card .card-rank-emblem { width: 2.6vw; height: 2.6vw; margin: -0.45vw 0.5vw 0 0;
+#player-card .culling-card .card-rank-emblem { width: 2.6vw; height: 2.6vw; margin: 0 0.6vw 0 0; align-self: center;
   flex: 0 0 auto; pointer-events: all; }
 #player-card .culling-card .left-column { width: 16%; }
 #player-card .culling-card .right-column { width: auto; flex: 1 1 auto; }
@@ -197,7 +197,11 @@ def rebrand_html(src_html):
         ('<img src="images/cullinglogo_sm.png" class="culling-logo"/>', '<img src="images/cullinglogo.png" class="culling-logo"/>'),
         # animated calling cards (make_calling_cards.py)
         ('<script src="js/Formatters.js"></script>',
-         '<script src="js/Formatters.js"></script>\n  <script src="js/AnimatedCards.js"></script>'),
+         '<script src="js/Formatters.js"></script>\n  <script src="js/AnimatedCards.js"></script>'
+         '\n  <script src="js/UiTrace.js"></script>'),   # menu-freeze breadcrumbs
+        ('<script src="js/FrontEnd.js"></script>',      # card art fallback (make_card_image_map.py)
+         '<script src="js/FrontEnd.js"></script>\n  <script src="js/CardImageMap.js"></script>'
+         '\n  <script src="js/CardImages.js"></script>'),
         ("The Culling's weapons and items.", "The Culling Remaster's weapons and items."),
         ("Learn the basics of The Culling", "Learn the basics of The Culling Remaster"),
     ]

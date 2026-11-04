@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Culling Remaster</title>
+  <link rel="stylesheet" href="splash.css">
+</head>
+<body>
+  <main id="splash" class="stage" aria-label="The Culling Remaster startup">
+    <canvas id="fx-back" aria-hidden="true"></canvas>
+
+    <div class="rays" aria-hidden="true"></div>
+
+    <div class="mask-wrap" aria-hidden="true">
+      <div class="mask-aura"></div>
+      <img class="mask" src="assets/mask.png" alt="">
+      <img class="mask mask-glow" src="assets/mask.png" alt="">
+    </div>
+
+    <div class="logo-wrap">
+      <div class="shockwave" aria-hidden="true"></div>
+      <img class="logo" src="assets/logo.png" alt="The Culling Remaster">
+      <img class="logo logo-glitch logo-glitch-r" src="assets/logo.png" alt="" aria-hidden="true">
+      <img class="logo logo-glitch logo-glitch-c" src="assets/logo.png" alt="" aria-hidden="true">
+      <div class="logo-shine" aria-hidden="true"></div>
+      <p class="tagline" aria-live="polite"></p>
+    </div>
+
+    <canvas id="fx-front" aria-hidden="true"></canvas>
+
+    <footer class="boot">
+      <div class="boot-row">
+        <span class="boot-status">Initializing</span>
+        <span class="boot-pct">0%</span>
+      </div>
+      <div class="boot-bar"><div class="boot-fill"></div></div>
+      <div class="boot-continue">Press any key to continue</div>
+    </footer>
+
+    <div class="frame" aria-hidden="true">
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+      <span class="frame-note left">v1.0.0</span>
+      <span class="frame-note right">xplab.shop</span>
+    </div>
+
+    <div class="flash" aria-hidden="true"></div>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="vignette" aria-hidden="true"></div>
+  </main>
+  <script src="splash.js"></script>
+</body>
+</html>
