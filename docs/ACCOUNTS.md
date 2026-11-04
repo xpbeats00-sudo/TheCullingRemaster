@@ -19,7 +19,7 @@ Errors are `{ "error": "<code>" }`. Account responses carry `Cache-Control: no-s
 
 Rules:
 
-- **Username**: trimmed, runs of spaces collapsed to one, 3-20 characters of `A-Z a-z 0-9 _ . - space`. Unique ignoring case; sign-in ignores case too. Returned as typed (after trimming).
+- **Username**: trimmed, runs of spaces collapsed to one, 2-20 characters of `A-Z a-z 0-9 _ . - space`. Unique ignoring case; sign-in ignores case too. Returned as typed (after trimming).
 - **Email**: trimmed, lowercased, at most 254 characters, `local@domain.tld`. Unique. Stored only: the server sends no email.
 - **Password**: 8-128 characters.
 - **claimUserID** (optional, `steam:` + 17 digits): the account takes over that existing profile only if the profile exists, no account owns it, and its last game login came from the same address as this sign-up. Otherwise the claim is ignored without an error and the account gets a fresh ID; `claimed` says which. A profile can be claimed once. With enforcement on, a profile's last-login address only changes through account logins, so in practice only profiles that played before enforcement can be claimed.

@@ -41,7 +41,7 @@ const STEAM_ID_BASE = 76561197960265728n;
 function normalizeUsername(raw) {
   if (typeof raw !== "string" || raw.length > 200) return null;
   const name = raw.trim().replace(/ {2,}/g, " ");
-  if (name.length < 3 || name.length > 20 || !USERNAME_RE.test(name)) return null;
+  if (name.length < 2 || name.length > 20 || !USERNAME_RE.test(name)) return null;
   return name;
 }
 

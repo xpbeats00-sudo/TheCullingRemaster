@@ -70,7 +70,7 @@ async function main() {
         assert.strictEqual(r.status, 400, JSON.stringify(patch));
         assert.deepStrictEqual(r.json, { error }, JSON.stringify(patch));
       };
-      for (const username of ["ab", "  ab  ", "a".repeat(21), "bad!name", "tab\tname", "émile", 12345, undefined, ""]) {
+      for (const username of ["a", "  a  ", "a".repeat(21), "bad!name", "tab\tname", "émile", 12345, undefined, ""]) {
         await bad({ username }, "invalid-username");
       }
       for (const email of ["nope", "a@b", "a@@b.com", "a b@c.com", "x".repeat(250) + "@a.com", "@example.com", 5, undefined]) {
@@ -79,8 +79,8 @@ async function main() {
       for (const password of ["short", "1234567", "x".repeat(129), 12345678, undefined]) {
         await bad({ password }, "weak-password");
       }
-      // Limits are inclusive: 3 and 20 characters, 8 and 128.
-      const edge = await register({ username: "abc", email: "edge@example.com", password: "x".repeat(128) }, "198.51.100.2");
+      // Limits are inclusive: 2 and 20 characters, 8 and 128.
+      const edge = await register({ username: "ab", email: "edge@example.com", password: "x".repeat(128) }, "198.51.100.2");
       assert.strictEqual(edge.status, 200);
       const edge2 = await register({ username: "a".repeat(20), email: "edge2@example.com", password: "12345678" }, "198.51.100.2");
       assert.strictEqual(edge2.status, 200);
