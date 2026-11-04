@@ -1,5 +1,6 @@
 """Custom weapon camos: Gewehr's BO2 pack, BoneCrusher's BO1 animated camos
-and ten "magic energy" camos made from scratch, on every camo-capable weapon.
+ten "magic energy" camos made from scratch and the eight Necro Mist colours
+(make_eye_skins.mist_camos), on every camo-capable weapon.
 
 How the game draws a camo (PM_Weapon_Master's base pass, disassembled):
     camo   = lerp(lerp(lerp(Color2, Color1, M.b), Color3, M.r), Color4, M.g)
@@ -54,10 +55,10 @@ SIZE = 1024
 GAIN = 2.0                      # 1 / the weapons' mean base-texture brightness in camo zones
 CAMO_SCALE = 3.0
 FIRST_ID = 800000               # + weapon * 100 + camo
-RARITY = {"Magic Energy": 5, "Gewehr": 4, "BoneCrusher": 3}
+RARITY = {"Magic Energy": 5, "Gewehr": 4, "BoneCrusher": 3, "Necro Mist": 5}
 # Cull credits per camo. One purchase unlocks the camo on every weapon
 # (server.js ownsItem), so each skin carries the whole-camo price.
-PRICE = {"Magic Energy": 2500, "Gewehr": 1500, "BoneCrusher": 1000}
+PRICE = {"Magic Energy": 2500, "Gewehr": 1500, "BoneCrusher": 1000, "Necro Mist": 2500}
 
 # Gewehr's pack: folder -> label (the color texture is ~-gcamo_<x>_col).
 GEWEHR = {"amethsyrt(afterlife)": "Amethyst", "bloodlust v2(dragon)": "Bloodlust",
@@ -363,7 +364,9 @@ def weapon_templates(paks_dir):
 
 
 def main(paks_dir, camos_dir=CAMOS_DIR):
-    camos = gather(camos_dir)
+    import make_eye_skins
+    # Appended after the other packs so their item IDs (camo index) don't move.
+    camos = gather(camos_dir) + make_eye_skins.mist_camos(paks_dir)
     weapons = weapon_templates(paks_dir)
     templates = find_in_paks(paks_dir, {TEXTURE_TEMPLATE} | {r for pair in weapons.values() for r in pair})
     weapons = {w: pair for w, pair in weapons.items() if b"digicamo_A_GP" in templates[pair[0]]}
