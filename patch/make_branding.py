@@ -154,6 +154,17 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
   line-height: 1;
   color: rgba(240, 240, 240, 1);
 }
+/* Play screen: five tiles (Solo, Ranked, Duo, Showdown, Custom) in the stock
+   19:25 shape, titles in the Remaster face; Showdown is shown but can't be
+   queued yet (make_showdown_tile.py art). */
+.play-tiled-menu-options-container ul li { width: 16vw; height: 21vw; }
+.play-tiled-menu-options-container ul:first-child li { margin-left: 0.6vw; margin-right: 0.6vw; }
+#play-menu .play-title h1 { font: 2.3vw Creepster; letter-spacing: 0.15vw; color: rgba(240, 240, 240, 1); }
+#play-menu li:focus .play-title h1, #play-menu li:hover .play-title h1 { color: rgba(255, 70, 60, 1); }
+#play-menu .play-showdown-bg { background-image: url("../images/ShowdownPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
+.play-tiled-menu-options-container ul li.play-showdown-bg:focus,
+.play-tiled-menu-options-container ul li.play-showdown-bg:hover { background-image: url("../images/ShowdownPlay_sel.png") !important; }
+#play-menu .play-showdown-bg { cursor: default; }
 """
 LOGO_SIZES = {"cullinglogo.png": (857, 290), "cullinglogo_sm.png": (343, 116)}
 XAVIANT = (5.5, 8.9)           # seconds of the Xaviant logo in LoadingScreen.mp4
@@ -209,6 +220,7 @@ def rebrand_html(src_html):
         assert old in html, old
         html = html.replace(old, new)
     html = add_ranked(html)
+    html = add_play_screen(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
 
@@ -257,6 +269,44 @@ def add_ranked(html):
     # The matchmaking lobby panel (MatchLobby.js) loads here too: after ClientWeb.js.
     return html.replace(tag, tag + '\n  <script src="js/RankedUI.js"></script>'
                         '\n  <script src="js/MatchLobby.js"></script>')
+
+
+SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showdown_play">
+            <div class="tiledhighlighttopcontainer">
+              <div class="tiledhighlighttop"></div>
+            </div>
+            <div class="tiled-menu-rollover">
+              <p>Coming soon: 1v1 to 4v4 rounds in the arena. Draw a loadout, fight before the gas closes in.</p>
+            </div>
+            <div class="play-title">
+              <h1>SHOWDOWN</h1>
+            </div>
+            <div class="tiledhighlightbottomcontainer">
+              <div class="tiledhighlightbottom"></div>
+            </div>
+          </li>
+"""
+PLAY_TEXT = {
+    "solo_play": "Free-for-all against bots. Vote for Jungle or Prison in the lobby.",
+    "duo_play": "Fight in pairs against bots. Vote for Jungle or Prison in the lobby.",
+}
+
+
+def add_play_screen(html):
+    """The Play screen: tile descriptions that say what each mode is, and a
+    SHOWDOWN tile (coming soon: no push screen, so it can't be queued) before
+    CUSTOM. Safe to run on a page that already has it."""
+    for tile_id, text in PLAY_TEXT.items():
+        start = html.index('id="%s"' % tile_id)
+        end = html.index("</li>", start)
+        block = html[start:end]
+        old = block[block.index("<p>"):block.index("</p>") + 4]
+        html = html[:start] + block.replace(old, "<p>%s</p>" % text) + html[end:]
+    if 'id="showdown_play"' in html:
+        return html
+    custom = '<li tabindex="0" data-push-screen="Custom" class="play-custom-bg"'
+    assert html.count(custom) == 1
+    return html.replace(custom, SHOWDOWN_TILE.lstrip() + "          " + custom)
 
 
 def make_intro(game_root):

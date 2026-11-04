@@ -31,7 +31,9 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 
 // Queue name -> offline map index understood by the game's StartOfflineMatch
 // (0 = Jungle / "The Island", 1 = Prison).
-const QUEUE_MAPS = { ffa: 0, coop2: 0, lightning: 0, ranked_ffa: 0 };
+// The two offline matches the game can start (DefaultGame.ini OfflineMap /
+// OfflineMap2): the lobby's map vote picks one.
+const MAPS = { jungle: 0, prison: 1 };
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
@@ -864,6 +866,7 @@ const lobbies = new MatchLobbies({
     gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
     countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '5000', 10),
     maxPlayers: 16,
+    maps: Object.keys(MAPS),
     note: 'Each player fights bots on their own PC'
   },
   describe: (m) => lobbyCard(m.id),
@@ -874,7 +877,7 @@ const lobbies = new MatchLobbies({
   },
   start: (lobby) => {
     log('lobby', lobby.id, lobby.queue, 'starting with', lobby.members.size, 'player(s)');
-    for (const m of lobby.members.values()) if (m.socket.connected) launchMatch(m.socket, lobby.queue);
+    for (const m of lobby.members.values()) if (m.socket.connected) launchMatch(m.socket, lobby.queue, lobby.map);
   }
 });
 
@@ -892,16 +895,27 @@ function lobbyCard(userID) {
   };
 }
 
+// The menu's queue names carry a mode and sometimes a map ("ffa_jungle",
+// "ffa_prison_coop2", "ranked_ffa"): one lobby per mode, the map as the
+// player's first vote.
+function lobbyQueue(raw) {
+  const q = queueName(raw);
+  const map = /prison/.test(q) ? 'prison' : /jungle/.test(q) ? 'jungle' : null;
+  const mode = q.startsWith('ranked') ? 'ranked_ffa' : /coop2/.test(q) ? 'coop2' : q.startsWith('lightning') ? 'lightning'
+    : /^(ffa|quick_play)/.test(q) ? 'ffa' : q;
+  return { mode, map };
+}
+
 function startLocalMatch(socket, queue) {
-  queue = queueName(queue);
+  const { mode, map } = lobbyQueue(queue);
   socket.emit('join-mm-ack');
-  lobbies.join(queue, { id: socket.userID, socket });
+  lobbies.join(mode, { id: socket.userID, socket }, map);
 }
 
 // The lobby's countdown ended: this player's match starts (against bots, on
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
-function launchMatch(socket, queue) {
-  const mapIndex = Object.prototype.hasOwnProperty.call(QUEUE_MAPS, queue) ? QUEUE_MAPS[queue] : 0;
+function launchMatch(socket, queue, map) {
+  const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   tickets.start(socket.userID, socketIp(socket));
   if (String(queue).startsWith('ranked')) {
     const p = getProfile(socket.userID || normalizeUserID());
@@ -1004,6 +1018,8 @@ io.on('connection', (socket) => {
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => { lobbies.leave(socket.userID); socket.emit('leave-mm-ack'); });
+  // Matchmaking lobby: this player's map vote (MatchLobby.js).
+  on('lobby-vote-map', (msg) => { lobbies.vote(socket.userID, msg && typeof msg.map === 'string' ? msg.map : null); });
   on('leave-group', () => socket.emit('left-group', 0));
 
   on('set-card', (msg) => {
