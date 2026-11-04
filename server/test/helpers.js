@@ -19,7 +19,8 @@ function startServer(port, env = {}) {
     // CULLING_REQUIRE_ACCOUNT=0: the game's /api/login without an account (the
     // tests that aren't about accounts); accounts.test.js turns it on.
     env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: "0",
-      CULLING_REQUIRE_ACCOUNT: "0" }, env.vars || {}),
+      CULLING_REQUIRE_ACCOUNT: "0",
+      CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100" }, env.vars || {}),
     stdio: "ignore"
   });
   const srv = {

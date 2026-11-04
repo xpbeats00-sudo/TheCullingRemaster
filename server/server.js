@@ -37,6 +37,7 @@ const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
 const { createMetrics, metricsAllowed } = require('./metrics');
 const acc = require('./accounts');
+const { MatchLobbies } = require('./matchlobby');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -775,6 +776,7 @@ function gauges() {
     profiles: Object.keys(profiles).length,
     sessionTokens: sessions.size,
     openMatchTickets: tickets.open.size,
+    matchLobbies: lobbies.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
     rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
       registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
@@ -854,8 +856,51 @@ function queueName(raw) {
   return typeof raw === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(raw) ? raw : 'ffa';
 }
 
+// Matchmaking: players searching the same playlist wait in one lobby and see
+// each other (matchlobby.js), then each starts the match. Gather and countdown
+// times are configurable (tests shorten them).
+const lobbies = new MatchLobbies({
+  options: {
+    gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
+    countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '5000', 10),
+    maxPlayers: 16,
+    note: 'Each player fights bots on their own PC'
+  },
+  describe: (m) => lobbyCard(m.id),
+  send: (m, payload) => {
+    if (!m.socket.connected) return;
+    m.socket.emit('remaster-lobby', payload);
+    m.socket.emit('players-in-queue', { count: payload.players.length });
+  },
+  start: (lobby) => {
+    log('lobby', lobby.id, lobby.queue, 'starting with', lobby.members.size, 'player(s)');
+    for (const m of lobby.members.values()) if (m.socket.connected) launchMatch(m.socket, lobby.queue);
+  }
+});
+
+// What other players see of someone in a lobby: no IDs, nothing private.
+function lobbyCard(userID) {
+  const p = peekProfile(userID);
+  const key = accounts.keyForUserID(userID);
+  const a = key ? accounts.get(key) : null;
+  const rating = p && p.ranked && Number.isFinite(p.ranked.rating) ? p.ranked.rating : null;
+  return {
+    name: a ? a.username : 'Player',
+    level: p && p.stats ? p.stats.level || 1 : 1,
+    cardID: p ? p.cardID || 0 : 0,
+    rank: rating === null ? null : ranked.tierFor(rating).name
+  };
+}
+
 function startLocalMatch(socket, queue) {
   queue = queueName(queue);
+  socket.emit('join-mm-ack');
+  lobbies.join(queue, { id: socket.userID, socket });
+}
+
+// The lobby's countdown ended: this player's match starts (against bots, on
+// their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
+function launchMatch(socket, queue) {
   const mapIndex = Object.prototype.hasOwnProperty.call(QUEUE_MAPS, queue) ? QUEUE_MAPS[queue] : 0;
   tickets.start(socket.userID, socketIp(socket));
   if (String(queue).startsWith('ranked')) {
@@ -865,20 +910,12 @@ function startLocalMatch(socket, queue) {
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
     saveProfiles();
   }
-  socket.emit('join-mm-ack');
-  socket.emit('players-in-queue', { count: 1 });
-  // One pending match per socket: a repeated join replaces it, a disconnect cancels it.
-  clearTimeout(socket.matchTimer);
-  socket.matchTimer = setTimeout(() => {
-    socket.matchTimer = null;
-    if (!socket.connected) return;
-    log('match-ready ->', socket.userID, 'offline map', mapIndex);
-    socket.emit('match-ready', {
-      gameServer: 'offline:' + mapIndex,
-      nonce: crypto.randomBytes(8).toString('hex'),
-      serverNonce: crypto.randomBytes(8).toString('hex')
-    });
-  }, 1500);
+  log('match-ready ->', socket.userID, 'offline map', mapIndex);
+  socket.emit('match-ready', {
+    gameServer: 'offline:' + mapIndex,
+    nonce: crypto.randomBytes(8).toString('hex'),
+    serverNonce: crypto.randomBytes(8).toString('hex')
+  });
 }
 
 // A short string from a client message, or `fallback`.
@@ -966,7 +1003,7 @@ io.on('connection', (socket) => {
   });
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
-  on('leave-mm', () => socket.emit('leave-mm-ack'));
+  on('leave-mm', () => { lobbies.leave(socket.userID); socket.emit('leave-mm-ack'); });
   on('leave-group', () => socket.emit('left-group', 0));
 
   on('set-card', (msg) => {
@@ -1086,8 +1123,10 @@ io.on('connection', (socket) => {
     const left = (socketsByIp.get(socket.ip) || 1) - 1;
     if (left > 0) socketsByIp.set(socket.ip, left); else socketsByIp.delete(socket.ip);
     clearTimeout(socket.loginTimer);
-    clearTimeout(socket.matchTimer);
-    if (socket.userID && socketsByUser.get(socket.userID) === socket) socketsByUser.delete(socket.userID);
+    if (socket.userID && socketsByUser.get(socket.userID) === socket) {
+      lobbies.leave(socket.userID);
+      socketsByUser.delete(socket.userID);
+    }
   });
 });
 

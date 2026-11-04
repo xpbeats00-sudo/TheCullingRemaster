@@ -1403,6 +1403,7 @@ function BindClientwebEvents(deferred) {
       ShowError(humanReadableError);
   });
   socketConnection.on("match-ready", function (msg) {
+      if (window.RemasterLobby) window.RemasterLobby.hide();
       // Local server: "offline:<map>" means play a local match against bots.
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("offline:") == 0) {
           var offlineMap = parseInt(msg.gameServer.substring(8), 10) || 0;
@@ -1727,6 +1728,10 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("players-in-queue", function (msg) {
     OnPlayersInQueueUpdate(msg);
+  });
+  // Remaster: who is in the matchmaking lobby (MatchLobby.js).
+  socketConnection.on("remaster-lobby", function (msg) {
+    if (window.RemasterLobby && Matchmaking.IsMatchmaking) window.RemasterLobby.show(msg);
   });
   socketConnection.on("notify-left-queue", function () {
     Matchmaking.SetMatchmaking(false);
