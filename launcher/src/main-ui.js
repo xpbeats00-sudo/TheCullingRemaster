@@ -8,6 +8,9 @@
   let state = null;
   let pings = {};
   let syncing = false;
+  let pausing = false;          // Pause pressed, downloads stopping
+  let repairing = false;        // the running sync rehashes every file
+  let syncBase = 0;             // bytes already on disk when this sync started
 
   // ---------------------------------------------------------------- background
   const back = $("#bg-back").getContext("2d");
@@ -108,8 +111,19 @@
     const box = $("#status-game");
     box.className = "status-game";
     let title, sub = "Version " + (state.installed || "-");
-    if (syncing) { title = "Syncing"; box.classList.add("busy"); }
-    else if (!state.game.ok && state.game.installable) {
+    const resume = resumeInfo();
+    if (syncing) { title = pausing ? "Pausing" : "Syncing"; box.classList.add("busy"); }
+    else if (!state.online && state.offlineStaged > 0) {
+      title = "Download paused";
+      sub = `${bytes(state.offlineStaged)} kept · reconnect to resume`;
+      box.classList.add("warn");
+    }
+    else if (resume) {
+      title = "Download paused";
+      sub = `${Math.floor(resume.have / resume.total * 100)}% done, ${bytes(resume.total - resume.have)} left`;
+      box.classList.add("warn");
+    }
+    else if (notInstalled()) {
       title = state.online ? "Ready to install" : "Not installed";
       sub = !state.online ? "Can't reach xplab.shop" : state.pending ? bytes(state.pending.bytes) + " download" : "Checking";
       box.classList.add("warn");
@@ -122,12 +136,29 @@
     $("#status-sub").textContent = sub;
   }
 
+  // A paused or interrupted download: what is already on disk, of how much.
+  // A fresh install counts the finished files too; an update only the partial ones.
+  // No release fully installed yet: a fresh install, or one paused part-way
+  // (Victory.exe can already be there; only a finished commit counts).
+  function notInstalled() {
+    return !state.installed && (state.game.ok || state.game.installable);
+  }
+
+  function resumeInfo() {
+    const p = state.pending;
+    if (syncing || !p || !p.files) return null;
+    const fresh = notInstalled();
+    const have = (fresh ? p.releaseBytes - p.bytes : 0) + p.partial;
+    if (have <= 0) return null;
+    return { have, total: fresh ? p.releaseBytes : p.bytes };
+  }
+
   function renderSync() {
     const path = state.settings.gamePath || "Not set";
     $("#game-path").textContent = path;
     $("#settings-path").textContent = path;
     const hint = $("#game-check");
-    const fresh = !state.game.ok && state.game.installable;
+    const fresh = notInstalled();
     if (fresh) {
       hint.textContent = state.pending
         ? `Not installed yet: Install downloads ${bytes(state.pending.bytes)} here` + (state.freeBytes != null ? ` (${bytes(state.freeBytes)} free).` : ".")
@@ -140,14 +171,39 @@
     $("#sync-installed").textContent = state.installed || "Not installed";
     $("#sync-release").textContent = state.release || (state.online ? "-" : "Offline");
     $("#sync-pending").textContent = !state.pending ? "-" : state.pending.files ? `${state.pending.files} file(s), ${bytes(state.pending.bytes)}` : "Nothing";
-    $("#run-sync").disabled = syncing || !(state.game.ok || (fresh && state.online));
-    $("#run-sync").textContent = fresh ? "Install" : "Verify & Sync";
+    const resume = resumeInfo();
+    if (resume && fresh) hint.textContent = `Paused: Resume continues where it stopped (${bytes(resume.total - resume.have)} left, ${bytes(state.freeBytes || 0)} free).`;
+    const btn = $("#run-sync");
+    if (syncing) {
+      btn.disabled = pausing;
+      btn.textContent = pausing ? "Pausing..." : "Pause";
+    } else {
+      btn.disabled = !(state.game.ok || (fresh && state.online));
+      btn.textContent = resume ? "Resume" : fresh ? "Install" : "Verify & Sync";
+    }
+    // A paused download keeps its bar, at the point it stopped.
+    if (!syncing) {
+      $("#sync-progress").hidden = !resume;
+      if (resume) {
+        const pct = Math.floor(resume.have / resume.total * 100);
+        $("#sync-progress-fill").style.width = pct + "%";
+        $("#sync-progress-pct").textContent = pct + "%";
+        $("#sync-progress-label").textContent = `Paused: ${bytes(resume.have)} of ${bytes(resume.total)} downloaded`;
+      }
+    }
     $("#update-launcher").textContent = state.build ? state.build.label : "v" + state.appVersion;
     $("#update-patch").textContent = state.release ? `${state.installed || "none"} installed, ${state.release} available` : "-";
     $("#update-server").textContent = new URL(state.settings.manifestUrl).host;
     $("#update-note").textContent = state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
     $("#opt-intro").checked = state.settings.playIntro;
     $("#opt-close").checked = state.settings.closeOnLaunch;
+    $("#opt-parallel").value = String(state.settings.parallel);
+    $("#opt-speed").value = String(state.settings.maxMBps);
+    const rb = $("#rollback");
+    rb.hidden = !state.previous;
+    rb.textContent = state.previous ? `Restore previous version (${state.previous})` : "Restore previous version";
+    rb.disabled = syncing;
+    $("#repair-sync").disabled = syncing || !state.game.ok || !state.online;
     $$("[data-link]").forEach((b) => { b.hidden = !state.settings.links[b.dataset.link]; });
   }
 
@@ -156,9 +212,10 @@
     btn.classList.remove("working", "secondary");
     btn.disabled = false;
     let label = "Play";
-    if (syncing) { label = "Syncing"; btn.classList.add("working"); btn.disabled = true; }
-    else if (!state.game.ok && state.game.installable && state.online) { label = "Install"; btn.classList.add("working"); }
-    else if (!state.game.ok && state.game.installable) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
+    if (syncing) { label = pausing ? "Pausing" : "Pause"; btn.classList.add("working"); btn.disabled = pausing; }
+    else if (resumeInfo() && state.online) { label = "Resume"; btn.classList.add("working"); }
+    else if (notInstalled() && state.online) { label = "Install"; btn.classList.add("working"); }
+    else if (notInstalled()) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
     else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
     else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
     else if (nameNeeded()) { label = "Set your name"; btn.classList.add("secondary"); }
@@ -238,20 +295,36 @@
     render();
   }
 
-  async function runSync() {
-    if (syncing) return;
+  async function pauseSync() {
+    if (!syncing || pausing) return;
+    pausing = true;
+    render();
+    try { await api.pauseSync(); } catch { pausing = false; render(); }
+  }
+
+  async function runSync(opts) {
+    if (syncing) return pauseSync();
+    repairing = !!(opts && opts.repair);
+    // Progress continues from what is already on disk (a resumed install).
+    const p = state.pending;
+    syncBase = p && notInstalled() ? p.releaseBytes - p.bytes : 0;
+    rate.t = 0; rate.bps = 0;
     syncing = true;
     selectTab("sync");
     $("#sync-progress").hidden = false;
     render();
     try {
-      const r = await call(api.sync);
+      const r = await call(api.sync, { repair: repairing });
       state = r;
-      toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` : "Everything is up to date.", "info");
+      if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
+      else if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` : "Every game file checked out: nothing to repair.", "info");
+      else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` : "Everything is up to date.", "info");
     } catch (e) {
       /* toast already shown */
     } finally {
       syncing = false;
+      pausing = false;
+      repairing = false;
       $("#sync-progress").hidden = true;
       state = await api.state();
       render();
@@ -275,15 +348,23 @@
 
   function onSyncProgress(p) {
     let frac, label;
-    if (p.phase === "verify") { frac = p.done / p.total; label = `Verifying ${p.done}/${p.total}`; rate.t = 0; rate.bps = 0; }
-    else { frac = p.totalBytes ? p.doneBytes / p.totalBytes : 1; label = `Downloading ${p.file.split("/").pop()} (${bytes(p.doneBytes)} / ${bytes(p.totalBytes)})` + speedText(p.doneBytes, p.totalBytes); }
+    if (p.phase === "verify") { frac = p.done / p.total; label = `${repairing ? "Repairing: checking" : "Checking"} ${p.done.toLocaleString()} / ${p.total.toLocaleString()} files`; rate.t = 0; rate.bps = 0; }
+    else if (p.phase === "install") { frac = p.total ? p.done / p.total : 1; label = p.done < p.total ? `Installing ${p.total.toLocaleString()} files` : "Finalizing"; }
+    else {
+      const done = syncBase + p.doneBytes, total = syncBase + p.totalBytes;
+      frac = total ? done / total : 1;
+      const what = p.active > 1 ? `${p.active} files` : p.file.split("/").pop();
+      const files = p.filesTotal ? ` · ${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files` : "";
+      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + files + speedText(p.doneBytes, p.totalBytes);
+    }
     $("#sync-progress-fill").style.width = Math.round(frac * 100) + "%";
     $("#sync-progress-pct").textContent = Math.round(frac * 100) + "%";
     $("#sync-progress-label").textContent = label;
   }
 
   async function play() {
-    if (!state.game.ok && state.game.installable) return runSync();
+    if (syncing) return pauseSync();
+    if (notInstalled()) return runSync();
     if (!state.game.ok) { selectTab("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();
     // The name comes first: an unsaved edit is saved, a missing name asked for.
@@ -329,11 +410,25 @@
     $("#region-select").addEventListener("change", (e) => chooseServer(e.target.value));
     $("#choose-folder").addEventListener("click", chooseFolder);
     $("#settings-folder").addEventListener("click", chooseFolder);
-    $("#run-sync").addEventListener("click", runSync);
+    $("#run-sync").addEventListener("click", () => runSync());
     $("#check-updates").addEventListener("click", checkUpdates);
     $("#play").addEventListener("click", play);
     $("#opt-intro").addEventListener("change", async (e) => { state = await call(api.setSetting, "playIntro", e.target.checked); });
     $("#opt-close").addEventListener("change", async (e) => { state = await call(api.setSetting, "closeOnLaunch", e.target.checked); });
+    $("#opt-parallel").addEventListener("change", async (e) => { state = await call(api.setSetting, "parallel", Number(e.target.value)); render(); });
+    $("#opt-speed").addEventListener("change", async (e) => { state = await call(api.setSetting, "maxMBps", Number(e.target.value)); render(); });
+    $("#repair-sync").addEventListener("click", () => runSync({ repair: true }));
+    $("#copy-diagnostics").addEventListener("click", async () => {
+      try { await call(api.copyDiagnostics); toast("Diagnostics copied: paste them into your message to support.", "info"); } catch { /* toast shown */ }
+    });
+    $("#rollback").addEventListener("click", async () => {
+      if (!confirm(`Restore version ${state.previous}? The current version's files are replaced by the ones kept from before the last update.`)) return;
+      try {
+        state = await call(api.rollback);
+        toast(`Version ${state.restored} restored.`, "info");
+      } catch { state = await api.state(); }
+      render();
+    });
     $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     $$("[data-link]").forEach((b) => b.addEventListener("click", () => call(api.openLink, b.dataset.link)));
     api.onSyncProgress(onSyncProgress);
@@ -341,6 +436,8 @@
 
   async function start() {
     api = window.launcher;
+    // Without the intro, the start-up checks finish after this page shows.
+    if (api.onStateChanged) api.onStateChanged(async () => { if (!syncing) { state = await api.state(); render(); } });
     state = await api.state();
     wire();
     render();

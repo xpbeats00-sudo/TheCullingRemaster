@@ -16,8 +16,13 @@ const DEFAULTS = {
   closeOnLaunch: false,
   // The in-game name chosen before PLAY (lib/playername.js writes it into the game).
   playerName: "",
-  playIntro: true
+  playIntro: true,
+  // Downloads at once (16 measured best against the VPS) and a speed limit in
+  // MB/s (0: none), so a download doesn't have to take the whole connection.
+  parallel: 16,
+  maxMBps: 0
 };
+const CHOICES = { parallel: [2, 4, 8, 16], maxMBps: [0, 1, 2, 4, 8, 16] };
 
 function load(file) {
   let saved = {};
@@ -32,6 +37,7 @@ function sanitize(c) {
     const v = c[k];
     if (Array.isArray(def)) out[k] = Array.isArray(v) && v.every(validServer) ? v : def;
     else if (k === "links") out[k] = validLinks(v) ? v : def;
+    else if (CHOICES[k]) out[k] = CHOICES[k].includes(v) ? v : def;
     else out[k] = typeof v === typeof def ? v : def;
   }
   return out;
@@ -56,4 +62,4 @@ function save(file, c) {
   return clean;
 }
 
-module.exports = { load, save, sanitize, DEFAULTS };
+module.exports = { load, save, sanitize, DEFAULTS, CHOICES };

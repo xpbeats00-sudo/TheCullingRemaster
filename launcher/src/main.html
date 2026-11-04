@@ -80,6 +80,7 @@
           <div class="bar"><div class="bar-fill" id="sync-progress-fill"></div></div>
         </div>
         <div class="actions">
+          <button class="ghost" id="repair-sync" title="Rehash every game file and download only the bad or missing ones">Verify &amp; Repair</button>
           <button class="primary" id="run-sync">Verify &amp; Sync</button>
         </div>
       </section>
@@ -110,6 +111,23 @@
         </div>
         <label class="toggle"><input type="checkbox" id="opt-intro"><span class="switch"></span>Play the intro on start</label>
         <label class="toggle"><input type="checkbox" id="opt-close"><span class="switch"></span>Close the launcher when the game starts</label>
+        <div class="field-row">
+          <label for="opt-parallel">Downloads at once</label>
+          <select id="opt-parallel">
+            <option value="16">16 (fastest)</option><option value="8">8</option><option value="4">4</option><option value="2">2</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="opt-speed">Download speed limit</label>
+          <select id="opt-speed">
+            <option value="0">No limit</option><option value="16">16 MB/s</option><option value="8">8 MB/s</option>
+            <option value="4">4 MB/s</option><option value="2">2 MB/s</option><option value="1">1 MB/s</option>
+          </select>
+        </div>
+        <div class="actions settings-actions">
+          <button class="ghost" id="copy-diagnostics">Copy diagnostics</button>
+          <button class="ghost" id="rollback" hidden>Restore previous version</button>
+        </div>
       </section>
     </main>
 
