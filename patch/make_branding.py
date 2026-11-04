@@ -231,6 +231,7 @@ def rebrand_html(src_html):
     html = add_ranked(html)
     html = add_play_screen(html)
     html = add_airdrop_unlocks(html)
+    html = hide_survival(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
 
@@ -298,7 +299,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
 """
 PLAY_TEXT = {
     "solo_play": "Free-for-all. Vote for Jungle or Prison in the lobby.",
-    "duo_play": "Fight in pairs. Vote for Jungle or Prison in the lobby.",
+    "duo_play": "Fight in pairs with a teammate. Vote for Jungle or Prison in the lobby.",
     "showdown_play": "1v1 in the centre arena. Fight before the gas closes in.",
 }
 # Queues the SHOWDOWN tile (the stock Play screen only queues Solo and Duo).
@@ -346,6 +347,27 @@ def add_airdrop_unlocks(html):
         assert html.count(old) == 1, old
         html = html.replace(old, new)
     return html
+
+
+SURVIVAL_ITEM = """          <li tabindex="0" rv-unless="Matchmaking.IsMatchmaking" data-push-screen="Training">
+            <div class="vertical-list-menu-item" >
+              SURVIVAL
+            </div>
+          </li>
+"""
+
+
+def hide_survival(html):
+    """The main menu's SURVIVAL item (the Training screen: Tutorial, Practice,
+    Survival) goes: Duo uses the Survival match slots and Showdown the
+    Practice one (make_duo.py, make_showdown.py). Safe to run again."""
+    if "<!-- SURVIVAL: Duo and Showdown use its match slots" in html:
+        return html
+    nl = "\r\n" if "\r\n" in html else "\n"
+    item = SURVIVAL_ITEM.replace("\n", nl)
+    assert html.count(item) == 1, "SURVIVAL menu item"
+    return html.replace(item, "          <!-- SURVIVAL: Duo and Showdown use its match slots (make_duo.py)" + nl
+                        + item + "          -->" + nl)
 
 
 def make_intro(game_root):

@@ -999,6 +999,9 @@ function startLocalMatch(socket, queue) {
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
 function launchMatch(socket, queue, map) {
   const showdown = queue === SHOWDOWN.queue;
+  // Duo: the pairs mode, you and a teammate (patch/make_duo.py); the menu
+  // starts it from "duo:<map>".
+  const duo = lobbyQueue(queue).mode === 'coop2';
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   tickets.start(socket.userID, socketIp(socket), { map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
   if (String(queue).startsWith('ranked')) {
@@ -1008,9 +1011,9 @@ function launchMatch(socket, queue, map) {
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
     saveProfiles();
   }
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : 'offline map ' + mapIndex);
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : 'offline:' + mapIndex,
+    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (duo ? 'duo:' : 'offline:') + mapIndex,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
