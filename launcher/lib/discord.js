@@ -14,7 +14,7 @@ const net = require("net");
 const crypto = require("crypto");
 
 // Application ID from the Discord Developer Portal (public, not a secret).
-const APP_ID = "";
+const APP_ID = "1567661293802889430";
 const ASSET = "mask";
 const PIPE = "\\\\.\\pipe\\discord-ipc-";
 
