@@ -36,6 +36,7 @@ from PIL import Image, ImageDraw, ImageFilter
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from build_catalog import pak_entries, read_entry  # noqa: E402
+import make_showdown  # noqa: E402
 
 BRAND = os.path.join(HERE, "branding")
 BACKGROUND = os.path.join(BRAND, "LoadScreen_preview.png")      # make_branding.py's loading art
@@ -161,6 +162,15 @@ def write_config(paks_dir):
             break
     else:
         raise KeyError("DefaultScreen")
+    # Showdown: StartTraining("Practice") travels to TrainingMapAdvanced, so it
+    # becomes the arena match (make_showdown.py; the stock Practice map isn't
+    # reachable from the Remaster menu).
+    for k, line in enumerate(lines):
+        if line.startswith("TrainingMapAdvanced"):
+            lines[k] = 'TrainingMapAdvanced = "%s"%s' % (make_showdown.URL, line[len(line.rstrip("\r\n")):])
+            break
+    else:
+        raise KeyError("TrainingMapAdvanced")
     # Bot AI budgets (UNTESTED IN GAME: playtest before releasing). These
     # AIModule classes read their config from Game.ini and no asset stores the
     # values, so they apply. Stock: 6 sight traces per tick (Victory.exe),

@@ -38,6 +38,9 @@ const MAPS = { jungle: 0, prison: 1 };
 // has 24 player starts. Prison has 16, and whether more than 16 spawn there
 // hasn't been measured, so it is scored as 16 (never more than it has).
 const FIELD_BY_MAP = { jungle: 24, prison: 16 };
+// Showdown (patch/make_showdown.py): you against one bot in the Jungle centre
+// arena. No lobby or map vote; the menu starts it from "showdown:<format>".
+const SHOWDOWN = { queue: 'showdown', map: 'arena', format: '1v1', field: 2 };
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
@@ -956,14 +959,16 @@ function lobbyQueue(raw) {
 function startLocalMatch(socket, queue) {
   const { mode, map } = lobbyQueue(queue);
   socket.emit('join-mm-ack');
+  if (mode === SHOWDOWN.queue) return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map);
   lobbies.join(mode, { id: socket.userID, socket }, map);
 }
 
 // The lobby's countdown ended: this player's match starts (against bots, on
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
 function launchMatch(socket, queue, map) {
+  const showdown = queue === SHOWDOWN.queue;
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
-  tickets.start(socket.userID, socketIp(socket), { map: Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
+  tickets.start(socket.userID, socketIp(socket), { map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
   if (String(queue).startsWith('ranked')) {
     const p = getProfile(socket.userID || normalizeUserID());
     const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
@@ -971,9 +976,9 @@ function launchMatch(socket, queue, map) {
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
     saveProfiles();
   }
-  log('match-ready ->', socket.userID, 'offline map', mapIndex);
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : 'offline map ' + mapIndex);
   socket.emit('match-ready', {
-    gameServer: 'offline:' + mapIndex,
+    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : 'offline:' + mapIndex,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
@@ -982,6 +987,7 @@ function launchMatch(socket, queue, map) {
 // How many contestants a match had: the stock 16 unless the game reports a
 // higher cap (builds with patch_exe.py), then what the map places, within it.
 function matchField(map, cap) {
+  if (map === SHOWDOWN.map) return SHOWDOWN.field;
   const reported = parseInt(cap, 10);
   if (!Number.isInteger(reported) || reported <= ranked.CONFIG.field) return ranked.CONFIG.field;
   return Math.min(reported, ranked.CONFIG.maxField, FIELD_BY_MAP[map] || ranked.CONFIG.field);

@@ -1414,6 +1414,16 @@ function BindClientwebEvents(deferred) {
           engine.call("StartOfflineMatch", offlineMap);
           return;
       }
+      // Showdown (make_showdown.py): you against one bot in the Jungle arena. Its
+      // URL is DefaultGame.ini's TrainingMapAdvanced, reached by "Practice".
+      if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("showdown:") == 0) {
+          console.log("match-ready:: showdown " + msg.gameServer.substring(9));
+          Matchmaking.MatchmakingState = "JOINING";
+          Matchmaking.SetMatchmaking(false);
+          engine.call("PostSoundEvent", "Stop_MenuMusic");
+          engine.call("StartTraining", "Practice");
+          return;
+      }
 
 
       if (msg.hasOwnProperty("gameServer") &&
