@@ -6,21 +6,14 @@ Each mode's loot is set in its game-mode Blueprint (amounts) and in the shared i
 |---|---|---|---|
 | Solo, Ranked (Jungle, Prison) | `VictoryGameMode` | 12 green crates, 15 red barrels, 22 pylons, 5 toilet goodies, building spawns (engine defaults) | your equipped airdrop, called with FUNC |
 | Duo | `VictoryGameMode` (pairs) | same | same |
-| Showdown 1v1 | `VictoryGameMode_Lightning` (Remaster setup, `make_showdown.py`) | none (all amounts 0, lockers pre-opened) | the same kit for both sides at round time 0; no later drops |
+| Showdown 1v1 | `VictoryGameMode_Lightning` (Remaster setup, `make_showdown.py`) | none (all amounts 0, lockers pre-opened) | spawned in the inventory: Tomahawk, Tactical Body Armor (on), Muscle Man Milk; the mode's airdrops are off |
 | Custom | `VictoryGameMode_Custom` | the custom-match mods (`?mods=`) | as Solo |
 
 ## Changing Showdown's kit
 
-`patch/make_showdown.py`: `KIT` names an airdrop package from `patch/loot/loot_tables.json` "airdrops" (for example `Airdrop_Cyclops`, `Airdrop_Polecat`, `Airdrop_Survivalist`). Rebuild:
+`patch/make_showdown.py`: `MELEE` (bit 32) and `BOOST` (bit 4) name the item each free bit gives; armor is bit 8 (Tactical Body Armor, the Armorer perk's bit). Rebuild with `python patch/make_showdown.py <Paks dir>`; it rewrites PlayerPawn, the Showdown perk and mode, and `server/data/showdown.json` for the server and HUD. Deploy the server with the release so the HUD lists the right kit.
 
-```
-python patch/loot_tables.py <Paks dir>
-python patch/make_showdown.py <Paks dir>
-```
-
-`make_showdown.py` rewrites the Lightning mode's kit references, and `server/data/showdown.json` for the server and HUD. Deploy the server with the release so the HUD shows the right kit.
-
-The kit is fixed per release. Matches run on the player's PC from the shipped assets, so the server can't pick a different kit per round for both sides (the bot's kit comes from the mode's assets).
+Only three items can be given this way (the two free bits plus armor). Other bits belong to perks players can pick in normal matches.
 
 ## Not available
 

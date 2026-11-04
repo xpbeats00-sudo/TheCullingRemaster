@@ -7,12 +7,19 @@ build, so this assembles it from what the game already has:
   manager (MatchPhaseManager_BP) runs its own faster "Lightning" iris for it,
   it spawns no world loot, and it picks the PlayerStarts tagged
   SpawnsLightning. Its defaults get one bot (BotsToSpawn) and the bots' names.
-- Kit: the mode hands every contestant an airdrop kit at round time 0 (stock:
-  "Surprise Me", a random kit each). Both sides now get the same kit (KIT),
-  and the later drops (3, 8 and 10 minutes) are switched off. Body armor in a
-  kit puts itself on (BodyArmor/HardenedArmor bUseIfSpawnedWith); everything
-  else is picked and used by the player. server/data/showdown.json holds the
-  kit's contents for the server and the HUD's pre-round panel.
+- Kit: every contestant spawns with it in their inventory, nothing on the
+  ground. The game's own starting items: perks add to the player stat
+  SpawnWithWeapon, and PlayerPawn's GetSpawnWithWeaponClasses gives one item
+  per bit (1 Man Tracker, 2 Backpack, 4 Satchel, 8 Body Armor, 16 Alarm Gun,
+  32 a random Tier 1 melee weapon). No selectable perk uses bit 4 or 32 (only
+  the removed, disabled Perk_JumpStart had 32), so bit 4 becomes BOOST and
+  bit 32 always MELEE. A Showdown-only perk (a copy of Perk_JumpStart at a
+  new path, so it isn't in the asset registry or the perk menu) grants
+  32 + 8 + 4, and the mode forces it on everyone (OverridenPerks, in place of
+  Backpacker), bots included (bEnableBotPerks). Body armor a player spawns with puts itself on
+  (bUseIfSpawnedWith); the rest waits in the inventory. The mode's airdrops
+  are switched off. server/data/showdown.json lists the kit for the server
+  and the HUD's pre-round panel.
 - Spawns: Jungle_P's eight SpawnsLightning starts sit ~20,000 units out. Two
   move into the arena, on opposite sides facing the middle; the other six are
   retagged so they're never picked.
@@ -40,11 +47,20 @@ JUNGLE = "Victory/Content/Maps/Jungle/Jungle_P.umap"
 URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C"
 
 BOTS = 1
-# The kit both sides get each round: an airdrop package (patch/loot/
-# loot_tables.json "airdrops"). Viking: Tomahawk, Crafted Armor, Muscle Man Milk.
-KIT = "Airdrop_Viking"
-KIT_FILE = "AirDrop_Viking"             # its package (file names differ in case)
-STOCK_KIT = "AirDrop_zRandom"
+PAWN = "Victory/Content/Blueprints/Pawns/PlayerPawn.uasset"
+SOURCE_PERK = "Victory/Content/Perks/Removed/Perk_JumpStart.uasset"
+PERK = "Victory/Content/Perks/Showdown/Perk_Showdown.uasset"
+PERK_OBJECT = "Perk_JumpStart"          # the copy keeps its export's name
+# The kit both sides spawn with: (item class, its package, the bit that gives it).
+MELEE = ("WeapTomahawk_C", "/Game/Blueprints/Weapons/WeapTomahawk", 32)
+BOOST = ("MuscleManMilk_C", "/Game/Blueprints/Items/MuscleManMilk", 4)
+ARMOR = ("BodyArmor_C", "/Game/Blueprints/Items/BodyArmor", 8)        # stock bit
+KIT = [MELEE, ARMOR, BOOST]
+KIT_NAME = "Showdown kit"
+# What bits 4 and 32 give in the stock game (replaced in GetSpawnWithWeaponClasses).
+STOCK_BIT4 = ["Satchel_C"]
+STOCK_BIT32 = ["WeapTonfa_C", "WeapHammer_C", "WeapPitchfork_C", "WeapCampHatchet_C",
+               "WeapBrassKnuckles_C", "WeapMachete_C", "WeapTantoKnife_C"]
 LOOT = os.path.join(HERE, "loot", "loot_tables.json")
 SERVER_KIT = os.path.join(HERE, "..", "server", "data", "showdown.json")
 NEVER = 1000000                         # airdrop stage times past any round
@@ -87,6 +103,11 @@ def tag(up, name, ptype, value, extra=b""):
     return up.fname(name) + up.fname(ptype) + struct.pack("<ii", len(value), 0) + extra + b"\0" + value
 
 
+def bool_prop(up, name, v):
+    # A BoolProperty keeps its value in the tag (size 0).
+    return up.fname(name) + up.fname("BoolProperty") + struct.pack("<ii", 0, 0) + bytes([1 if v else 0]) + b"\0"
+
+
 def int_prop(up, name, v):
     return tag(up, name, "IntProperty", struct.pack("<i", v))
 
@@ -115,71 +136,121 @@ def has_prop(data, pkg, export, name):
 
 def game_mode(data):
     export = "Default__VictoryGameMode_Lightning_C"
-    for name in ("BotsToSpawn", "BotNames"):
+    for name in ("BotsToSpawn", "BotNames", "bEnableBotPerks"):
         assert not has_prop(data, None, export, name), "%s already set" % name
     up = UPackage(data)
-    add_props(up, export, [int_prop(up, "BotsToSpawn", BOTS), str_array_prop(up, "BotNames", BOT_NAMES)])
-    use_kit(up, export)
+    # bEnableBotPerks: bots get the mode's perks too, so the bot spawns with
+    # the same kit (without it the bot has no perks and no kit).
+    add_props(up, export, [int_prop(up, "BotsToSpawn", BOTS), str_array_prop(up, "BotNames", BOT_NAMES),
+                           bool_prop(up, "bEnableBotPerks", True)])
+    no_airdrops(up, export)
+    force_perk(up, export)
     out = up.save()
     got = {x[0]: x[6] for x in Package(out).props(export)}
-    assert got["BotsToSpawn"] == BOTS and got["SelectedAirDrop"] == KIT, got
+    assert got["BotsToSpawn"] == BOTS and got["bEnableBotPerks"] == 1, got
     return out
 
 
-def use_kit(up, export):
-    """Every reference to the stock random kit becomes KIT (SelectedAirDrop,
-    EventAirDrops, mOverridenAirdrops), and airdrop stages after the first are
-    pushed past the end of any round."""
-    stock = None
+def import_index(up, name):
     for i, raw in enumerate(up.imports):
-        if up.name_str(*struct.unpack_from("<ii", raw, 20)) == STOCK_KIT:
-            stock = -(i + 1)
-    assert stock, "no %s import" % STOCK_KIT
-    package = up.add_import("/Script/CoreUObject", "Package", 0, "/Game/AirDropPackages/" + KIT_FILE)
-    kit = up.add_import("/Script/Victory", "AirDropPackageDataAsset", package, KIT)
-    i = up.find_export(export) - 1
-    data = bytearray(up.exports[i]["data"])
-    pkg_props = {}
-    # Offsets of the three properties' values (uasset.Package reads the saved
-    # file, so measure against a copy saved with the new imports).
+        if up.name_str(*struct.unpack_from("<ii", raw, 20)) == name:
+            return -(i + 1)
+    raise KeyError(name)
+
+
+def value_offsets(up, export):
+    """Each property's value offset and size within the export's data."""
     tmp = Package(up.save())
     e = tmp.export(export)
-    for x in tmp.props(export):
-        pkg_props[x[0]] = (x[3] - e["offset"], x[4])
-    swapped = 0
-    for name in ("SelectedAirDrop", "EventAirDrops", "mOverridenAirdrops"):
-        off, size = pkg_props[name]
-        start = off + (4 if name != "SelectedAirDrop" else 0)
-        for p in range(start, off + size, 4):
-            if struct.unpack_from("<i", data, p)[0] == stock:
-                struct.pack_into("<i", data, p, kit)
-                swapped += 1
-    assert swapped >= 3, swapped
-    # AirDropStages: each stage's MinRoundTime (an IntProperty tag inside the
-    # struct array); the first stays at 0.
-    off, size = pkg_props["AirDropStages"]
+    return {x[0]: (x[3] - e["offset"], x[4]) for x in tmp.props(export)}
+
+
+def force_perk(up, export):
+    """OverridenPerks: the Showdown perk in place of Backpacker (a backpack the
+    kit doesn't need; its bit 2 would add one)."""
+    backpacker = import_index(up, "Perk_Backpacker")
+    package = up.add_import("/Script/CoreUObject", "Package", 0, "/Game/" + PERK[len("Victory/Content/"):-len(".uasset")])
+    perk = up.add_import("/Script/Victory", "PerkDataAsset", package, PERK_OBJECT)
+    i = up.find_export(export) - 1
+    data = bytearray(up.exports[i]["data"])
+    off, size = value_offsets(up, export)["OverridenPerks"]
+    hits = [p for p in range(off + 4, off + size, 4) if struct.unpack_from("<i", data, p)[0] == backpacker]
+    assert len(hits) == 1, hits
+    struct.pack_into("<i", data, hits[0], perk)
+    up.exports[i]["data"] = bytes(data)
+
+
+def no_airdrops(up, export):
+    """Every airdrop stage (each MinRoundTime, an IntProperty tag inside the
+    AirDropStages struct array) after the end of any round: no kit crates."""
+    i = up.find_export(export) - 1
+    data = bytearray(up.exports[i]["data"])
+    off, size = value_offsets(up, export)["AirDropStages"]
     min_time, int_prop_name = up.name_index("MinRoundTime", add=False), up.name_index("IntProperty", add=False)
-    times = []
-    for p in range(off, off + size - 25):
-        if struct.unpack_from("<iiii", data, p) == (min_time, 0, int_prop_name, 0):
-            times.append(p + 25)       # name 8, type 8, size 4, index 4, guid flag 1
+    times = [p + 25 for p in range(off, off + size - 25)        # name 8, type 8, size 4, index 4, guid 1
+             if struct.unpack_from("<iiii", data, p) == (min_time, 0, int_prop_name, 0)]
     assert len(times) == 4, times
-    for p in times[1:]:
+    for p in times:
         struct.pack_into("<i", data, p, NEVER)
     up.exports[i]["data"] = bytes(data)
+
+
+def pawn(data):
+    """GetSpawnWithWeaponClasses: bit 4 gives BOOST, bit 32 always MELEE."""
+    up = UPackage(data)
+    swaps = {}
+    for item, package, _bit in (MELEE, BOOST):
+        pkg = up.add_import("/Script/CoreUObject", "Package", 0, package)
+        cls = up.add_import("/Script/Engine", "BlueprintGeneratedClass", pkg, item)
+        for stock in (STOCK_BIT32 if item == MELEE[0] else STOCK_BIT4):
+            swaps[import_index(up, stock)] = cls
+    i = up.find_export("GetSpawnWithWeaponClasses") - 1
+    body = bytearray(up.exports[i]["data"])
+    count = {}
+    for p in range(len(body) - 4):
+        v = struct.unpack_from("<i", body, p)[0]
+        # EX_ObjectConst (0x20) then the class reference
+        if body[p - 1] == 0x20 and v in swaps:
+            struct.pack_into("<i", body, p, swaps[v])
+            count[v] = count.get(v, 0) + 1
+    assert sorted(count) == sorted(swaps) and set(count.values()) == {1}, count
+    up.exports[i]["data"] = bytes(body)
+    return up.save()
+
+
+def perk(data):
+    """The Showdown perk: Perk_JumpStart's asset, enabled, granting the kit's
+    bits."""
+    pkg = Package(data)
+    out = bytearray(data)
+    bits = float(sum(b for _i, _p, b in KIT))
+    found = 0
+    for x in pkg.props(PERK_OBJECT):
+        if x[0] == "bEnabled":
+            # BoolProperty keeps its value in the tag, the byte before the GUID flag.
+            assert out[x[3] - 2] == 0
+            out[x[3] - 2] = 1
+            found += 1
+    # PerkBonuses[0].StatValue: its FloatProperty tag, then the value.
+    tag = struct.pack("<iiii", pkg.names.index("StatValue"), 0, pkg.names.index("FloatProperty"), 0)
+    e = pkg.export(PERK_OBJECT)
+    stats = [p + 25 for p in range(e["offset"], e["offset"] + e["size"] - 25) if data[p:p + 16] == tag]
+    assert len(stats) == 1 and struct.unpack_from("<f", data, stats[0])[0] == 32.0, stats
+    struct.pack_into("<f", out, stats[0], bits)
+    assert found == 1
+    return bytes(out)
 
 
 def server_kit():
     """The kit's contents for the server and the HUD, from the loot tables."""
     loot = json.load(open(LOOT))
-    kit = loot["airdrops"][KIT]
     items = []
-    for item in kit["items"]:
+    for item, _package, _bit in KIT:
         info = loot["items"][item]
         items.append({"id": item, "name": info["name"], "category": info["category"], "tier": info["tier"],
                       "description": info["description"], "icon": item[:-2] if item.endswith("_C") else item,
-                      "autoEquip": info["category"] == "armor"})
-    out = {"source": "patch/make_showdown.py", "kit": {"id": KIT, "name": kit["name"], "items": items}}
+                      "autoEquip": info["category"] == "armor", "inInventory": True})
+    out = {"source": "patch/make_showdown.py", "kit": {"id": "showdown", "name": KIT_NAME, "items": items}}
     with open(SERVER_KIT, "w", newline="\n") as f:
         json.dump(out, f, indent=1)
         f.write("\n")
@@ -218,8 +289,9 @@ def jungle(data):
 
 
 def main(paks_dir):
-    originals = find_in_paks(paks_dir, {GAME_MODE, JUNGLE})
-    for rel, fix in ((GAME_MODE, game_mode), (JUNGLE, jungle)):
+    originals = find_in_paks(paks_dir, {GAME_MODE, JUNGLE, PAWN, SOURCE_PERK})
+    originals[PERK] = originals.pop(SOURCE_PERK)
+    for rel, fix in ((GAME_MODE, game_mode), (JUNGLE, jungle), (PAWN, pawn), (PERK, perk)):
         data = fix(originals[rel])
         out = os.path.join(SRC, rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)

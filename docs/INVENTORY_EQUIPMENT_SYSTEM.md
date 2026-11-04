@@ -8,6 +8,18 @@ The Remaster uses the game's own inventory and equipment; nothing is layered on 
 - Fists when a slot is empty.
 - The HUD learns about changes from the engine (`SetItemForSlot`, `RemoveItemFromSlot`, `SetWeaponSlotEnabled`, `SelectWeaponSlot`).
 
+## Starting items (Showdown)
+
+Showdown players spawn with the whole kit in their inventory; nothing is on the ground. This uses the game's own mechanism:
+
+- Perks add to the player stat `SpawnWithWeapon`. `PlayerPawn.GetSpawnWithWeaponClasses` gives one item per bit: 1 Man Tracker, 2 Backpack, 4 Satchel, 8 Body Armor, 16 Alarm Gun, 32 a random Tier 1 melee weapon.
+- No selectable perk uses bit 4 or 32. Only the removed, disabled `Perk_JumpStart` had 32. `make_showdown.py` makes bit 4 give Muscle Man Milk and bit 32 always give a Tomahawk.
+- A Showdown-only perk (`Perks/Showdown/Perk_Showdown`, a copy of `Perk_JumpStart` not in the asset registry, so not in the perk menu) grants 32 + 8 + 4. The Showdown mode forces it on everyone, bots included (`OverridenPerks`, `bEnableBotPerks`).
+- The kit: Tomahawk, Tactical Body Armor (on at spawn), Muscle Man Milk (slot 1, use it before fighting).
+- Normal matches are unaffected: their perks never set bits 4 or 32.
+
+Verified in game through the launcher (2026-11-04): the player spawned with Muscle Man Milk in slot 1, the Tomahawk in slot 2 (in hand) and armor on. The bot's kit is not visually confirmed yet: in one run it dealt a bleed wound and killed the player quickly, in another it didn't engage.
+
 ## What equips itself
 
 Items with the game's `bUseIfSpawnedWith = True` are used when the player is given them (an airdrop kit), not picked up:

@@ -99,4 +99,42 @@ for i in KIT["items"]:
 assert any(i["category"] == "armor" for i in KIT["items"]), "the kit should show the armor rule"
 ok("Showdown kit %s: only armor auto-equips (%s)" % (KIT["name"], ", ".join("%s%s" % (i["name"], " [auto]" if i["autoEquip"] else "") for i in KIT["items"])))
 
+# The built Showdown assets give exactly the kit (patch/src, from make_showdown.py).
+sys.path.insert(0, HERE)
+import struct  # noqa: E402
+from uasset import Package  # noqa: E402
+from uasset_tree import Tree, clean  # noqa: E402
+SRC = os.path.join(HERE, "src", "Victory", "Content")
+
+
+def props(rel, export):
+    pkg = Package(open(os.path.join(SRC, rel), "rb").read())
+    e = pkg.export(export)
+    return pkg, Tree(pkg).props(e["offset"], e["offset"] + e["size"])
+
+
+_, mode = props("Blueprints/GameMode/VictoryGameMode_Lightning.uasset", "Default__VictoryGameMode_Lightning_C")
+assert all(clean_s["MinRoundTime"] >= 1000000 for clean_s in ({clean(k): v for k, v in x.items()} for x in mode["AirDropStages"]))
+_, perk = props("Perks/Showdown/Perk_Showdown.uasset", "Perk_JumpStart")
+bits = int(sum({clean(k): v for k, v in b.items()}["StatValue"] for b in perk["PerkBonuses"]))
+assert perk["bEnabled"] and "Perk_JumpStart" in mode["OverridenPerks"]
+assert "Perk_Backpacker" not in mode["OverridenPerks"], "Backpacker would add a backpack (bit 2)"
+pawn, _ = props("Blueprints/Pawns/PlayerPawn.uasset", "Default__PlayerPawn_C")
+e = pawn.export("GetSpawnWithWeaponClasses")
+body = pawn.data[e["offset"]:e["offset"] + e["size"]]
+# Bit tests (EX_IntConst) followed by the class each adds (EX_ObjectConst).
+given, bit = [], None
+for o in range(1, len(body) - 4):
+    v = struct.unpack_from("<i", body, o)[0]
+    # The bits are tested in rising order; the switch inside bit 32's branch
+    # (cases 0-6) isn't a bit.
+    if body[o - 1] == 0x1D and v in (1, 2, 4, 8, 16, 32) and (bit is None or v > bit):
+        bit = v
+    elif body[o - 1] == 0x20 and -len(pawn.imports) <= v <= -1:
+        cls = pawn.imports[-v - 1]
+        if cls.endswith("_C") and not cls.startswith("Default__") and bit and bits & bit:
+            given.append(cls)
+assert set(given) == {i["id"] for i in KIT["items"]}, (bits, given)
+ok("the Showdown perk (bits %d) spawns everyone with exactly the kit, no airdrops: %s" % (bits, ", ".join(sorted(set(given)))))
+
 print("all %d loot table tests passed" % passed)

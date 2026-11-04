@@ -1,8 +1,8 @@
 {
  "source": "patch/make_showdown.py",
  "kit": {
-  "id": "Airdrop_Viking",
-  "name": "Viking",
+  "id": "showdown",
+  "name": "Showdown kit",
   "items": [
    {
     "id": "WeapTomahawk_C",
@@ -11,16 +11,18 @@
     "tier": 3,
     "description": "Tier 3 Axe",
     "icon": "WeapTomahawk",
-    "autoEquip": false
+    "autoEquip": false,
+    "inInventory": true
    },
    {
-    "id": "HardenedArmor_C",
-    "name": "Crafted Armor",
+    "id": "BodyArmor_C",
+    "name": "Tactical Body Armor",
     "category": "armor",
     "tier": null,
-    "description": "Absorbs 50% of incoming damage, destroyed after it receives 20 points of damage",
-    "icon": "HardenedArmor",
-    "autoEquip": true
+    "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+    "icon": "BodyArmor",
+    "autoEquip": true,
+    "inInventory": true
    },
    {
     "id": "MuscleManMilk_C",
@@ -29,7 +31,8 @@
     "tier": null,
     "description": "Increases melee damage dealt by 15% for 2 minutes",
     "icon": "MuscleManMilk",
-    "autoEquip": false
+    "autoEquip": false,
+    "inInventory": true
    }
   ]
  }

@@ -1,11 +1,11 @@
 // Showdown in-match HUD (patch/make_showdown.py, server/showdown.js).
 //
 // Pre-round panel: at the start of a Showdown round it shows the round and
-// score, the round's kit (the same for both sides; from the server, which
-// reads server/data/showdown.json) by section - weapons, armor, injects,
-// Muscle Man Milk, other - with the game's own item art, and what you carry
-// now (the HUD's own inventory slots, refreshed as they change). Armor in the
-// kit puts itself on; everything else is yours to pick up and use.
+// score, the kit both sides spawn with (from the server, which reads
+// server/data/showdown.json) by section - weapons, armor, injects, Muscle Man
+// Milk, other - with the game's own item art, and what you carry now (the
+// HUD's own inventory slots, refreshed as they change). The kit is in your
+// inventory from the start; armor is already on, the rest you use yourself.
 //
 // Round banner: after the round's result, the round won or lost and the
 // series score (hud.js calls ShowShowdownResult with the server's reply).
@@ -39,7 +39,7 @@
     "#sd-hud .sd-item .sd-desc { font-size: 0.72vw; opacity: 0.7; line-height: 1.2; }",
     "#sd-hud .sd-tag { display: inline-block; margin-left: 0.4vw; padding: 0 0.4vw; border-radius: 0.6vh; font: 0.6vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; vertical-align: middle; background: rgba(255, 255, 255, 0.12); }",
     "#sd-hud .sd-tag.auto { background: #e0a030; color: #111; }",
-    "#sd-hud .sd-none { font-size: 0.72vw; opacity: 0.4; padding: 0 0 0 0.3vw; }",
+    "#sd-hud .sd-none { font: 0.68vw Sucrose-Regular, Arial, sans-serif; letter-spacing: 0.05vw; opacity: 0.7; margin-left: 0.6vw; }",
     "#sd-hud .sd-carry { display: flex; gap: 0.35vw; margin-top: 0.4vh; }",
     "#sd-hud .sd-slot { width: 2.2vw; height: 2.2vw; border-radius: 0.6vh; background: rgba(255, 255, 255, 0.07) center / 80% no-repeat; }",
     "#sd-hud .sd-help { font-size: 0.74vw; margin-top: 0.8vh; padding-top: 0.7vh; border-top: 1px solid rgba(255, 255, 255, 0.1); }",
@@ -81,7 +81,7 @@
     row.appendChild(img);
     var text = el("div");
     var name = el("div", "sd-name", item.name + (item.tier ? "  · T" + item.tier : ""));
-    var tag = el("span", "sd-tag" + (item.autoEquip ? " auto" : ""), item.autoEquip ? "AUTO-EQUIPS" : "PICK UP & USE");
+    var tag = el("span", "sd-tag" + (item.autoEquip ? " auto" : ""), item.autoEquip ? "ON" : "IN INVENTORY");
     name.appendChild(tag);
     text.appendChild(name);
     text.appendChild(el("div", "sd-desc", item.description));
@@ -121,23 +121,26 @@
     head.appendChild(left);
     head.appendChild(el("div", "sd-score", "YOU " + series.wins + " — " + series.losses + " BOT"));
     p.appendChild(head);
-    p.appendChild(el("div", "sd-kit", "FIRST TO " + series.roundsToWin + (kit ? " · KIT: " + kit.name.toUpperCase() + " (BOTH SIDES)" : "")));
+    p.appendChild(el("div", "sd-kit", "FIRST TO " + series.roundsToWin + (kit ? " · SAME KIT FOR BOTH SIDES" : "")));
     var items = kit ? kit.items : [];
     for (var s = 0; s < SECTIONS.length; s++) {
-      var sec = SECTIONS[s];
-      p.appendChild(el("div", "sd-sec", sec.title));
-      var any = false;
-      for (var i = 0; i < items.length; i++) {
-        if (sec.cats.indexOf(items[i].category) >= 0) { p.appendChild(itemRow(items[i])); any = true; }
-      }
-      if (!any) p.appendChild(el("div", "sd-none", "None this round"));
+      var sec = SECTIONS[s], mine = [];
+      for (var i = 0; i < items.length; i++) if (sec.cats.indexOf(items[i].category) >= 0) mine.push(items[i]);
+      var title = el("div", "sd-sec", sec.title);
+      // An empty section takes one line.
+      if (!mine.length) title.appendChild(el("span", "sd-none", "None this round"));
+      p.appendChild(title);
+      for (var m = 0; m < mine.length; m++) p.appendChild(itemRow(mine[m]));
     }
     p.appendChild(el("div", "sd-sec", "CARRYING NOW"));
     var carry = el("div", "sd-carry");
     carrying(carry);
     p.appendChild(carry);
     var help = el("div", "sd-help");
-    help.innerHTML = "Your kit drops beside you: walk to the crate and press <b>F</b> to open it. Armor goes on by itself; take and use the rest when you choose.";
+    var boost = null;
+    for (var b = 0; b < items.length; b++) if (items[b].category == "muscle_milk" || items[b].category == "inject") boost = boost || items[b];
+    help.innerHTML = "Everything is already in your inventory" + (items.some(function (x) { return x.autoEquip; }) ? " and your armor is on" : "") + ". " +
+      (boost ? "Use the <b>" + boost.name + "</b> before you fight, then switch to your weapon." : "Switch to your weapon and fight.");
     p.appendChild(help);
     panel.appendChild(p);
     panel._carry = carry;

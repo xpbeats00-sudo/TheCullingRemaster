@@ -4,7 +4,7 @@
 
 | Suite | Command | Result |
 |---|---|---|
-| Loot tables | `python patch/test_loot_tables.py` | 5/5 pass |
+| Loot tables | `python patch/test_loot_tables.py` | 6/6 pass |
 | Showdown series and server | `node server/test/showdown.test.js` | 11/11 pass |
 | All server tests | each `server/test/*.test.js` | 14/14 files pass |
 
@@ -29,8 +29,9 @@ Showdown (`showdown.test.js`):
 | Check | Result |
 |---|---|
 | SHOWDOWN tile starts the arena match | Pass (test patch): one bot, both spawned in the arena |
-| Player gets a kit | **Fail** with the first spawn: the kit crate landed out of reach (roof above the west spawn); the bot was armed |
-| Same kit both sides, no later drops | Not run yet |
+| Player gets a kit | **Fail** with the airdrop kit (crate out of reach). **Pass** after the change: spawned holding Muscle Man Milk (slot 1), Tomahawk (slot 2, in hand), armor on; no crate |
+| Bot gets the same kit | Unconfirmed: one run the bot dealt a bleed wound and killed fast; another it didn't engage |
+| No airdrops | Pass: none arrived |
 | Pre-round panel, round banner, next-round screen | Not run yet (needs the server update) |
 | Multiplayer sync | Not possible: no server-capable game binary |
 
