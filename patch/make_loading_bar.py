@@ -161,6 +161,13 @@ def write_config(paks_dir):
             break
     else:
         raise KeyError("DefaultScreen")
+    # Bot AI budgets (UNTESTED IN GAME: playtest before releasing). These
+    # AIModule classes read their config from Game.ini and no asset stores the
+    # values, so they apply. Stock: 6 sight traces per tick (Victory.exe),
+    # 0.001 s per frame for EQS queries (BaseGame.ini).
+    nl = "\r\n" if "\r\n" in stock else "\n"
+    lines.append(nl + "[/Script/AIModule.AISense_Sight]" + nl + "MaxTracesPerTick=24" + nl +
+                 nl + "[/Script/AIModule.EnvQueryManager]" + nl + "MaxAllowedTestingTime=0.003" + nl)
     out = os.path.join(HERE, "src", CONFIG)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     open(out, "w", newline="").write("".join(lines))
