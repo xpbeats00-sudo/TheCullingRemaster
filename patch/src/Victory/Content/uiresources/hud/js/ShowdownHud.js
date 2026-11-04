@@ -119,7 +119,7 @@
     left.appendChild(el("div", "sd-mode", "SHOWDOWN 1V1"));
     left.appendChild(el("div", "sd-round", "ROUND " + series.round));
     head.appendChild(left);
-    head.appendChild(el("div", "sd-score", "YOU " + series.wins + " — " + series.losses + " BOT"));
+    head.appendChild(el("div", "sd-score", "YOU " + series.wins + " — " + series.losses + " RIVAL"));
     p.appendChild(head);
     p.appendChild(el("div", "sd-kit", "FIRST TO " + series.roundsToWin + (kit ? " · SAME KIT FOR BOTH SIDES" : "")));
     var items = kit ? kit.items : [];
@@ -177,7 +177,7 @@
     b.textContent = "";
     var big = series.over ? (series.won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT") : "ROUND " + series.round + (won ? " WON" : " LOST");
     b.appendChild(el("div", "sd-big " + ((series.over ? series.won : won) ? "won" : "lost"), big));
-    b.appendChild(el("div", "sd-line", "YOU " + series.wins + " — " + series.losses + " BOT" +
+    b.appendChild(el("div", "sd-line", "YOU " + series.wins + " — " + series.losses + " RIVAL" +
       (series.over ? "" : "  ·  FIRST TO " + series.roundsToWin)));
     document.body.appendChild(b);
     setTimeout(function () { b.className = "on"; }, 30);

@@ -219,6 +219,10 @@ def rebrand_html(src_html):
          '<script src="js/FrontEnd.js"></script>\n  <script src="js/CardImageMap.js"></script>'
          '\n  <script src="js/CardImages.js"></script>'),
         ("The Culling's weapons and items.", "The Culling Remaster's weapons and items."),
+        # Menus never say the other contestants are bots.
+        ("Play a practice match against Bots of questionable skill.", "Play a practice match."),
+        ("Play a practice match against Bots of questionable skill in the Jungle.", "Play a practice match in the Jungle."),
+        ("Play a practice match against Bots of questionable skill in the Prison.", "Play a practice match in the Prison."),
         ("Learn the basics of The Culling", "Learn the basics of The Culling Remaster"),
     ]
     for old, new in replacements:
@@ -245,7 +249,7 @@ RANKED_TILE = """          <li tabindex="0" class="play-ranked-bg" id="ranked_pl
               <div class="tiledhighlighttop"></div>
             </div>
             <div class="tiled-menu-rollover">
-              <p>Climb nine ranks on placement, against bots.</p>
+              <p>Climb nine ranks on placement.</p>
             </div>
             <div class="play-title">
               <h1>RANKED</h1>
@@ -282,7 +286,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
               <div class="tiledhighlighttop"></div>
             </div>
             <div class="tiled-menu-rollover">
-              <p>1v1 against a bot in the centre arena. Fight before the gas closes in.</p>
+              <p>1v1 in the centre arena. Fight before the gas closes in.</p>
             </div>
             <div class="play-title">
               <h1>SHOWDOWN</h1>
@@ -293,9 +297,9 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
           </li>
 """
 PLAY_TEXT = {
-    "solo_play": "Free-for-all against bots. Vote for Jungle or Prison in the lobby.",
-    "duo_play": "Fight in pairs against bots. Vote for Jungle or Prison in the lobby.",
-    "showdown_play": "1v1 against a bot in the centre arena. Fight before the gas closes in.",
+    "solo_play": "Free-for-all. Vote for Jungle or Prison in the lobby.",
+    "duo_play": "Fight in pairs. Vote for Jungle or Prison in the lobby.",
+    "showdown_play": "1v1 in the centre arena. Fight before the gas closes in.",
 }
 # Queues the SHOWDOWN tile (the stock Play screen only queues Solo and Duo).
 SHOWDOWN_SCRIPT = '<script src="js/Showdown.js"></script>'

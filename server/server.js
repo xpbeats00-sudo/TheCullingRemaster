@@ -944,7 +944,8 @@ const lobbies = new MatchLobbies({
     // FIELD_BY_MAP with patch_exe.py (menus from those builds read the map's).
     matchBots: 15,
     matchBotsByMap: Object.fromEntries(Object.entries(FIELD_BY_MAP).map(([m, n]) => [m, n - 1])),
-    note: 'Each player fights bots on their own PC'
+    // No lobby note: menus never say the other contestants are bots.
+    note: null
   },
   describe: (m) => lobbyCard(m.id),
   send: (m, payload) => {
