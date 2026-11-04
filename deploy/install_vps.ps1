@@ -20,7 +20,10 @@ param(
     [string]$Domain = 'xplab.shop',
     [int]$PublicPort = 8443,
     [int]$LocalPort = 8100,
-    [string]$SsrRoot = 'C:\ssr'
+    [string]$SsrRoot = 'C:\ssr',
+    # 1: the game can only log in through an account (the launcher's PLAY). Install with -RequireAccount 0 until
+    # the launcher with accounts is published (docs\ACCOUNTS.md, rollout order).
+    [ValidateSet(0, 1)][int]$RequireAccount = 1
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -74,9 +77,12 @@ if ($have -ne "v$NodeVersion") {
 
 Step 'Server code'
 $app = Join-Path $Root 'app'
-foreach ($f in 'server.js', 'ranked.js', 'session.js', 'store.js', 'metrics.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
+foreach ($f in 'server.js', 'ranked.js', 'session.js', 'store.js', 'metrics.js', 'accounts.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
     Copy-Item (Join-Path $Repo "server\$f") (Join-Path $app $f) -Force
 }
+# Operator commands (node tools\account_admin.js ...), run on the VPS while the service is running.
+New-Item -ItemType Directory -Force -Path (Join-Path $app 'tools') | Out-Null
+Copy-Item (Join-Path $Repo 'server\tools\account_admin.js') (Join-Path $app 'tools\account_admin.js') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $app 'data') | Out-Null
 Copy-Item (Join-Path $Repo 'server\data\lastbreath.ini') (Join-Path $app 'data\lastbreath.ini') -Force
 Push-Location $app
@@ -110,9 +116,10 @@ $svcXml = Join-Path $Root "service\$Service.xml"
   <env name="CULLING_DATA_DIR" value="$data"/>
   <env name="CULLING_PUBLIC_URL" value="$PublicUrl"/>
   <env name="CULLING_UITRACE" value="0"/>
+  <env name="CULLING_REQUIRE_ACCOUNT" value="$RequireAccount"/>
   <env name="NODE_ENV" value="production"/>
   <startmode>Automatic</startmode>
-  <!-- Stop: WinSW sends Ctrl+C to node (SIGINT in Node); the server writes profiles and sessions and exits, usually
+  <!-- Stop: WinSW sends Ctrl+C to node (SIGINT in Node); the server writes profiles, sessions and accounts and exits, usually
        within a second. node is killed only if it is still running after stoptimeout. -->
   <stopparentprocessfirst>true</stopparentprocessfirst>
   <stoptimeout>15 sec</stoptimeout>
@@ -188,6 +195,7 @@ Write-Host "  service:  ok=$($local.ok) users=$($local.users)"
 # Telemetry (loopback only, never through Caddy): Invoke-RestMethod http://127.0.0.1:$LocalPort/metrics
 $metrics = Invoke-RestMethod "http://127.0.0.1:$LocalPort/metrics"
 Write-Host "  metrics:  uptime $($metrics.uptimeSeconds) s, heap $($metrics.memoryMB.heapUsed) MB"
+Write-Host "  accounts: $($metrics.accounts.accounts) (account required to play: $($metrics.accounts.required))"
 try {
     $public = Invoke-RestMethod "$PublicUrl/health" -TimeoutSec 15
     Write-Host "  public:   ok=$($public.ok) ($PublicUrl)" -ForegroundColor Green

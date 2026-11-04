@@ -16,7 +16,10 @@ function startServer(port, env = {}) {
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
     // CULLING_SAVE_DELAY_MS=0: write profiles on every change, so tests can read
     // profiles.json right after a request (the service coalesces to 1 s).
-    env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: "0" }, env.vars || {}),
+    // CULLING_REQUIRE_ACCOUNT=0: the game's /api/login without an account (the
+    // tests that aren't about accounts); accounts.test.js turns it on.
+    env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: "0",
+      CULLING_REQUIRE_ACCOUNT: "0" }, env.vars || {}),
     stdio: "ignore"
   });
   const srv = {

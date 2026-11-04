@@ -45,7 +45,7 @@ function dataDir() {
 
 function envFor(port, dir, saveDelay) {
   return Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir,
-    CULLING_SAVE_DELAY_MS: String(saveDelay) });
+    CULLING_SAVE_DELAY_MS: String(saveDelay), CULLING_REQUIRE_ACCOUNT: "0" });
 }
 
 // Starts the server; returns { pid, exited: Promise<{code, how}>, hardKill() }.
