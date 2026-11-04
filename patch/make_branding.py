@@ -197,7 +197,8 @@ def rebrand_html(src_html):
         ('<img src="images/cullinglogo_sm.png" class="culling-logo"/>', '<img src="images/cullinglogo.png" class="culling-logo"/>'),
         # animated calling cards (make_calling_cards.py)
         ('<script src="js/Formatters.js"></script>',
-         '<script src="js/Formatters.js"></script>\n  <script src="js/AnimatedCards.js"></script>'),
+         '<script src="js/Formatters.js"></script>\n  <script src="js/AnimatedCards.js"></script>'
+         '\n  <script src="js/UiTrace.js"></script>'),   # menu-freeze breadcrumbs
         ("The Culling's weapons and items.", "The Culling Remaster's weapons and items."),
         ("Learn the basics of The Culling", "Learn the basics of The Culling Remaster"),
     ]

@@ -1,6 +1,9 @@
 # The shipped game and everything generated from it
 TheCulling/
-patch/src/
+# patch/src is the generated staging tree, except the hand-written UI scripts
+patch/src/**
+!patch/src/**/
+!patch/src/**/*.js
 patch/*.pak
 patch/research/
 patch/registry/
@@ -14,3 +17,5 @@ server/data/profiles*.json
 *.umap
 *.pak
 *.mp4
+__pycache__/
+backups/
