@@ -34,10 +34,29 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 const QUEUE_MAPS = { ffa: 0, coop2: 0, lightning: 0, ranked_ffa: 0 };
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
+const { CoalescedJsonFile, writeAtomicSync } = require('./store');
+const { createMetrics, metricsAllowed } = require('./metrics');
+
+// How often changed profiles / sessions are written (at most once per this
+// many ms; a crash loses at most about this much, a graceful stop nothing).
+const SAVE_DELAY_MS = parseInt(process.env.CULLING_SAVE_DELAY_MS || '1000', 10);
+// One line per HTTP request and socket event: useful locally, too chatty for
+// the shared server (the service runs with NODE_ENV=production).
+const ACCESS_LOG = process.env.CULLING_ACCESS_LOG
+  ? process.env.CULLING_ACCESS_LOG !== '0'
+  : process.env.NODE_ENV !== 'production';
+// Limits for what clients can make the server hold.
+const MAX_USERID_LENGTH = 64;
+const MAX_SOCKETS_PER_IP = parseInt(process.env.CULLING_MAX_SOCKETS_PER_IP || '32', 10);
+const LOGIN_TIMEOUT_MS = 60 * 1000;
+const MAX_PROFILES = parseInt(process.env.CULLING_MAX_PROFILES || '100000', 10);
 
 function log(...args) {
   console.log(new Date().toISOString().slice(11, 19), ...args);
 }
+const accessLog = ACCESS_LOG ? log : () => {};
+
+const metrics = createMetrics({ gauges: () => gauges() });
 
 // ---------------------------------------------------------------- items
 
@@ -59,6 +78,7 @@ const isForSale = (i) => isCustom(i) && !i.rankedReward;
 const catalogByTid = new Map(catalog.map((i) => [i.tid, i]));
 
 // Short keys are what the game's native parser reads for each type.
+let inventoryTypesCache = null;
 function inventoryTypes() {
   return catalog.map((i) => ({
     tid: i.tid,
@@ -130,19 +150,34 @@ function levelForXP(xp) {
 // ---------------------------------------------------------------- profiles
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-let profiles = {};
-try { profiles = JSON.parse(fs.readFileSync(PROFILE_FILE, 'utf8')); } catch (e) { profiles = {}; }
+// No prototype: a client-supplied ID such as "constructor" is never a profile.
+let profiles = Object.create(null);
+try {
+  Object.assign(profiles, JSON.parse(fs.readFileSync(PROFILE_FILE, 'utf8')));
+} catch (e) {
+  if (e.code !== 'ENOENT') {
+    // Unreadable profiles.json: keep it for inspection instead of overwriting it with an empty one.
+    const keep = PROFILE_FILE + '.unreadable-' + Date.now();
+    try { fs.copyFileSync(PROFILE_FILE, keep); } catch (e2) { /* nothing to keep */ }
+    console.error('profiles.json could not be read (' + e.message + '); a copy is at ' + keep);
+  }
+}
+const hasProfile = (userID) => typeof userID === 'string' && Object.prototype.hasOwnProperty.call(profiles, userID);
 
-// Written to a temp file and renamed over the old one, so a crash mid-write
-// can't leave a truncated profiles.json (which would reset every profile).
+// Atomic (temp file, fsync, rename) and coalesced: at most one write per
+// SAVE_DELAY_MS, off the request path. See store.js. Compact JSON: the whole
+// file is serialized on the event loop for each write, and indenting made it
+// ~70% larger and ~50% slower to produce.
+const profileStore = new CoalescedJsonFile(PROFILE_FILE, () => JSON.stringify(profiles), {
+  delayMs: SAVE_DELAY_MS,
+  onError: (e) => { metrics.error('save'); log('saving profiles failed:', e.message); }
+});
 function saveProfiles() {
-  const tmp = PROFILE_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(profiles, null, 2));
-  fs.renameSync(tmp, PROFILE_FILE);
+  profileStore.markDirty();
 }
 
 function getProfile(userID) {
-  if (!profiles[userID]) {
+  if (!hasProfile(userID)) {
     profiles[userID] = {
       userID,
       cullCredits: STARTING_CREDITS,
@@ -179,11 +214,22 @@ function sendPlayer(socket, p) {
   });
 }
 
+// Read-only view of a player (other players' cards, season summaries): never
+// creates a profile, so lookups can't grow profiles.json.
+function peekProfile(userID) {
+  return hasProfile(userID) ? profiles[userID] : null;
+}
+
 // Login tokens (persisted) and the match tickets results are paid against.
-const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'));
+const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
+  saveDelayMs: SAVE_DELAY_MS,
+  onSaveError: (e) => { metrics.error('save'); log('saving sessions failed:', e.message); }
+});
 const tickets = new MatchTickets();
 const allowHttp = rateLimiter(20, 60);
 const allowSocket = rateLimiter(30, 90);
+// New profiles per address: a burst of 10, then one a minute.
+const allowNewProfile = rateLimiter(1 / 60, 10);
 
 function userFromRequest(req) {
   const auth = req.headers.authorization || '';
@@ -195,22 +241,56 @@ const requestIp = (req) => clientIp(req.socket.remoteAddress, req.headers['x-for
 const socketIp = (socket) => clientIp(socket.handshake.address, socket.handshake.headers['x-forwarded-for']);
 
 function normalizeUserID(raw) {
-  let id = String(raw || '').trim();
+  let id = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
   if (!id) id = 'steam:76561198000000000';
   if (!id.includes(':')) id = 'steam:' + id;
   return id;
 }
 
+// A user ID the server will store: short, printable, no control characters.
+const validUserID = (id) => typeof id === 'string' && id.length <= MAX_USERID_LENGTH && /^[\x21-\x7e]+$/.test(id);
+
 // ---------------------------------------------------------------- HTTP
 
 const app = express();
+app.disable('x-powered-by');
+let stopping = false;
+
+// Telemetry, for the VPS operator only: answered to loopback connections
+// that carry no proxy headers. Caddy always adds X-Forwarded-For, so
+// https://<domain>/metrics is refused even though Caddy itself is loopback.
+app.get('/metrics', (req, res) => {
+  if (!metricsAllowed(req.socket.remoteAddress, req.headers)) return res.status(404).json({});
+  // Load tests start the server with --expose-gc to compare post-GC heap.
+  if (req.query.gc === '1' && typeof global.gc === 'function') global.gc();
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(metrics.report());
+});
+
+// Request timing per route (the matched route pattern, so unknown URLs all
+// count as one key and the table stays small).
+app.use((req, res, next) => {
+  const t0 = performance.now();
+  res.on('finish', () => {
+    const route = req.route ? req.method + ' ' + (Array.isArray(req.route.path) ? req.route.path[0] : req.route.path)
+      : res.statusCode === 429 ? 'rate-limited' : req.method === 'OPTIONS' ? 'OPTIONS' : 'unmatched';
+    metrics.request(route, res.statusCode, performance.now() - t0);
+  });
+  next();
+});
+
+app.use((req, res, next) => {
+  if (stopping) { res.setHeader('Connection', 'close'); return res.status(503).json({ error: 'stopping' }); }
+  if (!allowHttp(requestIp(req))) return res.status(429).json({ error: 'too-many-requests' });
+  next();
+});
+
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(express.text({ type: '*/*', limit: '1mb' }));
 
 app.use((req, res, next) => {
-  if (!allowHttp(requestIp(req))) return res.status(429).json({ error: 'too-many-requests' });
-  log('HTTP', req.method, req.originalUrl);
+  accessLog('HTTP', req.method, req.originalUrl);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -253,6 +333,11 @@ app.get(['/api', '/api/'], (req, res) => {
 app.post('/api/login', (req, res) => {
   const body = bodyObject(req);
   const userID = normalizeUserID(body.userid);
+  if (!validUserID(userID)) return res.status(400).json({ error: 'invalid-userid' });
+  if (!hasProfile(userID)) {
+    if (Object.keys(profiles).length >= MAX_PROFILES) return res.status(503).json({ error: 'server-full' });
+    if (!allowNewProfile(requestIp(req))) return res.status(429).json({ error: 'too-many-new-players' });
+  }
   const token = sessions.issue(userID);
   getProfile(userID);
   log('login', userID, 'authType=' + body.authType, 'appid=' + body.appid, 'build=' + body.build);
@@ -266,16 +351,16 @@ app.post('/api/matchqueue', (req, res) => {
   let userID = userFromRequest(req);
   if (!userID) {
     const claimed = normalizeUserID(body.userid);
-    const s = socketsByUser.get(claimed);
+    const s = validUserID(claimed) ? socketsByUser.get(claimed) : null;
     if (s && socketIp(s) === requestIp(req)) userID = claimed;
   }
   if (!userID) return res.status(401).json({ error: 'not-logged-in' });
-  const queue = body.queuename || 'ffa';
+  const queue = queueName(body.queuename);
   log('matchqueue', userID, queue);
   res.json({ status: 'ok', queueName: queue });
   const socket = socketsByUser.get(userID);
   if (socket) startLocalMatch(socket, queue);
-  else log('  no socket for', userID, '- known:', [...socketsByUser.keys()].join(', '));
+  else log('  no socket for', userID, '(' + socketsByUser.size + ' logged in)');
 });
 
 // XP for one match against bots, scaled to the game's level curve (level 2
@@ -364,16 +449,25 @@ app.post('/api/setlevel', (req, res) => {
 
 // The menu reports the game's XP curve (XP at the top of each level).
 app.post('/api/levelcurve', (req, res) => {
-  const high = (bodyObject(req).high || []).map(Number).filter((n) => Number.isFinite(n));
+  const raw = bodyObject(req).high;
+  if (!Array.isArray(raw) || raw.length > 1000) return res.status(400).json({ error: 'invalid-curve' });
+  const high = raw.map(Number).filter((n) => Number.isFinite(n));
   // Keep the strictly increasing prefix; past the max level the game repeats or returns 0.
   const curve = [];
   for (const n of high) {
     if (n > 0 && (!curve.length || n > curve[curve.length - 1])) curve.push(n);
     else break;
   }
+  // The curve is the game's, the same for every player: the first report sets
+  // it, and after that only the VPS operator (loopback, not through Caddy) can
+  // replace it, so no client can change everyone's levels.
+  if (curve.length && levelXPHigh.length && !metricsAllowed(req.socket.remoteAddress, req.headers)) {
+    if (JSON.stringify(curve) !== JSON.stringify(levelXPHigh)) log('level curve change refused from', requestIp(req));
+    return res.json({ ok: true, levels: levelXPHigh.length });
+  }
   if (curve.length && JSON.stringify(curve) !== JSON.stringify(levelXPHigh)) {
     levelXPHigh = curve;
-    fs.writeFileSync(LEVELS_FILE, JSON.stringify(curve));
+    writeAtomicSync(LEVELS_FILE, JSON.stringify(curve));
     log('level curve', curve.length, 'levels; level 2 at', curve[0] + 1, 'XP; max at', curve[curve.length - 1]);
     for (const p of Object.values(profiles)) p.stats.level = levelForXP(p.stats.xp) || p.stats.level;
     saveProfiles();
@@ -402,15 +496,45 @@ app.post('/api/uitrace', (req, res) => {
 });
 
 app.use((req, res) => {
-  log('  (unhandled HTTP route)', req.method, req.originalUrl, JSON.stringify(bodyObject(req)).slice(0, 300));
+  accessLog('  (unhandled HTTP route)', req.method, req.originalUrl.slice(0, 200), JSON.stringify(bodyObject(req)).slice(0, 300));
   res.json({});
+});
+
+// Malformed bodies (bad JSON, too large) and handler bugs: a JSON error, no
+// stack trace to the client, and counted in /metrics.
+app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
+  if (status >= 500) log('HTTP error', req.method, req.originalUrl.slice(0, 200), err.stack || err.message);
+  if (res.headersSent) return;
+  res.status(status).json({ error: status >= 500 ? 'server-error' : String(err.type || 'bad-request') });
 });
 
 // ---------------------------------------------------------------- socket.io
 
 const server = http.createServer(app);
-const io = socketio(server, { pingInterval: 10000, pingTimeout: 30000, cookie: false });
+// Keep-alive connections idle for longer than this are closed (Caddy reuses
+// its upstream connections well within it).
+server.keepAliveTimeout = 65 * 1000;
+server.headersTimeout = 70 * 1000;
+// maxHttpBufferSize: engine.io 3 accepts 100 MB messages by default; nothing
+// the game sends is more than a few KB.
+const io = socketio(server, { pingInterval: 10000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: 1e6 });
 const socketsByUser = new Map();
+const socketsByIp = new Map();      // address -> open sockets
+let connectedSockets = 0;
+
+function gauges() {
+  return {
+    connectedSockets,
+    loggedInUsers: socketsByUser.size,
+    profiles: Object.keys(profiles).length,
+    sessionTokens: sessions.size,
+    openMatchTickets: tickets.open.size,
+    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size() },
+    saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null },
+    stopping
+  };
+}
 
 if (process.env.CULLING_DEBUG_TRANSPORT) {
   server.prependListener('request', (req, res) => {
@@ -476,8 +600,14 @@ function rankedGrant(p) {
   };
 }
 
+// Queue names are short identifiers; anything else is treated as "ffa".
+function queueName(raw) {
+  return typeof raw === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(raw) ? raw : 'ffa';
+}
+
 function startLocalMatch(socket, queue) {
-  const mapIndex = QUEUE_MAPS[queue] !== undefined ? QUEUE_MAPS[queue] : 0;
+  queue = queueName(queue);
+  const mapIndex = Object.prototype.hasOwnProperty.call(QUEUE_MAPS, queue) ? QUEUE_MAPS[queue] : 0;
   tickets.start(socket.userID, socketIp(socket));
   if (String(queue).startsWith('ranked')) {
     const p = getProfile(socket.userID || normalizeUserID());
@@ -488,7 +618,11 @@ function startLocalMatch(socket, queue) {
   }
   socket.emit('join-mm-ack');
   socket.emit('players-in-queue', { count: 1 });
-  setTimeout(() => {
+  // One pending match per socket: a repeated join replaces it, a disconnect cancels it.
+  clearTimeout(socket.matchTimer);
+  socket.matchTimer = setTimeout(() => {
+    socket.matchTimer = null;
+    if (!socket.connected) return;
     log('match-ready ->', socket.userID, 'offline map', mapIndex);
     socket.emit('match-ready', {
       gameServer: 'offline:' + mapIndex,
@@ -498,29 +632,73 @@ function startLocalMatch(socket, queue) {
   }, 1500);
 }
 
+// A short string from a client message, or `fallback`.
+const shortString = (v, max, fallback) => (typeof v === 'string' && v.length <= max ? v : fallback);
+
 io.on('connection', (socket) => {
-  log('socket connected', socket.id);
+  const ip = socketIp(socket);
+  const here = (socketsByIp.get(ip) || 0) + 1;
+  if (stopping || here > MAX_SOCKETS_PER_IP) {
+    log('socket refused', stopping ? '(stopping)' : '(' + here + ' open from ' + ip + ')');
+    socket.disconnect(true);
+    return;
+  }
+  socketsByIp.set(ip, here);
+  connectedSockets++;
+  socket.ip = ip;
+  accessLog('socket connected', socket.id);
   socket.emit('login_ready');
+  // A socket that never logs in is closed rather than held forever.
+  socket.loginTimer = setTimeout(() => { if (!socket.userID) socket.disconnect(true); }, LOGIN_TIMEOUT_MS);
 
   socket.use((packet, next) => {
-    if (!allowSocket(socketIp(socket))) return;          // dropped while over the limit
-    const [name, payload] = packet;
-    // Everything but login needs a logged-in socket.
-    if (name !== 'login' && !socket.userID) return;
-    if (name !== 'login') log('  <-', name, payload === undefined ? '' : JSON.stringify(payload).slice(0, 300));
-    next();
+    try {
+      const [name, payload] = packet;
+      if (stopping || !allowSocket(socket.ip)) { metrics.error('socketDropped'); return; }  // dropped while over the limit
+      // Everything but login needs a logged-in socket.
+      if (name !== 'login' && !socket.userID) { metrics.error('socketDropped'); return; }
+      if (ACCESS_LOG && name !== 'login') accessLog('  <-', name, payload === undefined ? '' : JSON.stringify(payload).slice(0, 300));
+      next();
+    } catch (e) {
+      metrics.error('socketHandler');
+    }
   });
 
-  socket.on('login', (msg) => {
+  // Every handler is timed for /metrics and can't take the process down: a
+  // malformed message that makes one throw is logged, counted and ignored.
+  const on = (name, fn) => socket.on(name, (...args) => {
+    const t0 = performance.now();
+    let failed = false;
+    try {
+      fn(...args);
+    } catch (e) {
+      failed = true;
+      log('socket handler error', name, socket.userID || socket.id, e.stack || e.message);
+    }
+    metrics.socketEvent(name, performance.now() - t0, failed);
+  });
+
+  // Delayed pushes are dropped if the socket has gone by then.
+  const later = (fn, ms) => setTimeout(() => {
+    if (!socket.connected) return;
+    try { fn(); } catch (e) { metrics.error('socketHandler'); log('delayed push failed', e.message); }
+  }, ms);
+
+  on('login', (msg) => {
     // Only a token from /api/login identifies a player.
     const token = msg && typeof msg === 'object' ? msg.token : msg;
     const userID = sessions.userFor(token);
     if (!userID) {
-      log('socket login refused (no valid token)', socketIp(socket));
+      log('socket login refused (no valid token)', socket.ip);
       socket.emit('auth-fail', { reason: 'invalid-token' });
       socket.disconnect(true);
       return;
     }
+    // Logging in again as someone else: forget the old mapping.
+    if (socket.userID && socket.userID !== userID && socketsByUser.get(socket.userID) === socket) {
+      socketsByUser.delete(socket.userID);
+    }
+    clearTimeout(socket.loginTimer);
     socket.userID = userID;
     socketsByUser.set(userID, socket);
     const p = getProfile(userID);
@@ -535,24 +713,28 @@ io.on('connection', (socket) => {
       ffa: { isActive: true }, coop2: { isActive: true }, lightning: { isActive: true }, ranked_ffa: { isActive: true }
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
-    setTimeout(sendEntitlements, 2000);
+    later(sendEntitlements, 2000);
   });
 
-  socket.on('join-mm', (msg) => startLocalMatch(socket, (msg && msg.queueName) || 'ffa'));
-  socket.on('leave-mm', () => socket.emit('leave-mm-ack'));
-  socket.on('leave-group', () => socket.emit('left-group', 0));
+  on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
+  on('leave-mm', () => socket.emit('leave-mm-ack'));
+  on('leave-group', () => socket.emit('left-group', 0));
 
-  socket.on('set-card', (msg) => {
+  on('set-card', (msg) => {
     if (!socket.userID) return;
-    getProfile(socket.userID).cardID = (msg && msg.cardID) || 0;
+    // Card IDs are item type IDs (the game sends a number or a numeric string).
+    const id = msg && msg.cardID;
+    const ok = (typeof id === 'number' && Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^\d{1,12}$/.test(id));
+    getProfile(socket.userID).cardID = ok ? id : 0;
     saveProfiles();
   });
-  socket.on('get-cards', (msg) => {
-    const users = (msg && msg.users) || [];
+  on('get-cards', (msg) => {
+    const users = msg && Array.isArray(msg.users) ? msg.users.slice(0, 100) : [];
     socket.emit('get-cards-result', {
       cards: users.map((u) => {
-        const p = profiles[u];
-        return { userID: u, cardID: p ? p.cardID : 0, cardLevel: p ? p.stats.level : 1, cardRank: p ? p.stats.rank : 0 };
+        const p = peekProfile(u);
+        return { userID: shortString(u, MAX_USERID_LENGTH, ''), cardID: p ? p.cardID : 0, cardLevel: p ? p.stats.level : 1,
+          cardRank: p ? p.stats.rank : 0 };
       })
     });
   });
@@ -562,17 +744,19 @@ io.on('connection', (socket) => {
   // the catalog has (re)loaded as well.
   const sendEntitlements = () => socket.emit('entitlements-response',
     { data: { items: ownedItems(getProfile(socket.userID || normalizeUserID())) } });
-  socket.on('get-entitlements', sendEntitlements);
-  socket.on('get-inventory-types', (version) => {
+  on('get-entitlements', sendEntitlements);
+  on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {
       socket.emit('inventory-types-response', { data: { versionOK: true, currentVersion: CATALOG_VERSION } });
     } else {
-      socket.emit('inventory-types-response', { data: { versionOK: false, currentVersion: CATALOG_VERSION, types: inventoryTypes() } });
+      // The catalog never changes while running: build the list once.
+      if (!inventoryTypesCache) inventoryTypesCache = inventoryTypes();
+      socket.emit('inventory-types-response', { data: { versionOK: false, currentVersion: CATALOG_VERSION, types: inventoryTypesCache } });
     }
-    setTimeout(sendEntitlements, 1000);
+    later(sendEntitlements, 1000);
   });
   // Custom content costs cull credits; anything else is already owned.
-  socket.on('purchase-entitlement', (msg) => {
+  on('purchase-entitlement', (msg) => {
     const typeId = parseInt(msg && msg.entitlementID, 10);
     const item = catalogByTid.get(typeId);
     const p = getProfile(socket.userID || normalizeUserID());
@@ -596,56 +780,117 @@ io.on('connection', (socket) => {
     sendPlayer(socket, p);
     sendEntitlements();
   });
-  socket.on('get-premium-types', () => {
+  on('get-premium-types', () => {
     socket.emit('premium-types-response', { data: { versionOK: false, currentVersion: 'local-1', types: [] } });
   });
-  socket.on('check-dlc-items', () => socket.emit('check-dlc-items-success'));
-  socket.on('redeem-tokens', () => {});
-  socket.on('start-item-migration', () => socket.emit('item-migration', { data: {} }));
-  socket.on('open-crate', () => socket.emit('open-crate-fail', { reason: 'no-crates' }));
-  socket.on('premium-purchase', () => socket.emit('premium-purchase-fail', { message: 'The store is not available on the local server.' }));
-  socket.on('purchase-item', () => socket.emit('purchase-item-fail', { message: 'The store is not available on the local server.' }));
-  socket.on('purchase-item-authenticated', () => socket.emit('purchase-item-authenticated-fail', { message: 'The store is not available on the local server.' }));
+  on('check-dlc-items', () => socket.emit('check-dlc-items-success'));
+  on('redeem-tokens', () => {});
+  on('start-item-migration', () => socket.emit('item-migration', { data: {} }));
+  on('open-crate', () => socket.emit('open-crate-fail', { reason: 'no-crates' }));
+  on('premium-purchase', () => socket.emit('premium-purchase-fail', { message: 'The store is not available on the local server.' }));
+  on('purchase-item', () => socket.emit('purchase-item-fail', { message: 'The store is not available on the local server.' }));
+  on('purchase-item-authenticated', () => socket.emit('purchase-item-authenticated-fail', { message: 'The store is not available on the local server.' }));
 
-  socket.on('player-leaderboard-request', () => {
+  on('player-leaderboard-request', () => {
     const p = getProfile(socket.userID || normalizeUserID());
     socket.emit('player-leaderboard-response', { data: emptyLeaderboard(p) });
   });
-  socket.on('get-season-summary', (msg) => {
-    const userID = (msg && msg.userID) || socket.userID;
-    const p = getProfile(normalizeUserID(userID));
-    socket.emit('season-summary-response', { userID, data: JSON.stringify(emptyLeaderboard(p).solo) });
+  on('get-season-summary', (msg) => {
+    const asked = msg && msg.userID;
+    // Echoed back as sent (a string or a number), if it is a sane one.
+    const userID = !asked ? socket.userID
+      : (typeof asked === 'number' && Number.isFinite(asked)) || shortString(asked, MAX_USERID_LENGTH, null) !== null ? asked : null;
+    const wanted = userID === null ? null : normalizeUserID(userID);
+    // Someone else's summary is looked up, never created.
+    const p = wanted === socket.userID ? getProfile(socket.userID) : peekProfile(wanted);
+    socket.emit('season-summary-response', { userID, data: JSON.stringify(emptyLeaderboard(p || BLANK_PROFILE).solo) });
   });
-  socket.on('get-friends', () => socket.emit('get-friends-ack', []));
-  socket.on('group-invite', () => socket.emit('group-invite-fail', { reason: 'target-offline' }));
+  on('get-friends', () => socket.emit('get-friends-ack', []));
+  on('group-invite', () => socket.emit('group-invite-fail', { reason: 'target-offline' }));
 
   // Private ("custom") lobbies also go straight to a local bot match.
-  socket.on('lobby-create', (msg) => {
+  on('lobby-create', (msg) => {
     socket.lobby = {
       code: crypto.randomBytes(3).toString('hex'),
       owner: socket.userID,
-      mapName: (msg && msg.mapName) || 'Jungle_P',
+      mapName: shortString(msg && msg.mapName, 64, '') || 'Jungle_P',
       members: [{ user: socket.userID, team: 0 }]
     };
     socket.emit('lobby-update', socket.lobby);
   });
-  socket.on('lobby-join', () => socket.emit('lobby-join-fail', { reason: 'not-found' }));
-  socket.on('lobby-set-map', (msg) => {
+  on('lobby-join', () => socket.emit('lobby-join-fail', { reason: 'not-found' }));
+  on('lobby-set-map', (msg) => {
     if (!socket.lobby) return socket.emit('lobby-update-fail', {});
-    socket.lobby.mapName = (msg && msg.mapName) || socket.lobby.mapName;
+    socket.lobby.mapName = shortString(msg && msg.mapName, 64, '') || socket.lobby.mapName;
     socket.emit('lobby-update', socket.lobby);
   });
-  socket.on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
-  socket.on('lobby-start-match', () => {
+  on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
+  on('lobby-start-match', () => {
     const map = socket.lobby && /prison|jungle2/i.test(socket.lobby.mapName) ? 1 : 0;
-    tickets.start(socket.userID, socketIp(socket));
+    tickets.start(socket.userID, socket.ip);
     socket.emit('match-ready', { gameServer: 'offline:' + map, nonce: 'x', serverNonce: 'x' });
   });
 
   socket.on('disconnect', (reason) => {
-    log('socket disconnected', socket.userID || socket.id, reason);
+    accessLog('socket disconnected', socket.userID || socket.id, reason);
+    connectedSockets--;
+    const left = (socketsByIp.get(socket.ip) || 1) - 1;
+    if (left > 0) socketsByIp.set(socket.ip, left); else socketsByIp.delete(socket.ip);
+    clearTimeout(socket.loginTimer);
+    clearTimeout(socket.matchTimer);
     if (socket.userID && socketsByUser.get(socket.userID) === socket) socketsByUser.delete(socket.userID);
   });
+});
+
+// A stand-in for players with no profile (looked up, never stored).
+const BLANK_PROFILE = { stats: { wins: 0, kills: 0, level: 1, rank: 0 }, cardID: 0 };
+
+// ---------------------------------------------------------------- start / stop
+
+// Writes everything unsaved, synchronously. Safe to call more than once.
+function flushAll(why) {
+  const wroteProfiles = profileStore.flushSync();
+  const wroteSessions = sessions.flushSync();
+  if (wroteProfiles || wroteSessions) {
+    log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions'].filter(Boolean).join(', '));
+  }
+}
+
+// Graceful stop. WinSW 2.12 stops the service by attaching to node's console
+// and sending CTRL_C_EVENT (Node: SIGINT), then waits <stoptimeout> before
+// killing it; Ctrl+C in a terminal is the same signal, SIGTERM is the POSIX
+// equivalent, SIGBREAK is Ctrl+Break and SIGHUP the console closing. Data is
+// saved first, synchronously, so even a short grace period loses nothing.
+// Exit code: WinSW 2.12 ignores it during its own stop, but if node exits by
+// itself with 0 it reports the service as stopped (no restart). So only the
+// stop requests (SIGINT, SIGTERM) exit 0; a console closing under us exits 1
+// and the service's restart-on-failure applies.
+function shutdown(signal) {
+  const code = signal === 'SIGINT' || signal === 'SIGTERM' ? 0 : 1;
+  if (stopping) return;
+  stopping = true;
+  log('stopping (' + signal + ')');
+  flushAll(signal);
+  // From here on every change is written immediately (there should be none:
+  // new requests and socket events are refused while stopping).
+  profileStore.close();
+  if (sessions.store) sessions.store.close();
+  // Let replies already in flight go out, then exit.
+  io.close();
+  server.close();
+  setTimeout(() => { flushAll('exit'); process.exit(code); }, 300);
+}
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) process.on(sig, () => shutdown(sig));
+process.on('exit', () => flushAll('exit'));
+process.on('uncaughtException', (e) => {
+  // State may be inconsistent: save what is there and let WinSW restart us.
+  metrics.error('process');
+  log('uncaught exception', e && e.stack ? e.stack : e);
+  try { flushAll('crash'); } finally { process.exit(1); }
+});
+process.on('unhandledRejection', (e) => {
+  metrics.error('process');
+  log('unhandled rejection', e && e.stack ? e.stack : e);
 });
 
 server.listen(PORT, HOST, () => {

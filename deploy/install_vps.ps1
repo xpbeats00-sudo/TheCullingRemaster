@@ -6,7 +6,9 @@ Run as administrator ON the VPS from this repository's clone ("Update Culling Se
   - the server code in C:\culling\app (npm ci, production packages only)
   - player data in C:\culling\data (profiles, sessions, ranked; never replaced by an update)
   - the Windows service "culling-server" (WinSW, the same pinned wrapper as Superstar Racing): starts with Windows,
-    restarts after a crash, runs as LocalService, listens on 127.0.0.1 only
+    restarts after a crash, runs as LocalService, listens on 127.0.0.1 only; a stop saves all player data first
+  - the scheduled task "Culling Server Watchdog" (C:\culling\service\culling_watchdog.ps1, as SYSTEM, every minute):
+    restarts the service if it stops answering /health (hung, not crashed), with backoff; logs to C:\culling\data\logs
   - HTTPS: a Caddy site file C:\ssr\caddy\sites\culling.caddy (https://<domain>:<port> -> the service), loaded by the
     Superstar Racing Caddyfile's "import sites/*.caddy" line, and a firewall rule for that port
 
@@ -72,7 +74,7 @@ if ($have -ne "v$NodeVersion") {
 
 Step 'Server code'
 $app = Join-Path $Root 'app'
-foreach ($f in 'server.js', 'ranked.js', 'session.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
+foreach ($f in 'server.js', 'ranked.js', 'session.js', 'store.js', 'metrics.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
     Copy-Item (Join-Path $Repo "server\$f") (Join-Path $app $f) -Force
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $app 'data') | Out-Null
@@ -110,6 +112,9 @@ $svcXml = Join-Path $Root "service\$Service.xml"
   <env name="CULLING_UITRACE" value="0"/>
   <env name="NODE_ENV" value="production"/>
   <startmode>Automatic</startmode>
+  <!-- Stop: WinSW sends Ctrl+C to node (SIGINT in Node); the server writes profiles and sessions and exits, usually
+       within a second. node is killed only if it is still running after stoptimeout. -->
+  <stopparentprocessfirst>true</stopparentprocessfirst>
   <stoptimeout>15 sec</stoptimeout>
   <onfailure action="restart" delay="10 sec"/>
   <onfailure action="restart" delay="30 sec"/>
@@ -127,17 +132,37 @@ if (-not $svc) {
 }
 Start-Service $Service
 
+Step 'Watchdog'
+# WinSW restarts node when it exits; the watchdog covers a process that is running but hung.
+$watchdog = Join-Path $Root 'service\culling_watchdog.ps1'
+Copy-Item (Join-Path $PSScriptRoot 'culling_watchdog.ps1') $watchdog -Force
+$taskName = 'Culling Server Watchdog'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ("-NoProfile -NonInteractive -ExecutionPolicy Bypass " +
+    "-File ""$watchdog"" -Service $Service -HealthUrl http://127.0.0.1:$LocalPort/health -LogDir ""$data\logs""")
+# Every minute from a minute from now, indefinitely (the repetition carries on across reboots).
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 3) `
+    -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force `
+    -Description "Probes $Service at http://127.0.0.1:$LocalPort/health every minute; restarts it after 3 failures, with backoff. Log: $data\logs\watchdog.log" |
+    Out-Null
+Write-Host "  task:     $taskName (every minute; log $data\logs\watchdog.log)"
+
 Step "HTTPS on $PublicUrl"
 $sites = Join-Path $SsrRoot 'caddy\sites'
 New-Item -ItemType Directory -Force -Path $sites | Out-Null
 @"
 # The Culling Remaster account server (written by TheCullingRemaster deploy\install_vps.ps1).
 ${Domain}:$PublicPort {
-	# Launcher releases (Game Sync): manifest.json and files/..., published to $($Root -replace '\\','/')/updates
+	# Launcher releases (Game Sync): manifest.json, its .sig and objects/<sha256>, published to $($Root -replace '\\','/')/updates
 	handle_path /remaster/* {
 		root * $($Root -replace '\\','/')/updates
-		@manifest path /manifest.json
+		@manifest path /manifest.json /manifest.json.sig
 		header @manifest Cache-Control "no-cache"
+		# Objects are named by their SHA-256, so a given URL never changes: any cache may keep it.
+		@objects path /objects/*
+		header @objects Cache-Control "public, max-age=31536000, immutable"
 		file_server
 	}
 	reverse_proxy 127.0.0.1:$LocalPort
@@ -160,6 +185,9 @@ Step 'Checks'
 Start-Sleep -Seconds 2
 $local = Invoke-RestMethod "http://127.0.0.1:$LocalPort/health"
 Write-Host "  service:  ok=$($local.ok) users=$($local.users)"
+# Telemetry (loopback only, never through Caddy): Invoke-RestMethod http://127.0.0.1:$LocalPort/metrics
+$metrics = Invoke-RestMethod "http://127.0.0.1:$LocalPort/metrics"
+Write-Host "  metrics:  uptime $($metrics.uptimeSeconds) s, heap $($metrics.memoryMB.heapUsed) MB"
 try {
     $public = Invoke-RestMethod "$PublicUrl/health" -TimeoutSec 15
     Write-Host "  public:   ok=$($public.ok) ($PublicUrl)" -ForegroundColor Green

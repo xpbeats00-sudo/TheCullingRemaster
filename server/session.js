@@ -3,6 +3,8 @@
 //
 // - Tokens: issued by /api/login, persisted so a server restart doesn't log
 //   every player out, and required for socket login and the menu's HTTP calls.
+//   Bounded: a player keeps their newest MAX_TOKENS_PER_USER tokens, and the
+//   whole table at most MAX_TOKENS (oldest dropped first).
 // - Match tickets: a match started by a player's menu opens one ticket; the
 //   in-match HUD (which has no token) reports its result against it. The
 //   ticket is found by token when there is one, else by the client's address
@@ -10,46 +12,94 @@
 // - Rate limits: a token bucket per client address.
 "use strict";
 
-const fs = require("fs");
 const crypto = require("crypto");
+const fs = require("fs");
+const { CoalescedJsonFile } = require("./store");
 
 const TOKEN_TTL_MS = 30 * 24 * 3600 * 1000;
 const TICKET_TTL_MS = 3 * 3600 * 1000;
+const RECENT_TTL_MS = 15 * 60 * 1000;
+const MAX_TOKENS_PER_USER = 8;
+const MAX_TOKENS = 100000;
+const PRUNE_EVERY_MS = 60 * 1000;
 
 class Sessions {
-  constructor(file, now = Date.now) {
+  // opts.saveDelayMs: 0 writes on every change (synchronously); the server
+  // passes 1000 to coalesce writes (see store.js).
+  constructor(file, now = Date.now, opts = {}) {
     this.file = file;
     this.now = now;
-    this.tokens = {};
-    try { this.tokens = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none yet */ }
+    this.tokens = new Map();        // token -> { userID, at }, oldest first
+    this.byUser = new Map();        // userID -> [token, ...], oldest first
+    let saved = {};
+    try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none yet */ }
+    const entries = Object.entries(saved && typeof saved === "object" ? saved : {})
+      .filter(([, s]) => s && typeof s.userID === "string" && Number.isFinite(s.at))
+      .sort((a, b) => a[1].at - b[1].at);
+    for (const [t, s] of entries) this.add(t, { userID: s.userID, at: s.at });
+    this.store = file ? new CoalescedJsonFile(file, () => JSON.stringify(Object.fromEntries(this.tokens)),
+      { delayMs: opts.saveDelayMs || 0, onError: opts.onSaveError, now }) : null;
+    this.lastPrune = 0;
     this.prune();
   }
 
+  add(token, s) {
+    this.tokens.set(token, s);
+    let list = this.byUser.get(s.userID);
+    if (!list) this.byUser.set(s.userID, (list = []));
+    list.push(token);
+    while (list.length > MAX_TOKENS_PER_USER) this.remove(list[0]);
+    while (this.tokens.size > MAX_TOKENS) this.remove(this.tokens.keys().next().value);
+  }
+
+  remove(token) {
+    const s = this.tokens.get(token);
+    if (!s) return;
+    this.tokens.delete(token);
+    const list = this.byUser.get(s.userID);
+    if (list) {
+      const i = list.indexOf(token);
+      if (i >= 0) list.splice(i, 1);
+      if (!list.length) this.byUser.delete(s.userID);
+    }
+  }
+
   prune() {
+    this.lastPrune = this.now();
     const cutoff = this.now() - TOKEN_TTL_MS;
-    for (const [t, s] of Object.entries(this.tokens)) if (s.at < cutoff) delete this.tokens[t];
+    let changed = false;
+    // Map order is issue order, so expired tokens are at the front.
+    for (const [t, s] of this.tokens) {
+      if (s.at >= cutoff) break;
+      this.remove(t);
+      changed = true;
+    }
+    return changed;
   }
 
   save() {
-    if (!this.file) return;
-    const tmp = this.file + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(this.tokens));
-    fs.renameSync(tmp, this.file);
+    if (this.store) this.store.markDirty();
+  }
+
+  flushSync() {
+    return this.store ? this.store.flushSync() : false;
   }
 
   issue(userID) {
     const token = crypto.randomBytes(24).toString("hex");
-    this.tokens[token] = { userID, at: this.now() };
-    this.prune();
+    this.add(token, { userID, at: this.now() });
+    if (this.now() - this.lastPrune > PRUNE_EVERY_MS) this.prune();
     this.save();
     return token;
   }
 
   userFor(token) {
-    const s = typeof token === "string" && Object.prototype.hasOwnProperty.call(this.tokens, token) ? this.tokens[token] : null;
+    const s = typeof token === "string" ? this.tokens.get(token) : null;
     if (!s || s.at < this.now() - TOKEN_TTL_MS) return null;
     return s.userID;
   }
+
+  get size() { return this.tokens.size; }
 }
 
 class MatchTickets {
@@ -60,14 +110,18 @@ class MatchTickets {
   }
 
   start(userID, ip) {
+    this.expire();
     const t = { id: crypto.randomBytes(8).toString("hex"), userID, ip, startedAt: this.now() };
+    this.open.delete(userID);       // re-insert so the Map stays oldest-first
     this.open.set(userID, t);       // a new match replaces an unfinished one
     return t;
   }
 
   expire() {
     const cutoff = this.now() - TICKET_TTL_MS;
-    for (const [u, t] of this.open) if (t.startedAt < cutoff) this.open.delete(u);
+    for (const [u, t] of this.open) { if (t.startedAt >= cutoff) break; this.open.delete(u); }
+    const recentCutoff = this.now() - RECENT_TTL_MS;
+    for (const [ip, r] of this.recent) { if (r.at >= recentCutoff) break; this.recent.delete(ip); }
   }
 
   // Take the ticket for a result: by userID (token) or by address.
@@ -78,12 +132,16 @@ class MatchTickets {
       t = this.open.get(userID) || null;
       if (!t) return { error: "no-match" };
     } else {
-      const here = [...this.open.values()].filter((x) => x.ip === ip);
-      if (here.length === 0) return { error: "no-match" };
-      if (here.length > 1) return { error: "ambiguous" };
-      t = here[0];
+      let found = 0;
+      for (const x of this.open.values()) {
+        if (x.ip !== ip) continue;
+        if (++found > 1) return { error: "ambiguous" };
+        t = x;
+      }
+      if (!t) return { error: "no-match" };
     }
     this.open.delete(t.userID);
+    this.recent.delete(ip);         // re-insert so the Map stays oldest-first
     this.recent.set(ip, { userID: t.userID, at: this.now() });
     return { ticket: t, elapsed: (this.now() - t.startedAt) / 1000 };
   }
@@ -92,33 +150,50 @@ class MatchTickets {
   // follow-up /api/setlevel), within 15 minutes.
   recentUser(ip) {
     const r = this.recent.get(ip);
-    return r && r.at > this.now() - 15 * 60 * 1000 ? r.userID : null;
+    return r && r.at > this.now() - RECENT_TTL_MS ? r.userID : null;
   }
 }
 
 // Token bucket per key: `rate` requests per second, bursts up to `burst`.
-function rateLimiter(rate, burst, now = Date.now) {
+// Idle buckets (refilled to full) carry no state worth keeping, so once there
+// are more than `maxKeys` they are swept; only if every bucket is busy is the
+// table cleared.
+function rateLimiter(rate, burst, now = Date.now, maxKeys = 50000) {
   const buckets = new Map();
-  return function allow(key) {
+  const fullAfterMs = (burst / rate) * 1000;
+  function allow(key) {
     const t = now();
     let b = buckets.get(key);
-    if (!b) { b = { tokens: burst, at: t }; buckets.set(key, b); }
+    if (!b) {
+      if (buckets.size >= maxKeys) {
+        for (const [k, x] of buckets) if (t - x.at >= fullAfterMs) buckets.delete(k);
+        if (buckets.size >= maxKeys) buckets.clear();
+      }
+      b = { tokens: burst, at: t };
+      buckets.set(key, b);
+    }
     b.tokens = Math.min(burst, b.tokens + (t - b.at) / 1000 * rate);
     b.at = t;
-    if (buckets.size > 50000) buckets.clear();
     if (b.tokens < 1) return false;
     b.tokens -= 1;
     return true;
-  };
+  }
+  allow.size = () => buckets.size;
+  return allow;
 }
 
 // The client's address. Behind the local reverse proxy (Caddy) the request
 // comes from loopback, and the proxy's X-Forwarded-For names the client.
+function isLoopback(remote) {
+  const ip = String(remote || "").replace(/^::ffff:/, "");
+  return ip === "127.0.0.1" || ip === "::1";
+}
+
 function clientIp(remote, forwarded) {
   const ip = String(remote || "").replace(/^::ffff:/, "");
-  const loopback = ip === "127.0.0.1" || ip === "::1";
-  if (loopback && forwarded) return String(forwarded).split(",").pop().trim();
+  if (isLoopback(ip) && forwarded) return String(forwarded).split(",").pop().trim().slice(0, 64);
   return ip;
 }
 
-module.exports = { Sessions, MatchTickets, rateLimiter, clientIp, TOKEN_TTL_MS, TICKET_TTL_MS };
+module.exports = { Sessions, MatchTickets, rateLimiter, clientIp, isLoopback, TOKEN_TTL_MS, TICKET_TTL_MS,
+  MAX_TOKENS_PER_USER, MAX_TOKENS };
