@@ -279,3 +279,11 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .field-row select:focus { outline: none; border-color: var(--blood-hot); }
 .actions { gap: 10px; }
 .settings-actions { margin-top: 14px; justify-content: flex-start; }
+
+/* ---- keyboard focus: one clear ring everywhere (mouse clicks don't show it) ---- */
+button:focus-visible, select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--blood-hot);
+  outline-offset: 2px;
+}
+.field-row select:focus-visible { outline: 2px solid var(--blood-hot); outline-offset: 2px; }
+#name-input:focus-visible { outline: none; }   /* the field draws its own ring */
