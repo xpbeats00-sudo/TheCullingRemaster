@@ -19,9 +19,10 @@
     if (!card.length) return;
     var img = card.find(".card-rank-emblem");
     if (!img.length) {
-      // Sized inline: Coherent ignored the stylesheet size for it.
+      // Sized inline: Coherent ignored the stylesheet size for it. Centred on
+      // the row like the level and name columns (the card row is top-aligned).
       img = $('<img class="card-rank-emblem" style="width:2.6vw; height:2.6vw; max-width:2.6vw; max-height:2.6vw;' +
-        ' margin:-0.45vw 0.5vw 0 0; flex:0 0 2.6vw; object-fit:contain;">');
+        ' margin:0 0.6vw 0 0; align-self:center; flex:0 0 2.6vw; object-fit:contain;">');
       card.find(".left-column").after(img);
     }
     img.attr("src", emblem(s.tier.name));

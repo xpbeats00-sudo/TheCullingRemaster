@@ -19,3 +19,4 @@ server/data/profiles*.json
 *.mp4
 __pycache__/
 backups/
+.claude/

@@ -74,9 +74,27 @@ function inventoryTypes() {
   }));
 }
 
+// Custom camos are a one-time purchase: owning a camo's skin on one weapon
+// owns that camo on every weapon. The camo is the part of the asset name after
+// "_XP_" (".../IceAxe_XP_Lava_Storm" -> "Lava_Storm").
+const camoKey = (i) => (i.source === 'xp-camos' ? String(i.asset).split('_XP_')[1] || null : null);
+
+function ownedCamos(p) {
+  const out = new Set();
+  for (const tid of p.owned || []) {
+    const key = camoKey(catalogByTid.get(tid) || {});
+    if (key) out.add(key);
+  }
+  return out;
+}
+
+function ownsItem(p, i, camos = ownedCamos(p)) {
+  return (p.owned || []).includes(i.tid) || camos.has(camoKey(i));
+}
+
 function ownedItems(p) {
-  const bought = new Set(p.owned || []);
-  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && (!isCustom(i) || bought.has(i.tid)))
+  const camos = ownedCamos(p);
+  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && (!isCustom(i) || ownsItem(p, i, camos)))
     .map((i) => ({ i: i.tid, q: 1 }));
 }
 
@@ -529,7 +547,7 @@ io.on('connection', (socket) => {
       socket.emit('purchase-fail', { reason: 'ranked-reward' });
       return;
     }
-    if (item && isForSale(item) && !p.owned.includes(typeId)) {
+    if (item && isForSale(item) && !ownsItem(p, item)) {
       const price = Math.round(item.purchaseCost);
       if (p.cullCredits < price) {
         log('purchase refused', socket.userID, typeId, `${p.cullCredits} < ${price}`);

@@ -78,6 +78,7 @@ function UpdateEquipAllButton(screen) {
   if (!button) {
     var panel = document.getElementById("cust-purchase-equip-container");
     if (!panel) {
+      if (window.UiTrace) UiTrace("equip-all: purchase/equip panel not found");
       return;
     }
     $(panel).append(
