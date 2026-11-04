@@ -1,4 +1,4 @@
-"""Per-skin audit table for the custom weapon skins (ANIMATED_SKIN_AUDIT.md).
+"""Per-skin audit table for the custom weapon skins (docs/ANIMATED_SKIN_AUDIT.md).
 
 For every catalog skin from make_camos.py: the skin package and its camo
 texture go through audit_assets.audit() (re-save, tag walk, texture platform
