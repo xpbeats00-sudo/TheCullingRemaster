@@ -179,6 +179,8 @@ Tests, all passing (`node test/<name>.test.js` in `server/`):
 - existing: `camopurchase`, `lastbreath` (11), `matchresult` (8), `ranked`, `session` (6);
 - new: `metrics` (7), `store` (11), `shutdown` (2 on Windows; SIGTERM and SIGINT variants on other systems).
 
+Later: player accounts (`accounts.js`, `accounts.test.js`, 14 tests; see `docs/ACCOUNTS.md`) add `accounts.json` to the same coalesced saves and stop flush, and account counts to `/metrics`. Password hashing (scrypt, 32 MB, tens of ms each) runs off the event loop, at most 2 at a time. The test harnesses start the server with `CULLING_REQUIRE_ACCOUNT=0` unless a test is about accounts.
+
 `matchresult` and `camopurchase` read `profiles.json` right after each request. They now start their server with `CULLING_SAVE_DELAY_MS=0` (write on every change, as before). Their assertions are unchanged.
 
 ## 6. Capacity statement (account server only)

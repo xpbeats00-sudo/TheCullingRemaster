@@ -179,6 +179,12 @@ function rateLimiter(rate, burst, now = Date.now, maxKeys = 50000) {
     return true;
   }
   allow.size = () => buckets.size;
+  // Give back one request (e.g. a password attempt that turned out right:
+  // only failures should count against a failure limit).
+  allow.refund = (key) => {
+    const b = buckets.get(key);
+    if (b) b.tokens = Math.min(burst, b.tokens + 1);
+  };
   return allow;
 }
 
