@@ -49,7 +49,7 @@ Grants are kept in memory and in `accounts.json`, so a server restart in the mid
 
 **Limits, plainly:** the game proves nothing; the address is the only check. Anyone on the same public IP as a player who pressed PLAY in the last 12 hours (the same home network, the same café or campus NAT, a carrier-grade NAT shared with strangers) can log the game in as that player during the grant, if they know the player's userID (it is not secret: it is in the player's game folder and in anything the player shares). They get that player's profile in the game, not their password, email or account token. Separately, a player whose address changes (for example a VPN reconnect) has to press PLAY again before the game can log in again.
 
-Enforcement: environment variable `CULLING_REQUIRE_ACCOUNT`, on unless set to `0`. `install_vps.ps1 -RequireAccount 0` installs the service with it off. With it off, `/api/login` behaves exactly as before accounts (any userID logs in), and the account endpoints still work.
+Enforcement: environment variable `CULLING_REQUIRE_ACCOUNT`, on unless set to `0`. The installer keeps the service's current setting unless told otherwise, and starts with it off: `install_vps.ps1 -RequireAccount 1` turns it on (do this only once launcher 1.3.0 is published), `-RequireAccount 0` turns it off. So `Update Culling Server.bat` never changes it. With it off, `/api/login` behaves exactly as before accounts (any userID logs in), and the account endpoints still work.
 
 ## Personal data stored
 
