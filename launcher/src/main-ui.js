@@ -194,7 +194,8 @@
     $("#update-launcher").textContent = state.build ? state.build.label : "v" + state.appVersion;
     $("#update-patch").textContent = state.release ? `${state.installed || "none"} installed, ${state.release} available` : "-";
     $("#update-server").textContent = new URL(state.settings.manifestUrl).host;
-    $("#update-note").textContent = state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
+    $("#update-note").textContent = state.launcherUpdate && state.launcherUpdate.error ? state.launcherUpdate.error
+      : state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
     $("#opt-intro").checked = state.settings.playIntro;
     $("#opt-close").checked = state.settings.closeOnLaunch;
     $("#opt-parallel").value = String(state.settings.parallel);
@@ -391,7 +392,21 @@
     return ` · ${bytes(rate.bps)}/s · ${eta} left`;
   }
 
+  // The launcher updating itself: it restarts on its own when done.
+  function onLauncherUpdate(p) {
+    const pct = Math.floor(p.done / p.total * 100);
+    const box = $("#status-game");
+    box.className = "status-game busy";
+    $("#status-title").textContent = "Updating launcher";
+    $("#status-sub").textContent = p.done < p.total ? `Version ${p.version} · ${pct}%` : `Version ${p.version} · restarting`;
+    const btn = $("#play");
+    btn.disabled = true;
+    btn.classList.add("working");
+    $("#play-label").textContent = "Updating";
+  }
+
   function onSyncProgress(p) {
+    if (p.phase === "launcher") return onLauncherUpdate(p);
     let frac, label;
     if (p.phase === "verify") { frac = p.done / p.total; label = `${repairing ? "Repairing: checking" : "Checking"} ${p.done.toLocaleString()} / ${p.total.toLocaleString()} files`; rate.t = 0; rate.bps = 0; }
     else if (p.phase === "install") { frac = p.total ? p.done / p.total : 1; label = p.done < p.total ? `Installing ${p.total.toLocaleString()} files` : "Finalizing"; }
@@ -435,6 +450,7 @@
     btn.disabled = true;
     try {
       state = await call(api.checkUpdates);
+      if (state.restarting) { toast(`Installing launcher ${state.launcherUpdate.version}: it restarts by itself.`, "info"); return; }
       toast(state.pending && state.pending.files ? "An update is ready to install." : "You're on the latest release.", "info");
     } catch (e) {
       state = await api.state();
