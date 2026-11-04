@@ -74,6 +74,9 @@ def main(paks_dir, out_path):
             try:
                 pkg = Package(data)
                 asset = os.path.splitext(os.path.basename(name))[0]
+                # Some files differ in case from their asset (AirDrop_Cyclops
+                # holds Airdrop_Cyclops); a missed asset is an item nobody owns.
+                asset = next((e["name"] for e in pkg.exports if e["name"].lower() == asset.lower()), asset)
                 props = {p[0]: p[6] for p in pkg.props(asset)}
                 cls = pkg.ref(pkg.export(asset)["class"])
             except Exception:

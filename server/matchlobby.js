@@ -139,6 +139,8 @@ class MatchLobbies {
       maps: this.options.maps ? this.tally(lobby) : null,
       // Bots in each player's own match (for the pregame roster).
       matchBots: this.options.matchBots || 0,
+      // Per map, for menus that know the game places more on some maps.
+      matchBotsByMap: this.options.matchBotsByMap || null,
       map: lobby.map,
       note: this.options.note || null
     };

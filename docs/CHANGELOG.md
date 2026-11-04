@@ -1,5 +1,15 @@
 # Changelog
 
+## Game (next release)
+
+**Airdrops unlock by level**
+- The six locked airdrops unlock as players level up, at a level worked out from the tiers of what each one gives (each weapon or armor counts its tier, other items count 1): Demon Hunter, Hawks Eye and Viking at 6, Cyclops at 8, The Imp at 9, Polecat at 10. The menu shows the level beside the lock and on the preview.
+- They were locked for everyone before: their files differ in case from their assets, so the item catalog never had them. Archer was missing the same way.
+
+**Bigger matches**
+- Up to 24 contestants instead of 16 (Victory.exe patched by `patch/patch_exe.py`): 23 bots on Jungle. Bots have 25 names, so none show an ID.
+- Ranked scores a match out of the contestants it really had: 24 on Jungle from the new build, 16 on Prison and from older builds.
+
 ## Launcher 1.3.0 (not yet published)
 
 **Accounts**

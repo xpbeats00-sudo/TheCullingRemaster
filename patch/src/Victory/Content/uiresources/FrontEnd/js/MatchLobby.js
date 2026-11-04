@@ -25,7 +25,8 @@
   // (patch_assets.py BOT_NAMES, VictoryGameMode's BotNames).
   var BOT_NAMES = ["Dominoss", "Bigred", "Riskybixnew", "Bongzilla", "Billybobjrjr", "999Jay", "Slugling",
     "Sunsetwayboy", "HopelesslyNameless", "Arky", "ShadowRick",
-    "Tony The Ninja", "Mandroid 5000", "Lord Xeinous", "Dr. Bonesaw", "Big Purp", "Frank"];
+    "Tony The Ninja", "Mandroid 5000", "Lord Xeinous", "Dr. Bonesaw", "Big Purp", "Frank",
+    "Viper Kid", "MossyBoots", "GrimJoe", "Kilowatt", "NoScopeNana", "Rusty Spoon", "The Barber", "Pyrelord"];
   var CSS = [
     // Three parts over the menu: the state at the top middle (where the stock
     // queue widget sits; it is hidden while this is up), the map vote at the
@@ -251,24 +252,32 @@
     root.querySelector(".rl-clock").textContent = time;
   }
 
+  // Bots in your match: how many the game places on the chosen map (24
+  // contestants on Jungle, patch_exe.py), else the server's default.
+  function matchBots(lobby) {
+    var byMap = lobby.matchBotsByMap;
+    return byMap && lobby.map && typeof byMap[lobby.map] == "number" ? byMap[lobby.map] : lobby.matchBots;
+  }
+
   // The pregame roster: you, then the bots of your match.
   function renderRoster(lobby, list, names) {
+    var count = matchBots(lobby);
     var me = myName(), you = null;
     for (var i = 0; i < lobby.players.length; i++) if (lobby.players[i].name === me) you = lobby.players[i];
     if (!you) you = lobby.players[0];
     list.appendChild(row(you, true));
     names[you.name] = true;
-    var cards = botCards(lobby.id, lobby.matchBots), bots = botNames(lobby.id, lobby.matchBots);
-    var shown = lobby.matchBots > ROWS - 1 ? ROWS - 2 : lobby.matchBots;
+    var cards = botCards(lobby.id, count), bots = botNames(lobby.id, count);
+    var shown = count > ROWS - 1 ? ROWS - 2 : count;
     for (var b = 0; b < shown; b++) { list.appendChild(botRow(bots[b], cards[b], lobby.id * 31 + b + 1)); names["bot " + bots[b]] = true; }
-    if (shown < lobby.matchBots) {
-      var more = emptyRow("+" + (lobby.matchBots - shown) + " more contestants");
+    if (shown < count) {
+      var more = emptyRow("+" + (count - shown) + " more contestants");
       more.className = "rl-row more";
       list.appendChild(more);
     }
     var others = lobby.players.length - 1;
     build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
-    build().querySelector(".rl-count").textContent = (lobby.matchBots + 1) + " contestants";
+    build().querySelector(".rl-count").textContent = (count + 1) + " contestants";
     build().querySelector(".rl-note").textContent = others > 0
       ? others + (others === 1 ? " other player" : " other players") + " from this lobby start their own match. " + (lobby.note || "")
       : (lobby.note || "");

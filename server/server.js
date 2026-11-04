@@ -34,6 +34,10 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 // The two offline matches the game can start (DefaultGame.ini OfflineMap /
 // OfflineMap2): the lobby's map vote picks one.
 const MAPS = { jungle: 0, prison: 1 };
+// Contestants the game places on each map with patch_exe.py's 24 cap: Jungle
+// has 24 player starts. Prison has 16, and whether more than 16 spawn there
+// hasn't been measured, so it is scored as 16 (never more than it has).
+const FIELD_BY_MAP = { jungle: 24, prison: 16 };
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
@@ -126,11 +130,16 @@ function ownsItem(p, i, camos = ownedCamos(p)) {
   return (p.owned || []).includes(i.tid) || camos.has(camoKey(i));
 }
 
+// Items with an unlockLevel (the airdrops that start locked, from
+// patch/make_airdrop_unlocks.py) are owned once the player reaches it.
+const levelReached = (p, i) => !i.unlockLevel || ((p.stats && p.stats.level) || 1) >= i.unlockLevel;
+
 function ownedItems(p) {
   const camos = ownedCamos(p);
-  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && (!isCustom(i) || ownsItem(p, i, camos)))
+  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && levelReached(p, i) && (!isCustom(i) || ownsItem(p, i, camos)))
     .map((i) => ({ i: i.tid, q: 1 }));
 }
+const entitlements = (p) => ({ data: { items: ownedItems(p) } });
 
 // Cull credits: a starting balance, then earned in matches.
 const STARTING_CREDITS = 10000;
@@ -451,10 +460,11 @@ app.post('/api/matchresult', (req, res) => {
   const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
   // Too short to be a real match: no win, and ranked counts it as last place.
   const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
+  const field = matchField(claim.ticket.map, body.cap);
   const r = {
     victory: !tooShort && (body.victory === true || body.victory === 'true'),
-    // 15 opponents at most (16 contestants); damage within what 15 can take.
-    kills: bounded(parseInt(body.kills, 10), ranked.CONFIG.field - 1),
+    // Every other contestant at most; damage within what 15 can take.
+    kills: bounded(parseInt(body.kills, 10), field - 1),
     damage: bounded(Number(body.damage), 5000),
     // No longer than the match has actually run.
     timeAlive: bounded(Number(body.timeAlive), Math.min(4 * 3600, claim.elapsed + 30)),
@@ -466,9 +476,9 @@ app.post('/api/matchresult', (req, res) => {
   p.cullCredits += credits;
   let rankedResult = null;
   if (p.ranked && p.ranked.pending) {
-    const placement = tooShort ? ranked.CONFIG.field : r.victory ? 1 : parseInt(body.placement, 10);
+    const placement = tooShort ? field : r.victory ? 1 : parseInt(body.placement, 10);
     if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
-    const out = ranked.finishMatch(p, { matchId: body.matchId, placement, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
+    const out = ranked.finishMatch(p, { matchId: body.matchId, placement, field, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
       Date.now(), rankedGrant(p));
     if (out.error) log('ranked result rejected', out.error, JSON.stringify(body).slice(0, 200));
     else {
@@ -480,7 +490,8 @@ app.post('/api/matchresult', (req, res) => {
   const s = p.stats;
   s.xp = Math.min(seasonXPCap(), s.xp + earned);
   const level = Math.min(SEASON.maxLevel, levelForXP(s.xp) || s.level);
-  if (level && level !== s.level) {
+  const levelled = Boolean(level && level !== s.level);
+  if (levelled) {
     log('level', userID, s.level, '->', level);
     s.level = level;
   }
@@ -495,6 +506,8 @@ app.post('/api/matchresult', (req, res) => {
   log('match result', userID, JSON.stringify(r), `+${earned} XP (${startXP} -> ${s.xp}), +${credits} credits`);
   const socket = socketsByUser.get(userID);
   if (socket) sendPlayer(socket, p);
+  // A new level can unlock airdrops: the menu gets them without a restart.
+  if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
   res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult });
 });
 
@@ -508,9 +521,12 @@ app.post('/api/setlevel', (req, res) => {
   const allowed = Math.min(SEASON.maxLevel, levelForXP(p0.stats.xp) || SEASON.maxLevel);
   if (level > 0 && level <= allowed) {
     const p = p0;
-    if (level !== p.stats.level) log('level', userID, p.stats.level, '->', level);
+    const levelled = level !== p.stats.level;
+    if (levelled) log('level', userID, p.stats.level, '->', level);
     p.stats.level = level;
     saveProfiles();
+    const socket = levelled && socketsByUser.get(userID);
+    if (socket) socket.emit('entitlements-response', entitlements(p));
   }
   res.json({ ok: true });
 });
@@ -894,8 +910,10 @@ const lobbies = new MatchLobbies({
     maxPlayers: 16,
     maps: Object.keys(MAPS),
     // Who else is in each player's match: the game fills it with bots up to
-    // 16 contestants (Victory.exe caps players plus bots at 16).
+    // 16 contestants (Victory.exe caps players plus bots at 16), or up to
+    // FIELD_BY_MAP with patch_exe.py (menus from those builds read the map's).
     matchBots: 15,
+    matchBotsByMap: Object.fromEntries(Object.entries(FIELD_BY_MAP).map(([m, n]) => [m, n - 1])),
     note: 'Each player fights bots on their own PC'
   },
   describe: (m) => lobbyCard(m.id),
@@ -945,7 +963,7 @@ function startLocalMatch(socket, queue) {
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
 function launchMatch(socket, queue, map) {
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
-  tickets.start(socket.userID, socketIp(socket));
+  tickets.start(socket.userID, socketIp(socket), { map: Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
   if (String(queue).startsWith('ranked')) {
     const p = getProfile(socket.userID || normalizeUserID());
     const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
@@ -959,6 +977,14 @@ function launchMatch(socket, queue, map) {
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
+}
+
+// How many contestants a match had: the stock 16 unless the game reports a
+// higher cap (builds with patch_exe.py), then what the map places, within it.
+function matchField(map, cap) {
+  const reported = parseInt(cap, 10);
+  if (!Number.isInteger(reported) || reported <= ranked.CONFIG.field) return ranked.CONFIG.field;
+  return Math.min(reported, ranked.CONFIG.maxField, FIELD_BY_MAP[map] || ranked.CONFIG.field);
 }
 
 // A short string from a client message, or `fallback`.
@@ -1074,7 +1100,7 @@ io.on('connection', (socket) => {
   // The game only asks for owned items now and then, so push them whenever
   // the catalog has (re)loaded as well.
   const sendEntitlements = () => socket.emit('entitlements-response',
-    { data: { items: ownedItems(getProfile(socket.userID || normalizeUserID())) } });
+    entitlements(getProfile(socket.userID || normalizeUserID())));
   on('get-entitlements', sendEntitlements);
   on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {

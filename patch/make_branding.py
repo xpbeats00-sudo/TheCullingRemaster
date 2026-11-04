@@ -165,6 +165,12 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 .play-tiled-menu-options-container ul li.play-showdown-bg:focus,
 .play-tiled-menu-options-container ul li.play-showdown-bg:hover { background-image: url("../images/ShowdownPlay_sel.png") !important; }
 #play-menu .play-showdown-bg { cursor: default; }
+/* Airdrops that unlock by level (make_airdrop_unlocks.py): the level beside the
+   lock, and on the preview. */
+#airdrop-menu-options .airdrop-unlock-level { font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw;
+  color: rgba(200, 200, 200, 0.85); white-space: nowrap; align-self: center; margin-left: auto; padding-right: 0.4vw; }
+#airdrop-preview-container .airdrop-unlock-note { font: 1.2vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw;
+  color: rgba(255, 70, 60, 1); margin: -0.4vw 0 0.8vw 20px; }
 """
 LOGO_SIZES = {"cullinglogo.png": (857, 290), "cullinglogo_sm.png": (343, 116)}
 XAVIANT = (5.5, 8.9)           # seconds of the Xaviant logo in LoadingScreen.mp4
@@ -221,6 +227,7 @@ def rebrand_html(src_html):
         html = html.replace(old, new)
     html = add_ranked(html)
     html = add_play_screen(html)
+    html = add_airdrop_unlocks(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
 
@@ -307,6 +314,28 @@ def add_play_screen(html):
     custom = '<li tabindex="0" data-push-screen="Custom" class="play-custom-bg"'
     assert html.count(custom) == 1
     return html.replace(custom, SHOWDOWN_TILE.lstrip() + "          " + custom)
+
+
+AIRDROP_LOCK = '<div class="lock-icon" rv-hide="airdrop.bIsUnlocked"></div>'
+AIRDROP_LEVEL = '<div class="airdrop-unlock-level" rv-hide="airdrop.bIsUnlocked">{airdrop.ItemID | airdropUnlockText}</div>'
+AIRDROP_TITLE = '<h1>{screenData.PreviewAirdrop.DisplayName} <span>{screenData.PreviewAirdrop.Cost}</span></h1>'
+AIRDROP_NOTE = ('<p class="airdrop-unlock-note" rv-hide="screenData.PreviewAirdrop.bIsUnlocked">'
+                '{screenData.PreviewAirdrop.ItemID | airdropUnlockNote}</p>')
+
+
+def add_airdrop_unlocks(html):
+    """The Airdrop screen: the level that unlocks each locked airdrop beside its
+    lock and under the preview's title (js/AirdropUnlocks.js, loaded before the
+    screen binds). Safe to run on a page that already has it."""
+    if "AirdropUnlocks.js" in html:
+        return html
+    for old, new in [(AIRDROP_LOCK, AIRDROP_LEVEL + "\n              " + AIRDROP_LOCK),
+                     (AIRDROP_TITLE, AIRDROP_TITLE + "\n          " + AIRDROP_NOTE),
+                     ('<script src="js/Screens/Airdrop.js"></script>',
+                      '<script src="js/AirdropUnlocks.js"></script>\n  <script src="js/Screens/Airdrop.js"></script>')]:
+        assert html.count(old) == 1, old
+        html = html.replace(old, new)
+    return html
 
 
 def make_intro(game_root):
