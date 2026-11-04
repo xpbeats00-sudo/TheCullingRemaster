@@ -79,7 +79,11 @@ if ($have -ne "v$NodeVersion") {
 
 Step 'Server code'
 $app = Join-Path $Root 'app'
-foreach ($f in 'server.js', 'ranked.js', 'session.js', 'store.js', 'metrics.js', 'accounts.js', 'matchlobby.js', 'lastbreath.js', 'package.json', 'package-lock.json') {
+# Every server module (a fixed list missed showdown.js, and the service then
+# failed to start), minus the old server.before-*.js backups.
+$modules = Get-ChildItem (Join-Path $Repo 'server') -Filter '*.js' -File | Where-Object { $_.Name -notlike '*.before-*' }
+foreach ($m in $modules) { Copy-Item $m.FullName (Join-Path $app $m.Name) -Force }
+foreach ($f in 'package.json', 'package-lock.json') {
     Copy-Item (Join-Path $Repo "server\$f") (Join-Path $app $f) -Force
 }
 # Operator commands (node tools\account_admin.js ...), run on the VPS while the service is running.
@@ -87,6 +91,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $app 'tools') | Out-Null
 Copy-Item (Join-Path $Repo 'server\tools\account_admin.js') (Join-Path $app 'tools\account_admin.js') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $app 'data') | Out-Null
 Copy-Item (Join-Path $Repo 'server\data\lastbreath.ini') (Join-Path $app 'data\lastbreath.ini') -Force
+# Showdown's kit (server.js reads it from beside the code; make_showdown.py writes it).
+Copy-Item (Join-Path $Repo 'server\data\showdown.json') (Join-Path $app 'data\showdown.json') -Force
 Push-Location $app
 try {
     $env:Path = (Join-Path $Root 'node') + ';' + $env:Path
