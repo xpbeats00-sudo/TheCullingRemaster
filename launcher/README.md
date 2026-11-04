@@ -1,7 +1,7 @@
 # The Culling Remaster launcher
 
 Electron app: animated startup screen, then a launcher with **Servers**, **Game Sync**, **Update**, **Settings** and **PLAY**.
-It installs the whole game with the Remaster into a new folder (by default `%LOCALAPPDATA%\Programs\The Culling Remaster`), or uses a Steam copy it finds, and keeps it up to date from a release manifest. The version and build (`v1.1.0 · build <commit>`) show in the startup screen's corner and on the Update tab.
+It installs the whole game with the Remaster into a new folder (by default `%LOCALAPPDATA%\TheCullingRemaster\Game`, apart from the launcher's own folder), or uses a Steam copy it finds, and keeps it up to date from a release manifest. The version and build (`v1.1.0 · build <commit>`) show in the startup screen's corner and on the Update tab.
 
 ## Run
 
