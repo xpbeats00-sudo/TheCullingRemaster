@@ -19,8 +19,22 @@ SRC = os.path.join(HERE, "src")
 # asset path -> {export name -> {property: value}}
 TUNING = {
     "Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset": {
-        # 50 bots plus you (stock: 15).
+        # Victory.exe caps players plus bots at 16 (exe VA 0x14023218a), so solo
+        # gets 15 bots whatever this asks for; 50 just means "as many as allowed".
         "Default__VictoryGameMode_C": {"BotsToSpawn": 50},
+    },
+    # Faster bot reactions (UNTESTED IN GAME: playtest before releasing).
+    # Behavior-tree service intervals in seconds (stock in brackets).
+    "Victory/Content/Blueprints/AI/Trees/MatchBot.uasset": {
+        "Listen_C_0": {"Interval": 1.5, "RandomDeviation": 0.5},     # hearing check (4.0 +- 1.0)
+        "FindBestTarget_C_1": {"Interval": 0.5},                      # target choice (1.0)
+        "SelectAction_C_24": {"Interval": 0.3},                       # next action (0.6)
+    },
+    # Bot sight (UNTESTED IN GAME). Pairs with the AISense_Sight trace budget
+    # in DefaultGame.ini, so the wider cone doesn't make spotting slower.
+    "Victory/Content/Blueprints/AI/Base/BasicController.uasset": {
+        "AISenseConfig_Sight_1": {"SightRadius": 5000.0, "LoseSightRadius": 6500.0,    # (3500, 5000)
+                                  "PeripheralVisionAngleDegrees": 90.0},                # (75)
     },
     "Victory/Content/Blueprints/Environment/MatchPhaseManager_BP.uasset": {
         # Gas timeline (stock: iris at 15:00, then +5:00 map shutdown,
