@@ -1,0 +1,39 @@
+{
+ "source": "patch/make_showdown.py",
+ "kit": {
+  "id": "showdown",
+  "name": "Showdown kit",
+  "items": [
+   {
+    "id": "WeapTomahawk_C",
+    "name": "Tomahawk",
+    "category": "melee",
+    "tier": 3,
+    "description": "Tier 3 Axe",
+    "icon": "WeapTomahawk",
+    "autoEquip": false,
+    "inInventory": true
+   },
+   {
+    "id": "BodyArmor_C",
+    "name": "Tactical Body Armor",
+    "category": "armor",
+    "tier": null,
+    "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+    "icon": "BodyArmor",
+    "autoEquip": true,
+    "inInventory": true
+   },
+   {
+    "id": "MuscleManMilk_C",
+    "name": "Muscle Man Milk",
+    "category": "muscle_milk",
+    "tier": null,
+    "description": "Increases melee damage dealt by 15% for 2 minutes",
+    "icon": "MuscleManMilk",
+    "autoEquip": false,
+    "inInventory": true
+   }
+  ]
+ }
+}

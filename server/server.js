@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { ShowdownSeries } = require('./showdown');
 const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
@@ -38,6 +39,17 @@ const MAPS = { jungle: 0, prison: 1 };
 // has 24 player starts. Prison has 16, and whether more than 16 spawn there
 // hasn't been measured, so it is scored as 16 (never more than it has).
 const FIELD_BY_MAP = { jungle: 24, prison: 16 };
+// Showdown (patch/make_showdown.py): you against one bot in the Jungle centre
+// arena. No lobby or map vote; the menu starts it from "showdown:<format>".
+// Rounds: first to 4 (ShowdownSeries). A round can be won fast, so its result
+// needs 15 s, not the 2 minutes of a normal match. The round's kit (the same
+// for both sides) comes from data/showdown.json, written by make_showdown.py.
+const SHOWDOWN = { queue: 'showdown', map: 'arena', format: '1v1', field: 2, roundsToWin: 4,
+  minSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_SECONDS || '15', 10) };
+let showdownKit = null;
+try { showdownKit = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'showdown.json'), 'utf8')).kit || null; } catch (e) { showdownKit = null; }
+const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin });
+const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, format: SHOWDOWN.format });
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
@@ -459,7 +471,8 @@ app.post('/api/matchresult', (req, res) => {
   // Infinity/NaN credits or XP into profiles.json.
   const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
   // Too short to be a real match: no win, and ranked counts it as last place.
-  const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
+  const showdown = claim.ticket.map === SHOWDOWN.map;
+  const tooShort = claim.elapsed < (showdown ? SHOWDOWN.minSeconds : MIN_MATCH_SECONDS);
   const field = matchField(claim.ticket.map, body.cap);
   const r = {
     victory: !tooShort && (body.victory === true || body.victory === 'true'),
@@ -508,7 +521,24 @@ app.post('/api/matchresult', (req, res) => {
   if (socket) sendPlayer(socket, p);
   // A new level can unlock airdrops: the menu gets them without a restart.
   if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
-  res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult });
+  let showdownResult = null;
+  if (showdown) {
+    const series = showdowns.recordRound(userID, r.victory);
+    if (series) {
+      showdownResult = showdownState(series.over ? 'over' : 'round-over', series);
+      log('showdown round', userID, series.round, r.victory ? 'won' : 'lost', series.wins + '-' + series.losses, series.over ? (series.won ? 'VICTORY' : 'defeat') : '');
+    }
+  }
+  res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: showdownResult });
+});
+
+// Showdown: the HUD asks which round this match is and what the kit holds
+// (the pre-round panel). Only for a Showdown match that is being played.
+app.get('/api/showdown', (req, res) => {
+  const ticket = tickets.peek({ userID: userFromRequest(req), ip: requestIp(req) });
+  if (!ticket || ticket.map !== SHOWDOWN.map) return res.json({ active: false });
+  const series = showdowns.current(ticket.userID);
+  res.json(Object.assign({ active: Boolean(series) }, showdownState('round', series ? showdowns.view(series) : null)));
 });
 
 // The HUD asks the game for the level matching the new XP and reports it back.
@@ -956,14 +986,20 @@ function lobbyQueue(raw) {
 function startLocalMatch(socket, queue) {
   const { mode, map } = lobbyQueue(queue);
   socket.emit('join-mm-ack');
+  if (mode === SHOWDOWN.queue) {
+    const series = showdowns.startRound(socket.userID);
+    socket.emit('remaster-showdown', showdownState('round', series));
+    return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map);
+  }
   lobbies.join(mode, { id: socket.userID, socket }, map);
 }
 
 // The lobby's countdown ended: this player's match starts (against bots, on
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
 function launchMatch(socket, queue, map) {
+  const showdown = queue === SHOWDOWN.queue;
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
-  tickets.start(socket.userID, socketIp(socket), { map: Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
+  tickets.start(socket.userID, socketIp(socket), { map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
   if (String(queue).startsWith('ranked')) {
     const p = getProfile(socket.userID || normalizeUserID());
     const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
@@ -971,9 +1007,9 @@ function launchMatch(socket, queue, map) {
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
     saveProfiles();
   }
-  log('match-ready ->', socket.userID, 'offline map', mapIndex);
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : 'offline map ' + mapIndex);
   socket.emit('match-ready', {
-    gameServer: 'offline:' + mapIndex,
+    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : 'offline:' + mapIndex,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
@@ -982,9 +1018,22 @@ function launchMatch(socket, queue, map) {
 // How many contestants a match had: the stock 16 unless the game reports a
 // higher cap (builds with patch_exe.py), then what the map places, within it.
 function matchField(map, cap) {
+  if (map === SHOWDOWN.map) return SHOWDOWN.field;
   const reported = parseInt(cap, 10);
   if (!Number.isInteger(reported) || reported <= ranked.CONFIG.field) return ranked.CONFIG.field;
   return Math.min(reported, ranked.CONFIG.maxField, FIELD_BY_MAP[map] || ranked.CONFIG.field);
+}
+
+// Back in the menu after a Showdown round: the next round, or the final score
+// (once).
+function sendShowdown(socket) {
+  const s = showdowns.last(socket.userID);
+  if (!s || s.inRound) return;
+  if (!s.over) return socket.emit('remaster-showdown', showdownState('next', showdowns.view(s)));
+  if (!s.announced) {
+    s.announced = true;
+    socket.emit('remaster-showdown', showdownState('over', showdowns.view(s)));
+  }
 }
 
 // A short string from a client message, or `fallback`.
@@ -1069,10 +1118,16 @@ io.on('connection', (socket) => {
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);
+    later(() => sendShowdown(socket), 1500);
   });
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => { lobbies.leave(socket.userID); socket.emit('leave-mm-ack'); });
+  // Showdown: leave the series from the menu (the next round isn't played).
+  on('showdown-leave', () => {
+    const series = showdowns.leave(socket.userID);
+    if (series) socket.emit('remaster-showdown', showdownState('left', series));
+  });
   // Matchmaking lobby: this player's map vote (MatchLobby.js).
   on('lobby-vote-map', (msg) => { lobbies.vote(socket.userID, msg && typeof msg.map === 'string' ? msg.map : null); });
   on('leave-group', () => socket.emit('left-group', 0));

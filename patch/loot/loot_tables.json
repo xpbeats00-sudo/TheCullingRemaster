@@ -1,0 +1,2060 @@
+{
+ "source": "Read from the game's cooked assets by patch/loot_tables.py",
+ "tiers": {
+  "Tier1": [
+   {
+    "item": "WeapAutoBow_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapIceAxe_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapCleaver_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapSabre_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapKukri_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapCrowbar_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapSteelPipe_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapRecurveBow_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapExplosiveMine_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapRemoteExplosive_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapPike_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapJavelin_C",
+    "weight": 1,
+    "chance": 0.0625
+   }
+  ],
+  "Tier2": [
+   {
+    "item": "WeapCompoundBow_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapTomahawk_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapYari_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapBowieKnife_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapTacticalMachete_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapSurvivalAxe_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapBaseballBat_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapPipeWrench_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "WeapSurvivalSpear_C",
+    "weight": 1,
+    "chance": 0.0625
+   },
+   {
+    "item": "HardenedArmor_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "HemoBlast_C",
+    "weight": 2,
+    "chance": 0.125
+   },
+   {
+    "item": "LungButter_C",
+    "weight": 2,
+    "chance": 0.125
+   }
+  ],
+  "Tier3": [
+   {
+    "item": "WeapFiremansAxe_C",
+    "weight": 3,
+    "chance": 0.0938
+   },
+   {
+    "item": "WeapKatana_C",
+    "weight": 3,
+    "chance": 0.0938
+   },
+   {
+    "item": "WeapSledgehammer_C",
+    "weight": 3,
+    "chance": 0.0938
+   },
+   {
+    "item": "WeapTrident_C",
+    "weight": 3,
+    "chance": 0.0938
+   },
+   {
+    "item": "Weap357Magnum_C",
+    "weight": 4,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapRifle_C",
+    "weight": 4,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapSMG_C",
+    "weight": 4,
+    "chance": 0.125
+   },
+   {
+    "item": "WeapImpactGrenade_C",
+    "weight": 4,
+    "chance": 0.125
+   },
+   {
+    "item": "BodyArmor_C",
+    "weight": 4,
+    "chance": 0.125
+   }
+  ]
+ },
+ "maps": {
+  "Jungle": {
+   "Tier1": [
+    {
+     "item": "OrangeJuice_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapStunGun_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapCompoundBow_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapTomahawk_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapSurvivalSpear_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapKukri_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapSabre_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapBaseballBat_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapPipeWrench_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "WeapBowieKnife_C",
+     "weight": 10,
+     "chance": 0.0885
+    },
+    {
+     "item": "Weap357Magnum_C",
+     "weight": 1,
+     "chance": 0.0088
+    },
+    {
+     "item": "WeapRifle_C",
+     "weight": 1,
+     "chance": 0.0088
+    },
+    {
+     "item": "WeapSMG_C",
+     "weight": 1,
+     "chance": 0.0088
+    },
+    {
+     "item": "WeapTacticalMachete_C",
+     "weight": 10,
+     "chance": 0.0885
+    }
+   ]
+  }
+ },
+ "containers": {
+  "CrateSpawner_BlueCrate": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "LootContainer_Blue_C",
+     "weight": 1,
+     "chance": 1.0
+    }
+   ]
+  },
+  "CrateSpawner_Explosives": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "LootContainer_Explosive_C",
+     "weight": 1,
+     "chance": 1.0
+    }
+   ]
+  },
+  "CrateSpawner_Parent": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "LootContainerParent_Bunkers2_C",
+     "weight": 1,
+     "chance": 1.0
+    }
+   ]
+  },
+  "CrateSpawner_RandoAirDrop": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "SupplyDrop_Express_C",
+     "weight": 0,
+     "chance": 0.0
+    }
+   ]
+  },
+  "CrateSpawner_RandoCenterRing": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "SupplyDrop_SingleItem_NoQuad_C",
+     "weight": 1,
+     "chance": 1.0
+    }
+   ]
+  },
+  "LootContainerParent_Bunkers2": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapCrowbar_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "WeapIceAxe_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "WeapJavelin_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "WeapCleaver_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "WeapExplosiveMine_C",
+     "weight": 40,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapRemoteExplosive_C",
+     "weight": 40,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapDynamite_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapImpactGrenade_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapSteelPipe_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "BodyArmor_C",
+     "weight": 40,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapRecurveBow_C",
+     "weight": 80,
+     "chance": 0.1
+    },
+    {
+     "item": "WeapSabre_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "WeapKukri_C",
+     "weight": 50,
+     "chance": 0.0625
+    },
+    {
+     "item": "WeapAutoBow_C",
+     "weight": 80,
+     "chance": 0.1
+    },
+    {
+     "item": "WeapStunGun_C",
+     "weight": 40,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapSteelPunjiSticks_C",
+     "weight": 80,
+     "chance": 0.1
+    },
+    {
+     "item": "WeapPike_C",
+     "weight": 50,
+     "chance": 0.0625
+    }
+   ]
+  },
+  "LootContainer_Blue": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapCompoundBow_C",
+     "weight": 200,
+     "chance": 0.2008
+    },
+    {
+     "item": "WeapTomahawk_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "WeapSurvivalSpear_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "WeapBaseballBat_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "WeapPipeWrench_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "OrangeJuice_C",
+     "weight": 120,
+     "chance": 0.1205
+    },
+    {
+     "item": "WeapBowieKnife_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "Weap357Magnum_C",
+     "weight": 10,
+     "MinAmmo": 6,
+     "MaxAmmo": 6,
+     "chance": 0.01
+    },
+    {
+     "item": "WeapRifle_C",
+     "weight": 10,
+     "MinAmmo": 4,
+     "MaxAmmo": 4,
+     "chance": 0.01
+    },
+    {
+     "item": "WeapSMG_C",
+     "weight": 10,
+     "MinAmmo": 20,
+     "MaxAmmo": 20,
+     "chance": 0.01
+    },
+    {
+     "item": "WeapTacticalMachete_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "WeapSurvivalAxe_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "WeapYari_C",
+     "weight": 62,
+     "chance": 0.0622
+    },
+    {
+     "item": "WeapDynamite_C",
+     "weight": 75,
+     "chance": 0.0753
+    },
+    {
+     "item": "WeapImpactGrenade_C",
+     "weight": 75,
+     "chance": 0.0753
+    }
+   ]
+  },
+  "LootContainer_Blue_Tutorial": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapCompoundBow_C",
+     "weight": 100,
+     "chance": 1.0
+    }
+   ]
+  },
+  "LootContainer_Explosive": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapCompoundBow_C",
+     "weight": 200,
+     "chance": 0.2
+    },
+    {
+     "item": "WeapTomahawk_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapSurvivalSpear_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapBaseballBat_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapPipeWrench_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "OrangeJuice_C",
+     "weight": 149,
+     "chance": 0.149
+    },
+    {
+     "item": "WeapBowieKnife_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "Weap357Magnum_C",
+     "weight": 17,
+     "MinAmmo": 6,
+     "MaxAmmo": 6,
+     "chance": 0.017
+    },
+    {
+     "item": "WeapRifle_C",
+     "weight": 17,
+     "MinAmmo": 4,
+     "MaxAmmo": 4,
+     "chance": 0.017
+    },
+    {
+     "item": "WeapSMG_C",
+     "weight": 17,
+     "MinAmmo": 20,
+     "MaxAmmo": 20,
+     "chance": 0.017
+    },
+    {
+     "item": "WeapTacticalMachete_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapSurvivalAxe_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapYari_C",
+     "weight": 50,
+     "chance": 0.05
+    },
+    {
+     "item": "WeapDynamite_C",
+     "weight": 100,
+     "chance": 0.1
+    },
+    {
+     "item": "WeapImpactGrenade_C",
+     "weight": 100,
+     "chance": 0.1
+    }
+   ]
+  },
+  "LootContainer_Gold_Event": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapChainsaw_C",
+     "weight": 0,
+     "chance": 0.0
+    }
+   ]
+  },
+  "LootContainer_Toilet": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "ExplosiveRuns_C",
+     "weight": 1,
+     "chance": 0.25
+    },
+    {
+     "item": "Bandage_C",
+     "weight": 3,
+     "chance": 0.75
+    }
+   ]
+  },
+  "Storage_CabinetLarge_DualHinge": {
+   "ItemSpawner30FB7FB949BE3A1D2AF292B4E916BF82": [
+    {
+     "item": "Backpack_C",
+     "weight": 9,
+     "chance": 0.0918
+    },
+    {
+     "item": null,
+     "weight": 78,
+     "chance": 0.7959
+    },
+    {
+     "item": "BodyArmor_C",
+     "weight": 3,
+     "chance": 0.0306
+    },
+    {
+     "item": "WeapIceAxe_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapCleaver_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapSabre_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapKukri_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapCrowbar_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapSteelPipe_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapJavelin_C",
+     "weight": 1,
+     "chance": 0.0102
+    },
+    {
+     "item": "WeapPike_C",
+     "weight": 1,
+     "chance": 0.0102
+    }
+   ],
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapManTracker_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "Medkit_C",
+     "weight": 75,
+     "chance": 0.0509
+    },
+    {
+     "item": "Iron4Skin_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "MuscleManMilk_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "ExplosiveRuns_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "Bandage_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "WeapBrassKnuckles_C",
+     "weight": 33,
+     "chance": 0.0224
+    },
+    {
+     "item": "WeapSteelSnare_C",
+     "weight": 33,
+     "chance": 0.0224
+    },
+    {
+     "item": "WeapPepperSpray_C",
+     "weight": 50,
+     "chance": 0.0339
+    },
+    {
+     "item": "WeapAlarmGun_C",
+     "weight": 50,
+     "MinAmmo": 1,
+     "MaxAmmo": 1,
+     "chance": 0.0339
+    },
+    {
+     "item": "WeapHammer_C",
+     "weight": 33,
+     "chance": 0.0224
+    },
+    {
+     "item": "WeapTonfa_C",
+     "weight": 33,
+     "chance": 0.0224
+    },
+    {
+     "item": "WeapTantoKnife_C",
+     "weight": 50,
+     "chance": 0.0339
+    },
+    {
+     "item": "WeapMachete_C",
+     "weight": 50,
+     "chance": 0.0339
+    },
+    {
+     "item": "WeapSteelCaltrops_C",
+     "weight": 33,
+     "chance": 0.0224
+    },
+    {
+     "item": "WeapSteelPunjiSticks_C",
+     "weight": 33,
+     "chance": 0.0224
+    },
+    {
+     "item": "WeapPitchfork_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "WeapCampHatchet_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "StealthyShot_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "LungButter_C",
+     "weight": 100,
+     "chance": 0.0679
+    },
+    {
+     "item": "HemoDrip_C",
+     "weight": 100,
+     "chance": 0.0679
+    }
+   ]
+  },
+  "Storage_FridgeLarge_LeftHinge": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "OrangeJuice_C",
+     "weight": 1,
+     "chance": 0.01
+    },
+    {
+     "item": "FuncIntheFridge_C",
+     "weight": 50,
+     "chance": 0.5
+    },
+    {
+     "item": null,
+     "weight": 49,
+     "chance": 0.49
+    }
+   ]
+  },
+  "Storage_Locker_LeftHinge": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapManTracker_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "Medkit_C",
+     "weight": 75,
+     "chance": 0.0487
+    },
+    {
+     "item": "Iron4Skin_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "MuscleManMilk_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "ExplosiveRuns_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "Bandage_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "WeapBrassKnuckles_C",
+     "weight": 33,
+     "chance": 0.0214
+    },
+    {
+     "item": "WeapSteelSnare_C",
+     "weight": 33,
+     "chance": 0.0214
+    },
+    {
+     "item": "WeapPepperSpray_C",
+     "weight": 50,
+     "chance": 0.0325
+    },
+    {
+     "item": "WeapAlarmGun_C",
+     "weight": 50,
+     "MinAmmo": 1,
+     "MaxAmmo": 1,
+     "chance": 0.0325
+    },
+    {
+     "item": "WeapHammer_C",
+     "weight": 33,
+     "chance": 0.0214
+    },
+    {
+     "item": "WeapTonfa_C",
+     "weight": 33,
+     "chance": 0.0214
+    },
+    {
+     "item": "WeapTantoKnife_C",
+     "weight": 50,
+     "chance": 0.0325
+    },
+    {
+     "item": "WeapMachete_C",
+     "weight": 50,
+     "chance": 0.0325
+    },
+    {
+     "item": "WeapSteelCaltrops_C",
+     "weight": 33,
+     "chance": 0.0214
+    },
+    {
+     "item": "StealthyShot_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "WeapCampHatchet_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "HemoDrip_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "LungButter_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "WeapCampHatchet_C",
+     "weight": 100,
+     "chance": 0.0649
+    },
+    {
+     "item": "WeapPitchfork_C",
+     "weight": 100,
+     "chance": 0.0649
+    }
+   ]
+  },
+  "Storage_MedicineCabinet_LeftHinge": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "Medkit_C",
+     "weight": 50,
+     "chance": 0.0303
+    },
+    {
+     "item": "Iron4Skin_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": "MuscleManMilk_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": "ExplosiveRuns_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": "Bandage_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": "WeapTantoKnife_C",
+     "weight": 50,
+     "chance": 0.0303
+    },
+    {
+     "item": "StealthyShot_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": "HemoDrip_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": "HemoDrip_C",
+     "weight": 100,
+     "chance": 0.0606
+    },
+    {
+     "item": null,
+     "weight": 750,
+     "chance": 0.4545
+    },
+    {
+     "item": "HemoBlast_C",
+     "weight": 100,
+     "chance": 0.0606
+    }
+   ]
+  },
+  "Storage_WeaponCabinet": {
+   "ItemSpawnerComponent_1": [
+    {
+     "item": "WeapBrassKnuckles_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapHammer_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapCampHatchet_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapTantoKnife_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapPitchfork_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapTonfa_C",
+     "weight": 0,
+     "chance": 0.0
+    },
+    {
+     "item": "WeapMachete_C",
+     "weight": 0,
+     "chance": 0.0
+    }
+   ]
+  },
+  "dumpster": {
+   "ItemSpawnerLeft_GEN_VARIABLE": [
+    {
+     "item": "OrangeJuice_C",
+     "weight": 1,
+     "chance": 0.01
+    },
+    {
+     "item": "FuncIntheFridge_C",
+     "weight": 50,
+     "chance": 0.5
+    },
+    {
+     "item": null,
+     "weight": 49,
+     "chance": 0.49
+    }
+   ],
+   "ItemSpawnerRight_GEN_VARIABLE": [
+    {
+     "item": "OrangeJuice_C",
+     "weight": 1,
+     "chance": 0.01
+    },
+    {
+     "item": "FuncIntheFridge_C",
+     "weight": 50,
+     "chance": 0.5
+    },
+    {
+     "item": null,
+     "weight": 49,
+     "chance": 0.49
+    }
+   ]
+  },
+  "CrateSpawner_ExplosveBarrel": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "Hazard_ExplodingBarrel_C",
+     "weight": 1,
+     "chance": 1.0
+    }
+   ]
+  },
+  "CrateSpawner_FUNC": {
+   "ItemSpawnerComponent_109": [
+    {
+     "item": "Hazard_ExplodingFuncBarrel_C",
+     "weight": 1,
+     "chance": 1.0
+    }
+   ]
+  }
+ },
+ "gameModes": {
+  "VictoryGameMode": {
+   "GreenCratesToSpawn": 12,
+   "RedBarrelsToSpawn": 15,
+   "PylonsToSpawn": 22,
+   "ToiletGoodies": 5,
+   "ChanceOfAdditionalGreenCratesInBuildings": 50,
+   "BotsToSpawn": 15,
+   "SpawnPointTags": [
+    "SpawnsDecentral",
+    "Default"
+   ],
+   "GameModeType": "EVictoryGameMode::Classic"
+  },
+  "VictoryGameMode_Coop": {
+   "GameModeType": "EVictoryGameMode::ClassicTeams"
+  },
+  "VictoryGameMode_CoopRanked": {
+   "GameModeType": "EVictoryGameMode::ClassicTeams"
+  },
+  "VictoryGameMode_Custom": {
+   "GameModeType": "EVictoryGameMode::Custom"
+  },
+  "VictoryGameMode_EndOfMatch": {
+   "BotsToSpawn": 0,
+   "SpawnPointTags": [
+    "SpawnsDecentral",
+    "Default"
+   ]
+  },
+  "VictoryGameMode_Lightning": {
+   "GreenCratesToSpawn": 0,
+   "RedCratesToSpawn": 0,
+   "FuncBarrelsToSpawn": 0,
+   "ToiletGoodies": 0,
+   "SmallBuildingItemSpawns": 0,
+   "MediumBuildingItemSpawns": 0,
+   "LargeBuildingItemSpawns": 0,
+   "ExtraLargeBuildingItemSpawns": 0,
+   "ChanceOfLockersPreOpened": 100,
+   "StartingActivityValueOverride": 0,
+   "MatchWarmupTime": 5,
+   "SelectedAirDrop": "AirDrop_zRandom",
+   "SpawnPointTags": [
+    "SpawnsLightning",
+    "Default"
+   ],
+   "GameModeType": "EVictoryGameMode::Lightning",
+   "mOverridenAirdrops": [
+    "AirDrop_zRandom"
+   ]
+  },
+  "VictoryGameMode_Lightning_Coop2": {
+   "GameModeType": "EVictoryGameMode::LightningTeams"
+  },
+  "VictoryGameMode_NewTutorial": {
+   "StartingActivityValueOverride": 45,
+   "BotsToSpawn": 0,
+   "MatchWarmupTime": 10,
+   "GameModeType": "EVictoryGameMode::Tutorial"
+  },
+  "VictoryGameMode_Practice": {
+   "StartingActivityValueOverride": 250,
+   "BotsToSpawn": 0,
+   "MatchWarmupTime": 1,
+   "GameModeType": "EVictoryGameMode::Practice"
+  },
+  "VictoryGameMode_PracticeRange": {
+   "StartingActivityValueOverride": 45,
+   "BotsToSpawn": 0,
+   "MatchWarmupTime": 10,
+   "GameModeType": "EVictoryGameMode::Practice"
+  },
+  "VictoryGameMode_RandomShit": {
+   "GreenCratesToSpawn": 50,
+   "RedCratesToSpawn": 50,
+   "RedBarrelsToSpawn": 50,
+   "PylonsToSpawn": 50,
+   "FuncBarrelsToSpawn": 50,
+   "ToiletGoodies": 100,
+   "SmallBuildingItemSpawns": 10,
+   "MediumBuildingItemSpawns": 10,
+   "LargeBuildingItemSpawns": 20,
+   "ExtraLargeBuildingItemSpawns": 20,
+   "ChanceOfAdditionalGreenCratesInBuildings": 100,
+   "ChanceOfLockersPreOpened": 0,
+   "StartingActivityValueOverride": 400
+  },
+  "VictoryGameMode_Solo": {},
+  "VictoryGameMode_SoloRanked": {},
+  "VictoryGameMode_Survival": {
+   "StartingActivityValueOverride": 10,
+   "MatchWarmupTime": 3,
+   "SpawnPointTags": [
+    "Default"
+   ],
+   "GameModeType": "EVictoryGameMode::Survival"
+  },
+  "VictoryGameMode_SurvivalAdvanced": {
+   "StartingActivityValueOverride": 10,
+   "MatchWarmupTime": 3,
+   "SpawnPointTags": [
+    "Default"
+   ],
+   "GameModeType": "EVictoryGameMode::SurvivalAdvanced"
+  },
+  "VictoryGameMode_TrialsSolo": {
+   "SpawnPointTags": [
+    "SpawnsDecentral",
+    "Default"
+   ],
+   "GameModeType": "EVictoryGameMode::Classic"
+  }
+ },
+ "airdrops": {
+  "Airdrop_Archer": {
+   "name": "Archer",
+   "itemId": "140102",
+   "funcCost": 85,
+   "items": [
+    "WeapRecurveBow_C",
+    "ExplosiveRuns_C",
+    "LungButter_C"
+   ]
+  },
+  "Airdrop_Cyclops": {
+   "name": "Cyclops",
+   "itemId": "140111",
+   "funcCost": 135,
+   "items": [
+    "WeapTrident_C",
+    "BodyArmor_C",
+    "WeapSteelSnare_C"
+   ]
+  },
+  "Airdrop_DemonHunter": {
+   "name": "Demon Hunter",
+   "itemId": "140112",
+   "funcCost": 70,
+   "items": [
+    "WeapAutoBow_C",
+    "WeapCraftedSmokeBomb_C",
+    "WeapCraftedCaltrops_C",
+    "WeapCraftedCaltrops_C"
+   ]
+  },
+  "Airdrop_HawksEye": {
+   "name": "Hawks Eye",
+   "itemId": "140115",
+   "funcCost": 100,
+   "items": [
+    "WeapCompoundBow_C",
+    "WeapCraftedSmokeBomb_C",
+    "WeapGasGrenade_C"
+   ]
+  },
+  "Airdrop_Polecat": {
+   "name": "Polecat",
+   "itemId": "140126",
+   "funcCost": 130,
+   "items": [
+    "WeapTrident_C",
+    "WeapSurvivalSpear_C",
+    "WeapYari_C"
+   ]
+  },
+  "Airdrop_TheImp": {
+   "name": "The Imp",
+   "itemId": "140138",
+   "funcCost": 105,
+   "items": [
+    "WeapAutoBow_C",
+    "HardenedArmor_C",
+    "Iron4Skin_C",
+    "WeapTomahawk_C"
+   ]
+  },
+  "Airdrop_Viking": {
+   "name": "Viking",
+   "itemId": "140142",
+   "funcCost": 80,
+   "items": [
+    "WeapTomahawk_C",
+    "HardenedArmor_C",
+    "MuscleManMilk_C"
+   ]
+  },
+  "AirDrop_zRandom": {
+   "name": "Surprise Me!",
+   "itemId": "140144",
+   "funcCost": null,
+   "items": [
+    "WeapZRandom_C"
+   ]
+  },
+  "Airdrop_Addict": {
+   "name": "Addict",
+   "itemId": "140101",
+   "funcCost": 125,
+   "items": [
+    "OrangeJuice_C",
+    "HemoBlast_C",
+    "HemoDrip_C",
+    "StealthyShot_C"
+   ]
+  },
+  "Airdrop_BaitCrate": {
+   "name": "Bait Crate",
+   "itemId": "140103",
+   "funcCost": 70,
+   "items": [
+    "DepDecoyExplosive_C"
+   ]
+  },
+  "Airdrop_Bandito": {
+   "name": "Bandito",
+   "itemId": "140104",
+   "funcCost": 175,
+   "items": [
+    "WeapSMG_C",
+    "WeapRemoteExplosive_C"
+   ]
+  },
+  "Airdrop_BoarHunter": {
+   "name": "Boar Hunter",
+   "itemId": "140105",
+   "funcCost": 115,
+   "items": [
+    "WeapSurvivalSpear_C",
+    "WeapSurvivalSpear_C",
+    "ExplosiveRuns_C",
+    "Backpack_C"
+   ]
+  },
+  "Airdrop_CarJacker": {
+   "name": "Car Jacker",
+   "itemId": "140106",
+   "funcCost": 70,
+   "items": [
+    "WeapCrowbar_C",
+    "WeapRemoteExplosive_C"
+   ]
+  },
+  "Airdrop_Chef": {
+   "name": "Chef",
+   "itemId": "140107",
+   "funcCost": 85,
+   "items": [
+    "WeapCleaver_C",
+    "HardenedArmor_C",
+    "MuscleManMilk_C",
+    "WeapPepperSpray_C"
+   ]
+  },
+  "Airdrop_ChimneySweep": {
+   "name": "Chimney Sweep",
+   "itemId": "140108",
+   "funcCost": 85,
+   "items": [
+    "WeapPike_C",
+    "WeapSteelSnare_C",
+    "WeapCraftedSmokeBomb_C",
+    "WeapCraftedSmokeBomb_C"
+   ]
+  },
+  "Airdrop_Climber": {
+   "name": "Climber",
+   "itemId": "140109",
+   "funcCost": 80,
+   "items": [
+    "WeapIceAxe_C",
+    "Backpack_C",
+    "WeapSteelSnare_C",
+    "WeapPepperSpray_C"
+   ]
+  },
+  "Airdrop_Commando": {
+   "name": "Commando",
+   "itemId": "140110",
+   "funcCost": 155,
+   "items": [
+    "WeapCompoundBow_C",
+    "WeapImpactGrenade_C",
+    "WeapBowieKnife_C"
+   ]
+  },
+  "Airdrop_Dwarf": {
+   "name": "Dwarf",
+   "itemId": "140113",
+   "funcCost": 155,
+   "items": [
+    "WeapFiremansAxe_C",
+    "WeapDynamite_C",
+    "Iron4Skin_C"
+   ]
+  },
+  "Airdrop_Guerilla": {
+   "name": "Guerilla",
+   "itemId": "140114",
+   "funcCost": 80,
+   "items": [
+    "WeapMachete_C",
+    "WeapExplosiveMine_C",
+    "WeapCraftedPunjiSticks_C",
+    "WeapCraftedPunjiSticks_C"
+   ]
+  },
+  "Airdrop_Hoodlum": {
+   "name": "Hoodlum",
+   "itemId": "140116",
+   "funcCost": 115,
+   "items": [
+    "WeapBrassKnuckles_C",
+    "Iron4Skin_C",
+    "Satchel_C"
+   ]
+  },
+  "Airdrop_Hunter": {
+   "name": "Hunter",
+   "itemId": "140117",
+   "funcCost": 175,
+   "items": [
+    "WeapAlarmGun_C",
+    "WeapManTracker_C",
+    "WeapRifle_C"
+   ]
+  },
+  "Airdrop_Javelineer": {
+   "name": "Javelineer",
+   "itemId": "140118",
+   "funcCost": 75,
+   "items": [
+    "WeapJavelin_C",
+    "WeapJavelin_C",
+    "WeapJavelin_C",
+    "Satchel_C"
+   ]
+  },
+  "Airdrop_Juggler": {
+   "name": "Juggler",
+   "itemId": "140119",
+   "funcCost": 120,
+   "items": [
+    "WeapTomahawk_C",
+    "WeapTomahawk_C",
+    "WeapTomahawk_C",
+    "Backpack_C"
+   ]
+  },
+  "Airdrop_Lizzie": {
+   "name": "Lizzie",
+   "itemId": "140120",
+   "funcCost": 110,
+   "items": [
+    "WeapSurvivalAxe_C",
+    "Backpack_C",
+    "MuscleManMilk_C",
+    "HemoDrip_C"
+   ]
+  },
+  "Airdrop_LumberJack": {
+   "name": "Lumber Jack",
+   "itemId": "140121",
+   "funcCost": 150,
+   "items": [
+    "WeapChainsaw_C",
+    "Iron4Skin_C",
+    "LungButter_C"
+   ]
+  },
+  "Airdrop_Medic": {
+   "name": "Medic",
+   "itemId": "140122",
+   "funcCost": 140,
+   "items": [
+    "Backpack_C",
+    "Medkit_C",
+    "HemoBlast_C",
+    "BodyArmor_C"
+   ]
+  },
+  "Airdrop_Ninja": {
+   "name": "Ninja",
+   "itemId": "140123",
+   "funcCost": 130,
+   "items": [
+    "WeapKatana_C",
+    "WeapCraftedSmokeBomb_C",
+    "WeapCraftedSmokeBomb_C",
+    "WeapCraftedCaltrops_C"
+   ]
+  },
+  "Airdrop_Pirate": {
+   "name": "Pirate",
+   "itemId": "140124",
+   "funcCost": 145,
+   "items": [
+    "WeapSabre_C",
+    "Weap357Magnum_C"
+   ]
+  },
+  "Airdrop_Plumber": {
+   "name": "Plumber",
+   "itemId": "140125",
+   "funcCost": 105,
+   "items": [
+    "WeapPipeWrench_C",
+    "Iron4Skin_C",
+    "MuscleManMilk_C",
+    "WeapCraftedExplosive_C"
+   ]
+  },
+  "Airdrop_Police": {
+   "name": "Police",
+   "itemId": "140127",
+   "funcCost": 185,
+   "items": [
+    "Weap357Magnum_C",
+    "WeapTonfa_C",
+    "BodyArmor_C"
+   ]
+  },
+  "Airdrop_Pothead": {
+   "name": "Pothead",
+   "itemId": "140128",
+   "funcCost": 95,
+   "items": [
+    "WeapSteelPipe_C",
+    "OrangeJuice_C",
+    "WeapCraftedExplosive_C"
+   ]
+  },
+  "Airdrop_Sapper": {
+   "name": "Sapper",
+   "itemId": "140129",
+   "funcCost": 205,
+   "items": [
+    "WeapDynamite_C",
+    "WeapDynamite_C",
+    "WeapDynamite_C",
+    "Iron4Skin_C"
+   ]
+  },
+  "Airdrop_SelfDefense": {
+   "name": "Self Defense",
+   "itemId": "140130",
+   "funcCost": 80,
+   "items": [
+    "WeapPepperSpray_C",
+    "Satchel_C",
+    "WeapStunGun_C"
+   ]
+  },
+  "Airdrop_Slugger": {
+   "name": "Slugger",
+   "itemId": "140131",
+   "funcCost": 80,
+   "items": [
+    "WeapBaseballBat_C",
+    "MuscleManMilk_C",
+    "ExplosiveRuns_C"
+   ]
+  },
+  "Airdrop_Smuggler": {
+   "name": "Smuggler",
+   "itemId": "140132",
+   "funcCost": 75,
+   "items": [
+    "WeapSabre_C",
+    "Backpack_C",
+    "WeapManTracker_C"
+   ]
+  },
+  "Airdrop_Sniper": {
+   "name": "Sniper",
+   "itemId": "140133",
+   "funcCost": 175,
+   "items": [
+    "WeapRifle_C",
+    "WeapExplosiveMine_C"
+   ]
+  },
+  "Airdrop_Stalker": {
+   "name": "Stalker",
+   "itemId": "140134",
+   "funcCost": 95,
+   "items": [
+    "WeapKukri_C",
+    "WeapManTracker_C",
+    "WeapStunGun_C"
+   ]
+  },
+  "Airdrop_Survivalist": {
+   "name": "Survivalist",
+   "itemId": "140135",
+   "funcCost": 140,
+   "items": [
+    "WeapTacticalMachete_C",
+    "BodyArmor_C",
+    "Medkit_C",
+    "LungButter_C"
+   ]
+  },
+  "Airdrop_Swat": {
+   "name": "Swat",
+   "itemId": "140136",
+   "funcCost": 200,
+   "items": [
+    "WeapSMG_C",
+    "BodyArmor_C",
+    "WeapCraftedSmokeBomb_C"
+   ]
+  },
+  "Airdrop_SwissGuard": {
+   "name": "Swiss Guard",
+   "itemId": "140137",
+   "funcCost": 130,
+   "items": [
+    "WeapYari_C",
+    "BodyArmor_C",
+    "HemoBlast_C",
+    "Iron4Skin_C"
+   ]
+  },
+  "Airdrop_Thief": {
+   "name": "Thief",
+   "itemId": "140139",
+   "funcCost": 90,
+   "items": [
+    "WeapBowieKnife_C",
+    "WeapPepperSpray_C",
+    "Backpack_C",
+    "WeapSteelSnare_C"
+   ]
+  },
+  "Airdrop_Tough": {
+   "name": "Tough",
+   "itemId": "140140",
+   "funcCost": 145,
+   "items": [
+    "WeapSledgehammer_C",
+    "BodyArmor_C",
+    "Iron4Skin_C"
+   ]
+  },
+  "Airdrop_Trapper": {
+   "name": "Trapper",
+   "itemId": "140141",
+   "funcCost": 85,
+   "items": [
+    "WeapSteelSnare_C",
+    "WeapSteelCaltrops_C",
+    "WeapExplosiveMine_C",
+    "WeapSteelPunjiSticks_C"
+   ]
+  },
+  "Airdrop_WitchDoctor": {
+   "name": "Witch Doctor",
+   "itemId": "140143",
+   "funcCost": 85,
+   "items": [
+    "WeapCraftedBlowgun_C",
+    "WeapCraftedSmokeBomb_C",
+    "WeapGasGrenade_C",
+    "WeapCraftedExplosive_C"
+   ]
+  }
+ },
+ "items": {
+  "Backpack_C": {
+   "name": "Backpack",
+   "category": "utility",
+   "tier": null,
+   "description": "Adds two inventory slots, for a maximum of five"
+  },
+  "Bandage_C": {
+   "name": "Bandage",
+   "category": "healing",
+   "tier": null,
+   "description": "Replenishes 40 health"
+  },
+  "BodyArmor_C": {
+   "name": "Tactical Body Armor",
+   "category": "armor",
+   "tier": null,
+   "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage"
+  },
+  "DepDecoyExplosive_C": {
+   "name": "Bait Crate",
+   "category": "trap",
+   "tier": null,
+   "description": "Call in a Bait Crate that explodes dealing 50 damage when opened."
+  },
+  "ExplosiveRuns_C": {
+   "name": "X-plosive Runs",
+   "category": "inject",
+   "tier": null,
+   "description": "Increases sprint speed by 15% for 2 minutes"
+  },
+  "FuncIntheFridge_C": {
+   "name": "FuncIntheFridge_C",
+   "category": "currency",
+   "tier": null,
+   "description": ""
+  },
+  "HardenedArmor_C": {
+   "name": "Crafted Armor",
+   "category": "armor",
+   "tier": null,
+   "description": "Absorbs 50% of incoming damage, destroyed after it receives 20 points of damage"
+  },
+  "Hazard_ExplodingBarrel_C": {
+   "name": "Hazard_ExplodingBarrel_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "Hazard_ExplodingFuncBarrel_C": {
+   "name": "Hazard_ExplodingFuncBarrel_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "HemoBlast_C": {
+   "name": "Hemo Blast",
+   "category": "inject",
+   "tier": null,
+   "description": "Increases max health by 10"
+  },
+  "HemoDrip_C": {
+   "name": "Hemo Drip",
+   "category": "inject",
+   "tier": null,
+   "description": "Heal 5 hitpoints and regen 20 hitpoints over 20 seconds."
+  },
+  "Iron4Skin_C": {
+   "name": "Iron-4-Skin",
+   "category": "inject",
+   "tier": null,
+   "description": "Reduces incoming damage by 15% for two minutes"
+  },
+  "LootContainerParent_Bunkers2_C": {
+   "name": "LootContainerParent_Bunkers2_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "LootContainer_Blue_C": {
+   "name": "LootContainer_Blue_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "LootContainer_Explosive_C": {
+   "name": "LootContainer_Explosive_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "LungButter_C": {
+   "name": "Lung Butter",
+   "category": "inject",
+   "tier": null,
+   "description": "Increases stamina regen rate"
+  },
+  "Medkit_C": {
+   "name": "Med Kit",
+   "category": "healing",
+   "tier": null,
+   "description": "Fully restores missing health"
+  },
+  "MuscleManMilk_C": {
+   "name": "Muscle Man Milk",
+   "category": "muscle_milk",
+   "tier": null,
+   "description": "Increases melee damage dealt by 15% for 2 minutes"
+  },
+  "OrangeJuice_C": {
+   "name": "Orange Juice",
+   "category": "inject",
+   "tier": null,
+   "description": "Gain the effects of Muscle-Man Milk, Iron-4-Skin, Explosive Runs and Lung Butter for 2 minutes."
+  },
+  "Satchel_C": {
+   "name": "Crafted Satchel",
+   "category": "utility",
+   "tier": null,
+   "description": "Adds one inventory slot, for maximum of four"
+  },
+  "StealthyShot_C": {
+   "name": "Silent But Deadly",
+   "category": "inject",
+   "tier": null,
+   "description": "Movement and crafting are nearly silent for 2 minutes."
+  },
+  "SupplyDrop_Express_C": {
+   "name": "SupplyDrop_Express_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "SupplyDrop_SingleItem_NoQuad_C": {
+   "name": "SupplyDrop_SingleItem_NoQuad_C",
+   "category": "container",
+   "tier": null,
+   "description": ""
+  },
+  "Weap357Magnum_C": {
+   "name": ".357 Magnum",
+   "category": "ranged",
+   "tier": null,
+   "description": "Includes 6 rounds of ammunition."
+  },
+  "WeapAlarmGun_C": {
+   "name": "Alarm Gun",
+   "category": "ranged",
+   "tier": null,
+   "description": "Activates target's emergency tracking beacon, includes 3 darts"
+  },
+  "WeapAutoBow_C": {
+   "name": "Auto Bow",
+   "category": "ranged",
+   "tier": null,
+   "description": "A repeating Hand Crossbow that can fire three shots in quick succession."
+  },
+  "WeapBaseballBat_C": {
+   "name": "Baseball Bat",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Bludgeon"
+  },
+  "WeapBowieKnife_C": {
+   "name": "Bowie Knife",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Blade"
+  },
+  "WeapBrassKnuckles_C": {
+   "name": "Brass Knuckles",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Bludgeon"
+  },
+  "WeapCampHatchet_C": {
+   "name": "Camp Hatchet",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Axe"
+  },
+  "WeapChainsaw_C": {
+   "name": "Chainsaw",
+   "category": "melee",
+   "tier": null,
+   "description": "Comes fully fueled, user reviews report the pull start mechanism is unreliable"
+  },
+  "WeapCleaver_C": {
+   "name": "Cleaver",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Axe"
+  },
+  "WeapCompoundBow_C": {
+   "name": "Compound Bow",
+   "category": "ranged",
+   "tier": null,
+   "description": "High-power bow. Includes 6 arrows (arrows can be crafted with branches)"
+  },
+  "WeapCraftedBlowgun_C": {
+   "name": "Crafted Blowgun",
+   "category": "ranged",
+   "tier": null,
+   "description": "Includes 3 darts (darts can be crafted at Gas Pylons)"
+  },
+  "WeapCraftedCaltrops_C": {
+   "name": "Crafted Caltrops",
+   "category": "trap",
+   "tier": null,
+   "description": "Throwable trap, applies cripple wound to opponents who walk on them"
+  },
+  "WeapCraftedExplosive_C": {
+   "name": "Crafted Explosive",
+   "category": "throwable",
+   "tier": null,
+   "description": "4-second fuse and applies a cripple wound"
+  },
+  "WeapCraftedPunjiSticks_C": {
+   "name": "Crafted Punji Sticks",
+   "category": "trap",
+   "tier": null,
+   "description": "Placeable trap, applies cripple and sickness wounds"
+  },
+  "WeapCraftedSmokeBomb_C": {
+   "name": "Crafted Smoke Bomb",
+   "category": "throwable",
+   "tier": null,
+   "description": "Detonates on impact, applies blindness wound"
+  },
+  "WeapCrowbar_C": {
+   "name": "Crowbar",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Bludgeon"
+  },
+  "WeapDynamite_C": {
+   "name": "Dynamite",
+   "category": "throwable",
+   "tier": null,
+   "description": "4-second fuse and applies a cripple wound"
+  },
+  "WeapExplosiveMine_C": {
+   "name": "Explosive Mine",
+   "category": "throwable",
+   "tier": null,
+   "description": "Placeable trap, detonates on other players and applies a cripple wound"
+  },
+  "WeapFiremansAxe_C": {
+   "name": "Fireman's Axe",
+   "category": "melee",
+   "tier": 4,
+   "description": "Tier 4 Axe"
+  },
+  "WeapGasGrenade_C": {
+   "name": "Gas Grenade",
+   "category": "throwable",
+   "tier": null,
+   "description": "Detonates to create a cloud of poison gas"
+  },
+  "WeapHammer_C": {
+   "name": "Hammer",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Bludgeon"
+  },
+  "WeapIceAxe_C": {
+   "name": "Ice Axe",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Axe"
+  },
+  "WeapImpactGrenade_C": {
+   "name": "Impact Grenade",
+   "category": "throwable",
+   "tier": null,
+   "description": "Detonates on impact and applies a cripple wound"
+  },
+  "WeapJavelin_C": {
+   "name": "Javelin",
+   "category": "throwable",
+   "tier": 2,
+   "description": "Tier 2 Spear"
+  },
+  "WeapKatana_C": {
+   "name": "Katana",
+   "category": "melee",
+   "tier": 4,
+   "description": "Tier 4 Blade"
+  },
+  "WeapKukri_C": {
+   "name": "Kukri",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Blade"
+  },
+  "WeapMachete_C": {
+   "name": "Machete",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Blade"
+  },
+  "WeapManTracker_C": {
+   "name": "Man Tracker",
+   "category": "utility",
+   "tier": null,
+   "description": "Tracks position of nearest opponent"
+  },
+  "WeapPepperSpray_C": {
+   "name": "Pepper Spray",
+   "category": "throwable",
+   "tier": null,
+   "description": "Temporarily blinds opponents"
+  },
+  "WeapPike_C": {
+   "name": "Pike",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Spear"
+  },
+  "WeapPipeWrench_C": {
+   "name": "Pipe Wrench",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Bludgeon"
+  },
+  "WeapPitchfork_C": {
+   "name": "Pitchfork",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Spear"
+  },
+  "WeapRecurveBow_C": {
+   "name": "Recurve Bow",
+   "category": "ranged",
+   "tier": null,
+   "description": "Mid-power bow. Includes 12 arrows (arrows can be crafted with branches)"
+  },
+  "WeapRemoteExplosive_C": {
+   "name": "Remote Explosive",
+   "category": "throwable",
+   "tier": null,
+   "description": "Detonated manually with included remote, applies a cripple wound"
+  },
+  "WeapRifle_C": {
+   "name": "Rifle",
+   "category": "ranged",
+   "tier": null,
+   "description": "Applies bleed wound, includes 4 rounds of ammunition."
+  },
+  "WeapSMG_C": {
+   "name": "SMG",
+   "category": "ranged",
+   "tier": null,
+   "description": "Applies bleed wound, includes 20 rounds of ammunition."
+  },
+  "WeapSabre_C": {
+   "name": "Sabre",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Blade"
+  },
+  "WeapSledgehammer_C": {
+   "name": "Sledgehammer",
+   "category": "melee",
+   "tier": 4,
+   "description": "Tier 4 Bludgeon"
+  },
+  "WeapSteelCaltrops_C": {
+   "name": "Steel Caltrops",
+   "category": "trap",
+   "tier": null,
+   "description": "Throwable trap, applies cripple wound to opponents who walk on them. More difficult to destroy than Crafted Caltrops."
+  },
+  "WeapSteelPipe_C": {
+   "name": "Steel Pipe",
+   "category": "melee",
+   "tier": 2,
+   "description": "Tier 2 Bludgeon"
+  },
+  "WeapSteelPunjiSticks_C": {
+   "name": "Steel Punji Sticks",
+   "category": "trap",
+   "tier": null,
+   "description": "Placeable trap, applies cripple and sickness wounds. More difficult to destroy than Crafted Punji Sticks."
+  },
+  "WeapSteelSnare_C": {
+   "name": "Steel Snare",
+   "category": "trap",
+   "tier": null,
+   "description": "Placeable trap, damages and snares opponents"
+  },
+  "WeapStunGun_C": {
+   "name": "Stun Gun",
+   "category": "ranged",
+   "tier": null,
+   "description": "Stuns a target within close range"
+  },
+  "WeapSurvivalAxe_C": {
+   "name": "Survival Axe",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Axe"
+  },
+  "WeapSurvivalSpear_C": {
+   "name": "Survival Spear",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Spear"
+  },
+  "WeapTacticalMachete_C": {
+   "name": "Tactical Machete",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Blade"
+  },
+  "WeapTantoKnife_C": {
+   "name": "Tanto Knife",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Blade"
+  },
+  "WeapTomahawk_C": {
+   "name": "Tomahawk",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Axe"
+  },
+  "WeapTonfa_C": {
+   "name": "Tonfa",
+   "category": "melee",
+   "tier": 1,
+   "description": "Tier 1 Bludgeon"
+  },
+  "WeapTrident_C": {
+   "name": "Trident",
+   "category": "melee",
+   "tier": 4,
+   "description": "Tier 4 Spear"
+  },
+  "WeapYari_C": {
+   "name": "Yari",
+   "category": "melee",
+   "tier": 3,
+   "description": "Tier 3 Spear"
+  },
+  "WeapZRandom_C": {
+   "name": "Call in a Random Air Drop",
+   "category": "airdrop_token",
+   "tier": null,
+   "description": "Discovering new airdrop packages will add them to your library."
+  }
+ }
+}

@@ -155,8 +155,8 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
   color: rgba(240, 240, 240, 1);
 }
 /* Play screen: five tiles (Solo, Ranked, Duo, Showdown, Custom) in the stock
-   19:25 shape, titles in the Remaster face; Showdown is shown but can't be
-   queued yet (make_showdown_tile.py art). */
+   19:25 shape, titles in the Remaster face; Showdown art from
+   make_showdown_tile.py. */
 .play-tiled-menu-options-container ul li { width: 16vw; height: 21vw; }
 .play-tiled-menu-options-container ul:first-child li { margin-left: 0.6vw; margin-right: 0.6vw; }
 #play-menu .play-title h1 { font: 2.3vw Creepster; letter-spacing: 0.15vw; color: rgba(240, 240, 240, 1); }
@@ -164,7 +164,6 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #play-menu .play-showdown-bg { background-image: url("../images/ShowdownPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
 .play-tiled-menu-options-container ul li.play-showdown-bg:focus,
 .play-tiled-menu-options-container ul li.play-showdown-bg:hover { background-image: url("../images/ShowdownPlay_sel.png") !important; }
-#play-menu .play-showdown-bg { cursor: default; }
 /* Airdrops that unlock by level (make_airdrop_unlocks.py): the level beside the
    lock, and on the preview. */
 #airdrop-menu-options .airdrop-unlock-level { font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw;
@@ -283,7 +282,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
               <div class="tiledhighlighttop"></div>
             </div>
             <div class="tiled-menu-rollover">
-              <p>Coming soon: 1v1 to 4v4 rounds in the arena. Draw a loadout, fight before the gas closes in.</p>
+              <p>1v1 against a bot in the centre arena. Fight before the gas closes in.</p>
             </div>
             <div class="play-title">
               <h1>SHOWDOWN</h1>
@@ -296,24 +295,31 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
 PLAY_TEXT = {
     "solo_play": "Free-for-all against bots. Vote for Jungle or Prison in the lobby.",
     "duo_play": "Fight in pairs against bots. Vote for Jungle or Prison in the lobby.",
+    "showdown_play": "1v1 against a bot in the centre arena. Fight before the gas closes in.",
 }
+# Queues the SHOWDOWN tile (the stock Play screen only queues Solo and Duo).
+SHOWDOWN_SCRIPT = '<script src="js/Showdown.js"></script>'
 
 
 def add_play_screen(html):
     """The Play screen: tile descriptions that say what each mode is, and a
-    SHOWDOWN tile (coming soon: no push screen, so it can't be queued) before
-    CUSTOM. Safe to run on a page that already has it."""
+    SHOWDOWN tile before CUSTOM, queued by js/Showdown.js (make_showdown.py).
+    Safe to run on a page that already has it."""
+    if 'id="showdown_play"' not in html:
+        custom = '<li tabindex="0" data-push-screen="Custom" class="play-custom-bg"'
+        assert html.count(custom) == 1
+        html = html.replace(custom, SHOWDOWN_TILE.lstrip() + "          " + custom)
+    if SHOWDOWN_SCRIPT not in html:
+        play = '<script src="js/Screens/Play.js"></script>'
+        assert html.count(play) == 1
+        html = html.replace(play, play + "\n  " + SHOWDOWN_SCRIPT)
     for tile_id, text in PLAY_TEXT.items():
         start = html.index('id="%s"' % tile_id)
         end = html.index("</li>", start)
         block = html[start:end]
         old = block[block.index("<p>"):block.index("</p>") + 4]
         html = html[:start] + block.replace(old, "<p>%s</p>" % text) + html[end:]
-    if 'id="showdown_play"' in html:
-        return html
-    custom = '<li tabindex="0" data-push-screen="Custom" class="play-custom-bg"'
-    assert html.count(custom) == 1
-    return html.replace(custom, SHOWDOWN_TILE.lstrip() + "          " + custom)
+    return html
 
 
 AIRDROP_LOCK = '<div class="lock-icon" rv-hide="airdrop.bIsUnlocked"></div>'

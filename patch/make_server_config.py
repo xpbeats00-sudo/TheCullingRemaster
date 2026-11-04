@@ -1,7 +1,8 @@
 """Point the patched menus and HUD at a server.
 
 Writes js/RemasterServer.js (var REMASTER_API = "<base>/api") for the front
-end and the HUD, and makes sure both HTML pages load it before anything else.
+end and the HUD, and makes sure both HTML pages load it before anything else
+(and the HUD loads Showdown's ShowdownHud.js after its own hud.js).
 The menu and HUD scripts (RankedUI.js, UiTrace.js, CustomMatchSettings.js,
 hud.js) read REMASTER_API; the client DLL's ClientWeb URL is set separately by
 patch_client_dll.py with the same base.
@@ -17,6 +18,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "src", "Victory", "Content", "uiresources")
 PAGES = {"FrontEnd": "FrontEnd.html", "hud": "hud.html"}
 TAG = '<script src="js/RemasterServer.js"></script>'
+# Showdown's in-match panel and round banner, after the HUD's own script.
+HUD_SCRIPT = '<script src="js/hud.js"></script>'
+SHOWDOWN_HUD = '<script src="js/ShowdownHud.js"></script>'
 
 
 def main(base):
@@ -29,9 +33,16 @@ def main(base):
             f.write('var REMASTER_API = "%s/api";\n' % base)
         html_path = os.path.join(UI, folder, page)
         html = open(html_path, "rb").read().decode("utf-8")
+        changed = False
         if TAG not in html:
             head = html.index("<head>") + len("<head>")
             html = html[:head] + "\n  " + TAG + html[head:]
+            changed = True
+        if folder == "hud" and SHOWDOWN_HUD not in html:
+            assert html.count(HUD_SCRIPT) == 1, HUD_SCRIPT
+            html = html.replace(HUD_SCRIPT, HUD_SCRIPT + "\n  " + SHOWDOWN_HUD)
+            changed = True
+        if changed:
             open(html_path, "wb").write(html.encode("utf-8"))
     print("menus and HUD now use", base + "/api")
 
