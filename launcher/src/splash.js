@@ -20,82 +20,14 @@
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const TAGLINE = "Survive. Fight. Be the last.";
-  let W = 0, H = 0, DPR = 1;
-
-  function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth;
-    H = window.innerHeight;
-    for (const ctx of [back, front]) {
-      ctx.canvas.width = Math.round(W * DPR);
-      ctx.canvas.height = Math.round(H * DPR);
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    }
-  }
+  let W = 0, H = 0;
+  function resize() { ({ W, H } = FX.fitCanvases([back, front])); }
   window.addEventListener("resize", resize);
   resize();
 
   const rand = (a, b) => a + Math.random() * (b - a);
 
-  // ---------------------------------------------------------------- fog
-  // A soft blob sprite, tinted per layer, drifting slowly across the stage.
-  function blobSprite(r, g, b) {
-    const c = document.createElement("canvas");
-    c.width = c.height = 256;
-    const x = c.getContext("2d");
-    const grad = x.createRadialGradient(128, 128, 0, 128, 128, 128);
-    grad.addColorStop(0, `rgba(${r},${g},${b},1)`);
-    grad.addColorStop(0.45, `rgba(${r},${g},${b},0.35)`);
-    grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
-    x.fillStyle = grad;
-    x.fillRect(0, 0, 256, 256);
-    return c;
-  }
-  const FOG_SPRITES = [blobSprite(120, 10, 22), blobSprite(70, 18, 120), blobSprite(40, 12, 30)];
-  const fog = Array.from({ length: 11 }, (_, i) => ({
-    sprite: FOG_SPRITES[i % FOG_SPRITES.length],
-    x: rand(-0.2, 1.2), y: rand(0.35, 1.05),
-    size: rand(0.45, 0.95),
-    vx: rand(-0.006, 0.006), vy: rand(-0.002, 0.001),
-    alpha: rand(0.07, 0.16),
-    phase: rand(0, Math.PI * 2)
-  }));
-
-  // ---------------------------------------------------------------- embers
-  function ember(front) {
-    const hot = Math.random();
-    return {
-      x: rand(0, 1), y: rand(1.0, 1.25),
-      vy: rand(0.035, 0.11) * (front ? 1.4 : 1),
-      sway: rand(0.4, 1.6), swayAmp: rand(0.004, 0.02), phase: rand(0, 6.28),
-      size: front ? rand(1.4, 3.2) : rand(0.6, 2.0),
-      life: 0, max: rand(6, 14),
-      color: hot < 0.12 ? [180, 110, 255] : hot < 0.55 ? [255, 120, 40] : [255, 50, 30]
-    };
-  }
-  const embersBack = Array.from({ length: 110 }, () => Object.assign(ember(false), { y: rand(0, 1.2) }));
-  const embersFront = Array.from({ length: 26 }, () => Object.assign(ember(true), { y: rand(0, 1.2) }));
-
-  function drawEmbers(ctx, list, dt, t, isFront) {
-    ctx.globalCompositeOperation = "lighter";
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i];
-      e.life += dt;
-      e.y -= e.vy * dt;
-      const x = (e.x + Math.sin(t * e.sway + e.phase) * e.swayAmp) * W;
-      const y = e.y * H;
-      const fade = Math.min(1, e.life / 1.2) * Math.max(0, 1 - e.life / e.max);
-      const flicker = 0.65 + 0.35 * Math.sin(t * 9 + e.phase * 3);
-      if (e.y < -0.05 || e.life > e.max) { list[i] = ember(isFront); continue; }
-      const [r, g, b] = e.color;
-      const s = e.size * (isFront ? 1.5 : 1);
-      ctx.fillStyle = `rgba(${r},${g},${b},${0.18 * fade * flicker})`;
-      ctx.beginPath(); ctx.arc(x, y, s * 4, 0, 6.283); ctx.fill();
-      ctx.fillStyle = `rgba(255,${Math.min(255, g + 90)},${Math.min(255, b + 60)},${0.9 * fade * flicker})`;
-      ctx.beginPath(); ctx.arc(x, y, s, 0, 6.283); ctx.fill();
-    }
-    ctx.globalCompositeOperation = "source-over";
-  }
+  const ambient = new FX.Ambient(1);
 
   // ---------------------------------------------------------------- sparks
   const sparks = [];
@@ -181,21 +113,10 @@
     const intro = Math.min(1, t / 1.5);
 
     back.clearRect(0, 0, W, H);
-    back.globalAlpha = intro;
-    for (const f of fog) {
-      f.x += f.vx * dt; f.y += f.vy * dt;
-      if (f.x < -0.5) f.x = 1.5; if (f.x > 1.5) f.x = -0.5;
-      if (f.y < 0.2) f.y = 1.1;
-      const size = f.size * Math.max(W, H) * (1 + 0.06 * Math.sin(t * 0.3 + f.phase));
-      back.globalAlpha = intro * f.alpha * (0.8 + 0.2 * Math.sin(t * 0.5 + f.phase));
-      back.drawImage(f.sprite, f.x * W - size / 2, f.y * H - size / 2, size, size);
-    }
-    back.globalAlpha = intro;
-    drawEmbers(back, embersBack, dt, t, false);
-    back.globalAlpha = 1;
+    ambient.drawBack(back, dt, t, W, H, intro);
 
     front.clearRect(0, 0, W, H);
-    drawEmbers(front, embersFront, dt, t, true);
+    ambient.drawFront(front, dt, t, W, H);
     drawSparks(front, dt);
     drawBolts(front, dt);
 
