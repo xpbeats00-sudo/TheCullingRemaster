@@ -3,7 +3,7 @@
 // step it names runs, synchronously where Coherent allows it, so the last
 // line in the server log before a freeze is the step that hung.
 (function () {
-  var URL = "http://127.0.0.1:8000/api/uitrace";
+  var URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api") + "/uitrace";
   var TRACED = {
     GetFlairCustomizations: 1, GetItemsForCustAndCat: 1, SetPreviewItem: 1,
     SetCustomization: 1, GetCategoriesForCustType: 1, ResetCustomizationPreview: 1

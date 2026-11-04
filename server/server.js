@@ -23,7 +23,9 @@ eioParser.encodePayload = function (packets, supportsBinary, callback) {
 
 const HOST = process.env.CULLING_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.CULLING_PORT || '8000', 10);
-const BASE = `http://${HOST}:${PORT}`;
+// The address clients are told to use (behind HTTPS on the VPS, e.g.
+// https://xplab.shop:8443); defaults to the listen address for local play.
+const BASE = (process.env.CULLING_PUBLIC_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
 const DATA_DIR = process.env.CULLING_DATA_DIR || path.join(__dirname, 'data');
 const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 
@@ -31,6 +33,7 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 // (0 = Jungle / "The Island", 1 = Prison).
 const QUEUE_MAPS = { ffa: 0, coop2: 0, lightning: 0, ranked_ffa: 0 };
 const ranked = require('./ranked');
+const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 
 function log(...args) {
   console.log(new Date().toISOString().slice(11, 19), ...args);
@@ -176,17 +179,20 @@ function sendPlayer(socket, p) {
   });
 }
 
-// token -> userID
-const tokens = new Map();
-// Most recent login; local bot-match results are credited to this player.
-let lastUserID = null;
+// Login tokens (persisted) and the match tickets results are paid against.
+const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'));
+const tickets = new MatchTickets();
+const allowHttp = rateLimiter(20, 60);
+const allowSocket = rateLimiter(30, 90);
 
 function userFromRequest(req) {
   const auth = req.headers.authorization || '';
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  if (m && tokens.has(m[1])) return tokens.get(m[1]);
-  return null;
+  return m ? sessions.userFor(m[1]) : null;
 }
+
+const requestIp = (req) => clientIp(req.socket.remoteAddress, req.headers['x-forwarded-for']);
+const socketIp = (socket) => clientIp(socket.handshake.address, socket.handshake.headers['x-forwarded-for']);
 
 function normalizeUserID(raw) {
   let id = String(raw || '').trim();
@@ -203,6 +209,7 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(express.text({ type: '*/*', limit: '1mb' }));
 
 app.use((req, res, next) => {
+  if (!allowHttp(requestIp(req))) return res.status(429).json({ error: 'too-many-requests' });
   log('HTTP', req.method, req.originalUrl);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
@@ -246,9 +253,7 @@ app.get(['/api', '/api/'], (req, res) => {
 app.post('/api/login', (req, res) => {
   const body = bodyObject(req);
   const userID = normalizeUserID(body.userid);
-  const token = crypto.randomBytes(24).toString('hex');
-  tokens.set(token, userID);
-  lastUserID = userID;
+  const token = sessions.issue(userID);
   getProfile(userID);
   log('login', userID, 'authType=' + body.authType, 'appid=' + body.appid, 'build=' + body.build);
   res.json({ token, redirect: `${BASE}/api`, userID, build: body.build || '0' });
@@ -256,7 +261,15 @@ app.post('/api/login', (req, res) => {
 
 app.post('/api/matchqueue', (req, res) => {
   const body = bodyObject(req);
-  const userID = normalizeUserID(body.userid);
+  // The game posts this itself; trust the body's userid only when that
+  // player's menu is connected from the same address.
+  let userID = userFromRequest(req);
+  if (!userID) {
+    const claimed = normalizeUserID(body.userid);
+    const s = socketsByUser.get(claimed);
+    if (s && socketIp(s) === requestIp(req)) userID = claimed;
+  }
+  if (!userID) return res.status(401).json({ error: 'not-logged-in' });
   const queue = body.queuename || 'ffa';
   log('matchqueue', userID, queue);
   res.json({ status: 'ok', queueName: queue });
@@ -275,10 +288,17 @@ function matchXP(r) {
     + (r.victory ? 1500 : 0);
 }
 
-// Posted by the in-match HUD (patched hud.js) when you die or win.
+// Posted by the in-match HUD (patched hud.js) when you die or win. Paid once
+// per match a player's menu started (the HUD has no token, so the ticket is
+// found by address when needed).
 app.post('/api/matchresult', (req, res) => {
   const body = bodyObject(req);
-  const userID = lastUserID || normalizeUserID();
+  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req) });
+  if (claim.error) {
+    log('match result rejected', claim.error, requestIp(req));
+    return res.status(409).json({ error: claim.error });
+  }
+  const userID = claim.ticket.userID;
   const p = getProfile(userID);
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
   // Infinity/NaN credits or XP into profiles.json.
@@ -287,7 +307,8 @@ app.post('/api/matchresult', (req, res) => {
     victory: body.victory === true || body.victory === 'true',
     kills: bounded(parseInt(body.kills, 10), 200),
     damage: bounded(Number(body.damage), 1e6),
-    timeAlive: bounded(Number(body.timeAlive), 4 * 3600),
+    // No longer than the match has actually run.
+    timeAlive: bounded(Number(body.timeAlive), Math.min(4 * 3600, claim.elapsed + 30)),
     func: bounded(parseInt(body.func, 10), 1e6)
   };
   const startXP = p.stats.xp;
@@ -330,8 +351,9 @@ app.post('/api/matchresult', (req, res) => {
 // The HUD asks the game for the level matching the new XP and reports it back.
 app.post('/api/setlevel', (req, res) => {
   const level = parseInt(bodyObject(req).level, 10);
-  const userID = lastUserID || normalizeUserID();
-  if (level > 0) {
+  const userID = userFromRequest(req) || tickets.recentUser(requestIp(req));
+  if (!userID) return res.status(409).json({ error: 'no-recent-match' });
+  if (level > 0 && level <= 1000) {
     const p = getProfile(userID);
     if (level !== p.stats.level) log('level', userID, p.stats.level, '->', level);
     p.stats.level = level;
@@ -361,16 +383,19 @@ app.post('/api/levelcurve', (req, res) => {
 
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
-app.get('/health', (req, res) => res.json({ ok: true, users: socketsByUser.size }));
+app.get(['/health', '/api/health'], (req, res) => res.json({ ok: true, users: socketsByUser.size }));
 
 app.get('/api/ranked', (req, res) => {
-  const p = getProfile(lastUserID || normalizeUserID());
-  res.json(ranked.summary(p));
+  const userID = userFromRequest(req);
+  if (!userID) return res.status(401).json({ error: 'not-logged-in' });
+  res.json(ranked.summary(getProfile(userID)));
 });
 
 // Breadcrumbs from the menus (UiTrace.js): the last one before a UI freeze
 // says which step hung.
+// Off on the shared server (CULLING_UITRACE=0).
 app.post('/api/uitrace', (req, res) => {
+  if (process.env.CULLING_UITRACE === '0') return res.status(404).json({});
   const body = typeof req.body === 'string' ? req.body : JSON.stringify(bodyObject(req));
   log('  ui-trace', body.slice(0, 300));
   res.json({});
@@ -453,6 +478,7 @@ function rankedGrant(p) {
 
 function startLocalMatch(socket, queue) {
   const mapIndex = QUEUE_MAPS[queue] !== undefined ? QUEUE_MAPS[queue] : 0;
+  tickets.start(socket.userID, socketIp(socket));
   if (String(queue).startsWith('ranked')) {
     const p = getProfile(socket.userID || normalizeUserID());
     const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
@@ -477,18 +503,25 @@ io.on('connection', (socket) => {
   socket.emit('login_ready');
 
   socket.use((packet, next) => {
+    if (!allowSocket(socketIp(socket))) return;          // dropped while over the limit
     const [name, payload] = packet;
+    // Everything but login needs a logged-in socket.
+    if (name !== 'login' && !socket.userID) return;
     if (name !== 'login') log('  <-', name, payload === undefined ? '' : JSON.stringify(payload).slice(0, 300));
     next();
   });
 
   socket.on('login', (msg) => {
-    let userID = null;
-    if (msg && typeof msg === 'object') userID = msg.userID || tokens.get(msg.token);
-    else if (typeof msg === 'string') userID = tokens.get(msg);
-    userID = normalizeUserID(userID);
+    // Only a token from /api/login identifies a player.
+    const token = msg && typeof msg === 'object' ? msg.token : msg;
+    const userID = sessions.userFor(token);
+    if (!userID) {
+      log('socket login refused (no valid token)', socketIp(socket));
+      socket.emit('auth-fail', { reason: 'invalid-token' });
+      socket.disconnect(true);
+      return;
+    }
     socket.userID = userID;
-    lastUserID = userID;
     socketsByUser.set(userID, socket);
     const p = getProfile(userID);
     log('socket login', userID);
@@ -605,6 +638,7 @@ io.on('connection', (socket) => {
   socket.on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   socket.on('lobby-start-match', () => {
     const map = socket.lobby && /prison|jungle2/i.test(socket.lobby.mapName) ? 1 : 0;
+    tickets.start(socket.userID, socketIp(socket));
     socket.emit('match-ready', { gameServer: 'offline:' + map, nonce: 'x', serverNonce: 'x' });
   });
 

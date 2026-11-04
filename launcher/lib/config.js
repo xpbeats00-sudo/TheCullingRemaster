@@ -7,9 +7,9 @@ const path = require("path");
 const DEFAULTS = {
   gamePath: "",
   // Release manifest (Game Sync / Update) and the fallback server list.
-  manifestUrl: "https://xplab.shop/remaster/manifest.json",
-  servers: [{ id: "xplab", name: "The Culling Remaster", region: "Online",
-    api: "https://xplab.shop/api", status: "https://xplab.shop/health" }],
+  manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",
+  servers: [{ id: "xplab", name: "The Culling Remaster", region: "USA",
+    api: "https://xplab.shop:8443/api", status: "https://xplab.shop:8443/health" }],
   serverId: "xplab",
   // Footer links; an empty one is hidden.
   links: { website: "https://xplab.shop/", discord: "", support: "https://xplab.shop/faq.html" },

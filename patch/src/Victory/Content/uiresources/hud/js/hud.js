@@ -3061,7 +3061,7 @@ engine.on("ShowHideSprintIcon", function(display){
 // server. Send our own result to the local ClientWeb server, which awards XP
 // and updates career stats, then feed the reply into the normal end-of-match
 // XP display.
-var LOCAL_SERVER_URL = "http://127.0.0.1:8000/api";
+var LOCAL_SERVER_URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
 var bLocalMatchResultSent = false;
 
 function ReportLocalMatchResult(_deathData, bIsVictory)

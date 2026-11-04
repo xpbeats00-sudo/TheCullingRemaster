@@ -1,5 +1,5 @@
 (function () {
-  var FUNC_CLIENTWEB_ROOT_URL = "http://127.0.0.1:8000/api";
+  var FUNC_CLIENTWEB_ROOT_URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
   var FUNC_BUILD_SUFFIX = "-func-5";
   var FUNC_NEWS_TEXT = "Welcome to The Culling Remaster";
   var STOCK_BAD_BUILD_ERROR = "Your game client is out of date.  You must exit the game and update before playing online.";

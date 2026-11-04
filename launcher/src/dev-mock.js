@@ -8,7 +8,7 @@
     appVersion: "1.0.0",
     settings: {
       gamePath: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\TheCulling",
-      manifestUrl: "https://xplab.shop/remaster/manifest.json",
+      manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",
       serverId: "eu", closeOnLaunch: false, playIntro: true,
       links: { website: "https://xplab.shop/", discord: "https://discord.gg/example", support: "https://xplab.shop/faq.html" }
     },

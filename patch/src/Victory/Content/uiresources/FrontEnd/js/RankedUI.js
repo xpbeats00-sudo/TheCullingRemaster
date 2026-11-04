@@ -2,7 +2,7 @@
 // A rank badge under the player card on every menu screen, and the ranked
 // overview on the Ranked screen, from the local server's /api/ranked.
 (function () {
-  var URL = "http://127.0.0.1:8000/api/ranked";
+  var URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api") + "/ranked";
   var REWARDS = {
     Scrapper: "Scrapper card", Contender: "Contender card", Blooded: "Blooded card",
     Hunter: "Hunter card + Teal Current camo (all weapons)", Executioner: "Executioner card + animated card",
@@ -59,7 +59,10 @@
   }
 
   function refresh() {
-    $.getJSON(URL).done(function (s) {
+    // Ranked is per player: send the login token the menus already hold.
+    var token = typeof ClientwebData != "undefined" && ClientwebData.AuthToken;
+    if (!token) return;
+    $.ajax({ url: URL, dataType: "json", headers: { Authorization: "Bearer " + token } }).done(function (s) {
       last = s;
       badge(s);
       if (document.getElementById("ranked-menu")) panel(s);
