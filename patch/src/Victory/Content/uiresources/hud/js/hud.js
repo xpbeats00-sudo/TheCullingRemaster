@@ -3098,6 +3098,10 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 			if (reply.ranked) {
 				ShowRankedResult(reply.ranked);
 			}
+			// Showdown: the round's result and the series score (ShowdownHud.js).
+			if (reply.showdown && window.ShowShowdownResult) {
+				ShowShowdownResult(reply.showdown);
+			}
 
 			engine.call("GetLevelFromXP", reply.stats.xp).then(function (level) {
 				$.ajax({

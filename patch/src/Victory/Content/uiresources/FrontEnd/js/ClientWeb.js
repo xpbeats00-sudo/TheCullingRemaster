@@ -1743,6 +1743,10 @@ function BindClientwebEvents(deferred) {
   socketConnection.on("remaster-lobby", function (msg) {
     if (window.RemasterLobby && Matchmaking.IsMatchmaking) window.RemasterLobby.show(msg);
   });
+  // Remaster: the Showdown series - the next round, or the final score (Showdown.js).
+  socketConnection.on("remaster-showdown", function (msg) {
+    if (window.RemasterShowdown) window.RemasterShowdown.onState(msg);
+  });
   socketConnection.on("notify-left-queue", function () {
     Matchmaking.SetMatchmaking(false);
   });

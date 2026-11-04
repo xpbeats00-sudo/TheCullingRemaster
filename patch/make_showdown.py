@@ -7,6 +7,12 @@ build, so this assembles it from what the game already has:
   manager (MatchPhaseManager_BP) runs its own faster "Lightning" iris for it,
   it spawns no world loot, and it picks the PlayerStarts tagged
   SpawnsLightning. Its defaults get one bot (BotsToSpawn) and the bots' names.
+- Kit: the mode hands every contestant an airdrop kit at round time 0 (stock:
+  "Surprise Me", a random kit each). Both sides now get the same kit (KIT),
+  and the later drops (3, 8 and 10 minutes) are switched off. Body armor in a
+  kit puts itself on (BodyArmor/HardenedArmor bUseIfSpawnedWith); everything
+  else is picked and used by the player. server/data/showdown.json holds the
+  kit's contents for the server and the HUD's pre-round panel.
 - Spawns: Jungle_P's eight SpawnsLightning starts sit ~20,000 units out. Two
   move into the arena, on opposite sides facing the middle; the other six are
   retagged so they're never picked.
@@ -16,6 +22,7 @@ build, so this assembles it from what the game already has:
 
 usage: python make_showdown.py <Paks dir>
 """
+import json
 import os
 import struct
 import sys
@@ -33,6 +40,14 @@ JUNGLE = "Victory/Content/Maps/Jungle/Jungle_P.umap"
 URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C"
 
 BOTS = 1
+# The kit both sides get each round: an airdrop package (patch/loot/
+# loot_tables.json "airdrops"). Viking: Tomahawk, Crafted Armor, Muscle Man Milk.
+KIT = "Airdrop_Viking"
+KIT_FILE = "AirDrop_Viking"             # its package (file names differ in case)
+STOCK_KIT = "AirDrop_zRandom"
+LOOT = os.path.join(HERE, "loot", "loot_tables.json")
+SERVER_KIT = os.path.join(HERE, "..", "server", "data", "showdown.json")
+NEVER = 1000000                         # airdrop stage times past any round
 # Arena spawns (the centre ring is at the origin, about 2,500 across; its
 # floor is near z = 0): opposite sides, a little above the floor, facing in.
 # (location, yaw)
@@ -104,9 +119,70 @@ def game_mode(data):
         assert not has_prop(data, None, export, name), "%s already set" % name
     up = UPackage(data)
     add_props(up, export, [int_prop(up, "BotsToSpawn", BOTS), str_array_prop(up, "BotNames", BOT_NAMES)])
+    use_kit(up, export)
     out = up.save()
     got = {x[0]: x[6] for x in Package(out).props(export)}
-    assert got["BotsToSpawn"] == BOTS, got
+    assert got["BotsToSpawn"] == BOTS and got["SelectedAirDrop"] == KIT, got
+    return out
+
+
+def use_kit(up, export):
+    """Every reference to the stock random kit becomes KIT (SelectedAirDrop,
+    EventAirDrops, mOverridenAirdrops), and airdrop stages after the first are
+    pushed past the end of any round."""
+    stock = None
+    for i, raw in enumerate(up.imports):
+        if up.name_str(*struct.unpack_from("<ii", raw, 20)) == STOCK_KIT:
+            stock = -(i + 1)
+    assert stock, "no %s import" % STOCK_KIT
+    package = up.add_import("/Script/CoreUObject", "Package", 0, "/Game/AirDropPackages/" + KIT_FILE)
+    kit = up.add_import("/Script/Victory", "AirDropPackageDataAsset", package, KIT)
+    i = up.find_export(export) - 1
+    data = bytearray(up.exports[i]["data"])
+    pkg_props = {}
+    # Offsets of the three properties' values (uasset.Package reads the saved
+    # file, so measure against a copy saved with the new imports).
+    tmp = Package(up.save())
+    e = tmp.export(export)
+    for x in tmp.props(export):
+        pkg_props[x[0]] = (x[3] - e["offset"], x[4])
+    swapped = 0
+    for name in ("SelectedAirDrop", "EventAirDrops", "mOverridenAirdrops"):
+        off, size = pkg_props[name]
+        start = off + (4 if name != "SelectedAirDrop" else 0)
+        for p in range(start, off + size, 4):
+            if struct.unpack_from("<i", data, p)[0] == stock:
+                struct.pack_into("<i", data, p, kit)
+                swapped += 1
+    assert swapped >= 3, swapped
+    # AirDropStages: each stage's MinRoundTime (an IntProperty tag inside the
+    # struct array); the first stays at 0.
+    off, size = pkg_props["AirDropStages"]
+    min_time, int_prop_name = up.name_index("MinRoundTime", add=False), up.name_index("IntProperty", add=False)
+    times = []
+    for p in range(off, off + size - 25):
+        if struct.unpack_from("<iiii", data, p) == (min_time, 0, int_prop_name, 0):
+            times.append(p + 25)       # name 8, type 8, size 4, index 4, guid flag 1
+    assert len(times) == 4, times
+    for p in times[1:]:
+        struct.pack_into("<i", data, p, NEVER)
+    up.exports[i]["data"] = bytes(data)
+
+
+def server_kit():
+    """The kit's contents for the server and the HUD, from the loot tables."""
+    loot = json.load(open(LOOT))
+    kit = loot["airdrops"][KIT]
+    items = []
+    for item in kit["items"]:
+        info = loot["items"][item]
+        items.append({"id": item, "name": info["name"], "category": info["category"], "tier": info["tier"],
+                      "description": info["description"], "icon": item[:-2] if item.endswith("_C") else item,
+                      "autoEquip": info["category"] == "armor"})
+    out = {"source": "patch/make_showdown.py", "kit": {"id": KIT, "name": kit["name"], "items": items}}
+    with open(SERVER_KIT, "w", newline="\n") as f:
+        json.dump(out, f, indent=1)
+        f.write("\n")
     return out
 
 
@@ -149,6 +225,8 @@ def main(paks_dir):
         os.makedirs(os.path.dirname(out), exist_ok=True)
         open(out, "wb").write(data)
         print("showdown:", rel)
+    kit = server_kit()["kit"]
+    print("showdown kit: %s (%s)" % (kit["name"], ", ".join(i["name"] for i in kit["items"])))
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ function startServer(port, env = {}) {
       CULLING_REQUIRE_ACCOUNT: "0",
       CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100",
       // Results right after the match starts (season.test.js tests the real minimum).
-      CULLING_MIN_MATCH_SECONDS: "0" }, env.vars || {}),
+      CULLING_MIN_MATCH_SECONDS: "0", CULLING_SHOWDOWN_MIN_SECONDS: "0" }, env.vars || {}),
     stdio: "ignore"
   });
   const srv = {

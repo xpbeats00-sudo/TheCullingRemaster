@@ -147,6 +147,15 @@ class MatchTickets {
     return { ticket: t, elapsed: (this.now() - t.startedAt) / 1000 };
   }
 
+  // The open ticket for a player (by userID, or the only one from an address),
+  // without taking it: the HUD asking about the match it is in.
+  peek({ userID, ip }) {
+    this.expire();
+    if (userID) return this.open.get(userID) || null;
+    const mine = [...this.open.values()].filter((x) => x.ip === ip);
+    return mine.length === 1 ? mine[0] : null;
+  }
+
   // The player whose result was last paid from this address (the HUD's
   // follow-up /api/setlevel), within 15 minutes.
   recentUser(ip) {

@@ -1,6 +1,6 @@
 # Loot system: audit and design
 
-Status: audit done (2026-11-04); loot tables extracted. Showdown kit, rounds and pre-round HUD in progress.
+Status (2026-11-04): audit done; loot tables extracted and tested; Showdown kit, rounds and pre-round HUD built, in-game test pending.
 
 ## 1. The missing loot in Showdown (root cause)
 
@@ -55,9 +55,13 @@ Where the spec and the engine differ:
 | Missing loot investigated, root cause | Done (section 1) |
 | Central loot table from real item IDs | Done (`patch/loot/loot_tables.json`) |
 | Table reference | Done (`docs/LOOT_TABLE_REFERENCE.md`) |
-| Showdown: player gets the kit | In progress (spawn placement needs an in-game test) |
-| Same kit for both sides | In progress |
-| First to 4 rounds, round HUD | In progress |
-| Pre-round loadout HUD | In progress |
+| Weighted-draw and table tests | Done (`patch/test_loot_tables.py`, `docs/LOOT_RNG_TEST_RESULTS.md`) |
+| Same kit for both sides, no later drops | Built (Viking), not yet run in game |
+| Showdown: player can reach the kit | Open: the west spawn is under the arena roof; needs a spawn under open sky, found in game |
+| First to 4 rounds, round banner, next-round screen | Built and server-tested (`docs/PRE_ROUND_HUD_DESIGN.md`); not yet run in game |
+| Pre-round loadout HUD | Built (`ShowdownHud.js`), checked in a browser; not yet run in game |
+| Auto-equip rules | Game's own: armor only (plus Backpack), `docs/INVENTORY_EQUIPMENT_SYSTEM.md` |
+| Per-mode loot | `docs/GAME_MODE_LOOT_CONFIGURATION.md` |
 | Writer for edited weights | Next |
 | Server-authoritative in-match loot, multiplayer inventory | Blocked: no server-capable game binary |
+| 2v2-4v4 / Last Breath teams | Blocked: no N-vs-N team mode in the cooked game |
