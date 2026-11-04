@@ -18,7 +18,7 @@ Showdown players spawn with the whole kit in their inventory; nothing is on the 
 - The kit: Tomahawk, Tactical Body Armor (on at spawn), Muscle Man Milk (slot 1, use it before fighting).
 - Normal matches are unaffected: their perks never set bits 4 or 32.
 
-Verified in game through the launcher (2026-11-04): the player spawned with Muscle Man Milk in slot 1, the Tomahawk in slot 2 (in hand) and armor on. The bot's kit is not visually confirmed yet: in one run it dealt a bleed wound and killed the player quickly, in another it didn't engage.
+Verified in game through the launcher (2026-11-04): the player spawned with Muscle Man Milk in slot 1, the Tomahawk in slot 2 (in hand) and armor on; the bot had the same kit (seen by the owner).
 
 ## What equips itself
 

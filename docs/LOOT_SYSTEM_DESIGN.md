@@ -56,7 +56,7 @@ Where the spec and the engine differ:
 | Central loot table from real item IDs | Done (`patch/loot/loot_tables.json`) |
 | Table reference | Done (`docs/LOOT_TABLE_REFERENCE.md`) |
 | Weighted-draw and table tests | Done (`patch/test_loot_tables.py`, `docs/LOOT_RNG_TEST_RESULTS.md`) |
-| Kit in the inventory at spawn, nothing on the ground | Done for the player, verified in game; the bot's kit is not yet confirmed |
+| Kit in the inventory at spawn, nothing on the ground | Done for both sides, verified in game |
 | Showdown: player can reach the kit | Solved: the kit is spawned into the inventory (no crate) |
 | First to 4 rounds, round banner, next-round screen | Built and server-tested (`docs/PRE_ROUND_HUD_DESIGN.md`); not yet run in game |
 | Pre-round loadout HUD | Built (`ShowdownHud.js`), checked in a browser; not yet run in game |
