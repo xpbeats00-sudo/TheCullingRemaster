@@ -1,0 +1,16 @@
+# The shipped game and everything generated from it
+TheCulling/
+patch/src/
+patch/*.pak
+patch/research/
+patch/registry/
+patch/branding/
+logs/
+CallingCards/
+Camos/
+server/node_modules/
+server/data/profiles*.json
+*.uasset
+*.umap
+*.pak
+*.mp4

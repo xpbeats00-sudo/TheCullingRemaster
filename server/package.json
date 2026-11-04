@@ -1,0 +1,12 @@
+{
+  "name": "culling-local-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local ClientWeb backend for The Culling (solo play with bots)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "express": "4.21.2",
+    "socket.io": "2.5.0"
+  }
+}
