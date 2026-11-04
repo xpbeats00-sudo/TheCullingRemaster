@@ -1,0 +1,553 @@
+// The Culling Remaster: friends, parties and player cards (server/friends.js).
+//
+// - FRIENDS (a main menu item, and the footer's Invite button) opens the
+//   friends panel: add a friend by account username, answer requests, see what
+//   each friend is doing (in the menu, searching, in a lobby, in a match and
+//   which mode), invite them to your party, view their card. The party (up to
+//   4) shows at the top with Leave party; when its leader queues, everyone in
+//   it joins the same lobby.
+// - A party invite pops up over any menu screen with Accept / Decline.
+// - The player card: calling card, level, rank, record (wins, losses, kills,
+//   K/D, time played), the ranked season and Showdown. It opens from the
+//   friends and party lists, from a lobby row (MatchLobby.js) and from your own
+//   card at the top right. A contestant without a public profile shows their
+//   card, level and rank with the stats kept private.
+// The server pushes "remaster-friends" whenever anything here changes, so the
+// panel never polls. Self-contained: builds its own markup and styles.
+(function () {
+  var TIERS = ["Scrapper", "Contender", "Blooded", "Hunter", "Executioner", "Reaper", "Warlord", "Apex", "Legend"];
+  var ERRORS = {
+    "no-such-player": "No player has that username.",
+    "self": "That's you.",
+    "already-friends": "You're already friends.",
+    "already-requested": "Your request is waiting for them.",
+    "too-many-friends": "That friends list is full.",
+    "too-many-requests": "Too many requests are waiting. Try again later.",
+    "no-request": "That request is no longer open.",
+    "not-friends": "You can only invite friends to your party.",
+    "already-in-party": "They're already in your party.",
+    "party-full": "The party is full.",
+    "no-invite": "That invite has expired.",
+    "not-in-party": "You're not in a party.",
+    "slow-down": "Slow down a moment.",
+    "no-account": "Sign in with your account to add friends."
+  };
+  var CSS = [
+    "#remaster-friends, #remaster-card { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
+    "#remaster-friends { z-index: 50; }",
+    "#remaster-card { z-index: 60; }",
+    "#remaster-friends.hidden, #remaster-card.hidden, #remaster-party-toast.hidden { display: none; }",
+    ".rf-panel { position: relative; display: flex; flex-direction: column; width: 36vw; height: 84vh; padding: 2.4vh 1.6vw; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
+    ".rf-close { position: absolute; right: 1.2vw; top: 1.6vh; width: 2.2vw; height: 2.2vw; line-height: 2.2vw; text-align: center; border-radius: 50%; font: 1.1vw Sucrose-Bold, Arial, sans-serif; background: rgba(255, 255, 255, 0.1); cursor: pointer; }",
+    ".rf-close:hover { background: rgba(204, 0, 0, 1); }",
+    ".rf-title { font: 2.6vw Creepster, Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.15vw; line-height: 1; }",
+    ".rf-you { margin-top: 0.4vh; font-size: 0.8vw; opacity: 0.65; }",
+    ".rf-add { display: flex; margin-top: 1.8vh; }",
+    ".rf-add input { flex: 1 1 auto; min-width: 0; padding: 1vh 1vw; border: none; border-radius: 3vh; font: 0.95vw Sucrose-Regular, Arial, sans-serif; color: white; background: rgba(255, 255, 255, 0.1); outline: none; }",
+    ".rf-add input:focus { box-shadow: 0 0 0 0.12vw rgba(204, 0, 0, 1); }",
+    ".rf-btn { display: inline-block; flex: 0 0 auto; margin-left: 0.5vw; padding: 0.75vh 1vw; border: none; border-radius: 3vh; font: 0.72vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; white-space: nowrap; color: white; background: rgba(204, 0, 0, 1); cursor: pointer; }",
+    ".rf-btn:hover { background: rgba(240, 30, 20, 1); }",
+    ".rf-btn.quiet { background: rgba(255, 255, 255, 0.12); }",
+    ".rf-btn.quiet:hover { background: rgba(255, 255, 255, 0.24); }",
+    ".rf-btn.big { padding: 1vh 1.4vw; font-size: 0.85vw; }",
+    ".rf-msg { min-height: 2.4vh; margin-top: 0.8vh; font-size: 0.8vw; color: rgba(255, 120, 110, 1); }",
+    ".rf-msg.ok { color: rgba(120, 220, 140, 1); }",
+    ".rf-scroll { flex: 1 1 auto; overflow-y: auto; margin-right: -0.6vw; padding-right: 0.6vw; }",
+    ".rf-section { margin-top: 1.4vh; }",
+    ".rf-head { display: flex; justify-content: space-between; align-items: center; padding: 0.6vh 0; font: 0.8vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.14vw; text-transform: uppercase; color: rgba(255, 70, 60, 1); border-bottom: 1px solid rgba(255, 255, 255, 0.1); }",
+    ".rf-head span { color: rgba(235, 235, 235, 0.6); }",
+    ".rf-hint { padding: 1vh 0.2vw; font-size: 0.8vw; opacity: 0.6; }",
+    ".rf-row { position: relative; display: flex; align-items: center; height: 5.4vh; margin-top: 0.6vh; padding-right: 0.6vw; border-radius: 1.2vh; background-color: rgba(18, 14, 16, 0.9); background-size: cover; background-position: center; overflow: hidden; }",
+    ".rf-row::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: linear-gradient(90deg, rgba(8, 6, 8, 0.94) 35%, rgba(8, 6, 8, 0.55)); }",
+    ".rf-row > * { position: relative; }",
+    ".rf-row.clickable { cursor: pointer; }",
+    ".rf-row.clickable:hover { box-shadow: inset 0 0 0 0.12vw rgba(255, 255, 255, 0.35); }",
+    ".rf-level { width: 2.8vw; flex: 0 0 auto; text-align: center; font: 1.2vw Sucrose-Bold, Arial, sans-serif; }",
+    ".rf-who { flex: 1 1 auto; min-width: 0; }",
+    ".rf-name { font: 1vw Sucrose-Bold, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+    ".rf-status { margin-top: 0.2vh; font-size: 0.72vw; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+    ".rf-status:before { content: ''; display: inline-block; width: 0.5vw; height: 0.5vw; margin-right: 0.4vw; border-radius: 50%; background: rgba(140, 140, 140, 1); }",
+    ".rf-status.menu:before { background: rgba(80, 200, 110, 1); }",
+    ".rf-status.searching:before, .rf-status.lobby:before { background: rgba(240, 180, 40, 1); }",
+    ".rf-status.match:before { background: rgba(255, 70, 60, 1); }",
+    ".rf-status.none:before { display: none; }",
+    ".rf-row.offline .rf-name, .rf-row.offline .rf-level { opacity: 0.55; }",
+    ".rf-rank { width: 2.2vw; height: 2.2vw; flex: 0 0 auto; margin-right: 0.3vw; }",
+    ".rf-tag { flex: 0 0 auto; margin-right: 0.4vw; padding: 0.2vh 0.5vw; border-radius: 2vh; font: 0.62vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; text-transform: uppercase; background: rgba(204, 0, 0, 1); }",
+    ".rf-tag.quiet { background: rgba(255, 255, 255, 0.14); }",
+    ".rf-row .rf-btn { margin-left: 0.35vw; padding: 0.6vh 0.75vw; font-size: 0.64vw; }",
+    ".rf-footer { display: flex; align-items: center; justify-content: space-between; }",
+    ".rf-footer .rf-hint { flex: 1 1 auto; }",
+    // The player card.
+    ".rc-panel { position: relative; width: 44vw; max-height: 86vh; overflow-y: auto; padding: 0 0 2.2vh; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
+    ".rc-banner { position: relative; display: flex; align-items: center; height: 13vh; padding: 0 5vw 0 1.6vw; background-color: rgba(30, 20, 24, 1); background-size: cover; background-position: center; border-radius: 1.8vh 1.8vh 0 0; overflow: hidden; }",
+    ".rc-banner::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: linear-gradient(90deg, rgba(8, 6, 8, 0.85) 20%, rgba(8, 6, 8, 0.1)); }",
+    ".rc-banner > * { position: relative; }",
+    ".rc-level { width: 4.4vw; height: 4.4vw; line-height: 4.4vw; margin-right: 1.2vw; flex: 0 0 auto; text-align: center; border-radius: 50%; font: 2vw Sucrose-Bold, Arial, sans-serif; background: rgba(204, 0, 0, 0.9); box-shadow: 0 0 1.2vh rgba(0, 0, 0, 0.7); }",
+    ".rc-who { flex: 1 1 auto; min-width: 0; }",
+    ".rc-name { font: 2.6vw Creepster, Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.8vh black; }",
+    ".rc-sub { font-size: 0.85vw; text-shadow: 0 0 0.6vh black; }",
+    ".rc-emblem { width: 8vh; height: 8vh; flex: 0 0 auto; filter: drop-shadow(0 0 0.8vh black); }",
+    ".rc-body { padding: 0 1.6vw; }",
+    ".rc-section { margin-top: 1.8vh; }",
+    ".rc-grid { display: flex; flex-wrap: wrap; margin: 0 -0.3vw; }",
+    ".rc-stat { flex: 1 1 22%; margin: 0.8vh 0.3vw 0; padding: 1.1vh 0.8vw; border-radius: 1.2vh; background: rgba(255, 255, 255, 0.06); }",
+    ".rc-stat b { display: block; font: 1.5vw Sucrose-Bold, Arial, sans-serif; white-space: nowrap; }",
+    ".rc-stat span { font-size: 0.7vw; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.65; }",
+    ".rc-ranked { display: flex; align-items: center; margin-top: 0.8vh; padding: 1.2vh 1vw; border-radius: 1.2vh; background: rgba(255, 255, 255, 0.06); }",
+    ".rc-ranked img.big { width: 7vh; height: 7vh; margin-right: 1vw; }",
+    ".rc-ranked .rc-tier { font: 1.5vw Sucrose-Bold, Arial, sans-serif; }",
+    ".rc-ranked .rc-detail { font-size: 0.78vw; opacity: 0.75; margin-top: 0.3vh; }",
+    ".rc-ranked .rc-peak { margin-left: auto; text-align: right; font-size: 0.78vw; }",
+    ".rc-ranked .rc-peak b { display: block; font: 1.1vw Sucrose-Bold, Arial, sans-serif; }",
+    ".rc-tiers { display: flex; margin-top: 0.8vh; }",
+    ".rc-tiers img { width: 3.6vh; height: 3.6vh; margin-right: 0.35vw; opacity: 0.18; filter: grayscale(1); }",
+    ".rc-tiers img.reached { opacity: 1; filter: none; }",
+    ".rc-private { margin-top: 0.8vh; padding: 2vh 1vw; border-radius: 1.2vh; text-align: center; font-size: 0.9vw; opacity: 0.7; background: rgba(255, 255, 255, 0.06); }",
+    ".rc-buttons { display: flex; justify-content: flex-end; margin-top: 2vh; }",
+    // A party invite, over any screen.
+    "#remaster-party-toast { position: absolute; left: 50%; bottom: 9vh; z-index: 70; transform: translateX(-50%); display: flex; align-items: center; padding: 1.2vh 1.2vw; border-radius: 1.6vh; white-space: nowrap; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
+    "#remaster-party-toast .rt-text { margin-right: 1vw; font-size: 0.95vw; }",
+    "#remaster-party-toast .rt-text b { color: rgba(255, 70, 60, 1); }"
+  ].join("\n");
+
+  var data = null;            // the last remaster-friends push
+  var panel = null, cardRoot = null, toast = null, styled = false;
+  var pendingCard = null;     // what the lobby row or list knew of the card asked for
+  var message = { text: "", ok: false };
+  var removing = null;        // a friend whose Remove was clicked once
+  var unavailable = null;     // why there is no friends list (no account)
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function style() {
+    if (styled) return;
+    styled = true;
+    var s = el("style");
+    s.textContent = CSS;
+    document.head.appendChild(s);
+  }
+
+  function emit(name, msg) {
+    try { if (typeof socketConnection != "undefined" && socketConnection) socketConnection.emit(name, msg); } catch (e) { /* offline */ }
+  }
+
+  function button(parent, text, cls, onClick) {
+    var b = el("span", "rf-btn" + (cls ? " " + cls : ""), text);
+    b.addEventListener("click", function (e) { e.stopPropagation(); onClick(); });
+    parent.appendChild(b);
+    return b;
+  }
+
+  function cardImage(cardID) {
+    var name = (typeof CullingCardImages != "undefined") ? CullingCardImages[String(cardID)] : null;
+    return name ? 'url("/images/culling-cards/' + name + '.png")' : "none";
+  }
+
+  function withCard(node, cardID) {
+    node.style.backgroundImage = cardImage(cardID);
+    if (typeof TrackCullingCardElement == "function") TrackCullingCardElement(node);
+  }
+
+  function emblem(tier, cls) {
+    var img = el("img", cls);
+    img.src = "/images/ranked/" + String(tier).toLowerCase() + ".png";
+    img.alt = tier;
+    return img;
+  }
+
+  // Mouse drags over the menu turn the character; not over these panels.
+  function overlay(id, z) {
+    var root = el("section", "hidden");
+    root.id = id;
+    root.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function myName() {
+    if (data && data.you) return data.you;
+    return (typeof PlayerProfileData != "undefined" && PlayerProfileData.Nickname) ? String(PlayerProfileData.Nickname) : "You";
+  }
+
+  function lastSeen(t) {
+    if (!t) return "Offline";
+    var m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (m < 2) return "Offline · just now";
+    if (m < 60) return "Offline · " + m + " min ago";
+    var h = Math.round(m / 60);
+    if (h < 48) return "Offline · " + h + " h ago";
+    return "Offline · " + Math.round(h / 24) + " days ago";
+  }
+
+  function statusText(s) {
+    if (!s) return "";
+    return s.state === "offline" ? lastSeen(s.lastSeen) : s.label;
+  }
+
+  // ------------------------------------------------------------ friends panel
+
+  function say(text, ok) {
+    message = { text: text || "", ok: !!ok };
+    if (panel) {
+      var m = panel.querySelector(".rf-msg");
+      if (m) { m.textContent = message.text; m.className = "rf-msg" + (message.ok ? " ok" : ""); }
+    }
+  }
+
+  function personRow(p, opts) {
+    var li = el("div", "rf-row clickable" + (p.status && p.status.state === "offline" ? " offline" : ""));
+    withCard(li, p.cardID);
+    li.appendChild(el("span", "rf-level", String(p.level || 1)));
+    var who = el("div", "rf-who");
+    who.appendChild(el("div", "rf-name", p.username));
+    var line = opts.line != null ? opts.line : statusText(p.status);
+    who.appendChild(el("div", "rf-status " + (opts.line != null ? "none" : (p.status ? p.status.state : "none")), line));
+    li.appendChild(who);
+    if (opts.tag) li.appendChild(el("span", "rf-tag" + (opts.tagQuiet ? " quiet" : ""), opts.tag));
+    if (p.rank) li.appendChild(emblem(p.rank, "rf-rank"));
+    li.addEventListener("click", function () { showCard({ username: p.username, level: p.level, rank: p.rank, cardID: p.cardID }); });
+    return li;
+  }
+
+  function section(parent, title, count) {
+    var s = el("div", "rf-section");
+    var h = el("div", "rf-head", title);
+    if (count != null) h.appendChild(el("span", null, count));
+    s.appendChild(h);
+    parent.appendChild(s);
+    return s;
+  }
+
+  function inParty(username) {
+    if (!data || !data.party) return false;
+    for (var i = 0; i < data.party.members.length; i++) if (data.party.members[i].username === username) return true;
+    return false;
+  }
+
+  function renderPanel() {
+    if (!panel || panel.className === "hidden") return;
+    var box = panel.querySelector(".rf-scroll");
+    var top = box.scrollTop;
+    box.textContent = "";
+    panel.querySelector(".rf-you").textContent = "Signed in as " + myName();
+    if (!data) {
+      box.appendChild(el("div", "rf-hint", unavailable || "Connecting..."));
+      return;
+    }
+    var max = data.maxParty || 4;
+
+    // Party invites waiting for you.
+    if (data.invites && data.invites.length) {
+      var inv = section(box, "Party invites");
+      data.invites.forEach(function (i) {
+        var r = personRow(i.from, { line: "Invited you to their party" });
+        button(r, "Join", null, function () { emit("party-accept", { partyId: i.partyId }); });
+        button(r, "Decline", "quiet", function () { emit("party-decline", { partyId: i.partyId }); });
+        inv.appendChild(r);
+      });
+    }
+
+    // Your party.
+    var party = section(box, "Party", data.party ? data.party.members.length + "/" + max : null);
+    if (data.party) {
+      data.party.members.forEach(function (m) {
+        var me = m.username === data.you;
+        party.appendChild(personRow(m, { tag: m.leader ? "Leader" : (me ? "You" : null), tagQuiet: !m.leader }));
+      });
+      var lead = data.party.leader === data.you;
+      var f = el("div", "rf-footer");
+      f.appendChild(el("div", "rf-hint", lead ? "You lead: when you queue, your party joins your lobby."
+        : data.party.leader + " leads: when they queue, you join their lobby."));
+      button(f, "Leave party", "quiet", function () { emit("party-leave"); });
+      party.appendChild(f);
+    } else {
+      party.appendChild(el("div", "rf-hint", "Invite friends to play together (up to " + max + "). The leader queues, and everyone joins the same lobby."));
+    }
+
+    // Requests.
+    if (data.incoming.length || data.outgoing.length) {
+      var req = section(box, "Requests", String(data.incoming.length + data.outgoing.length));
+      data.incoming.forEach(function (p) {
+        var r = personRow(p, { line: "Wants to be friends" });
+        button(r, "Accept", null, function () { emit("friend-accept", { username: p.username }); });
+        button(r, "Decline", "quiet", function () { emit("friend-decline", { username: p.username }); });
+        req.appendChild(r);
+      });
+      data.outgoing.forEach(function (p) {
+        var r = personRow(p, { line: "Request sent" });
+        button(r, "Cancel", "quiet", function () { emit("friend-decline", { username: p.username }); });
+        req.appendChild(r);
+      });
+    }
+
+    // Friends.
+    var online = 0;
+    data.friends.forEach(function (p) { if (p.status && p.status.state !== "offline") online++; });
+    var list = section(box, "Friends", data.friends.length ? online + " online · " + data.friends.length : null);
+    if (!data.friends.length) list.appendChild(el("div", "rf-hint", "Add a friend with their account username."));
+    data.friends.forEach(function (p) {
+      var r = personRow(p, {});
+      var full = data.party && data.party.members.length >= max;
+      if (!inParty(p.username) && !full) button(r, "Invite", null, function () { emit("party-invite", { username: p.username }); });
+      button(r, removing === p.username ? "Sure?" : "Remove", "quiet", function () {
+        if (removing === p.username) { removing = null; emit("friend-remove", { username: p.username }); }
+        else { removing = p.username; renderPanel(); }
+      });
+      list.appendChild(r);
+    });
+    box.scrollTop = top;
+  }
+
+  function buildPanel() {
+    if (panel) return panel;
+    style();
+    panel = overlay("remaster-friends");
+    var p = el("div", "rf-panel");
+    p.innerHTML = '<div class="rf-close">X</div><div class="rf-title">Friends</div><div class="rf-you"></div>' +
+      '<div class="rf-add"><input type="text" maxlength="20" placeholder="Add a friend by username"></div>' +
+      '<div class="rf-msg"></div><div class="rf-scroll"></div>';
+    panel.appendChild(p);
+    var input = p.querySelector("input");
+    function add() {
+      var name = input.value.replace(/^\s+|\s+$/g, "");
+      if (!name) return say("Type their username.");
+      emit("friend-request", { username: name });
+    }
+    button(p.querySelector(".rf-add"), "Add friend", "big", add);
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();          // typing here isn't a menu shortcut
+      if (e.keyCode === 13) add();
+      if (e.keyCode === 27) close();
+    });
+    p.querySelector(".rf-close").addEventListener("click", close);
+    panel.addEventListener("click", function (e) { if (e.target === panel) close(); });
+    return panel;
+  }
+
+  function open() {
+    buildPanel().className = "";
+    removing = null;
+    say(message.text, message.ok);
+    renderPanel();
+    emit("friends-get");
+    try { panel.querySelector("input").focus(); } catch (e) { /* no focus */ }
+  }
+
+  function close() {
+    if (panel) panel.className = "hidden";
+    removing = null;
+  }
+
+  // The main menu's FRIENDS item: how many requests and invites wait.
+  function badge() {
+    var item = document.getElementById("remaster-friends-item");
+    var label = item && item.querySelector(".vertical-list-menu-item");
+    if (!label) return;
+    var n = data ? data.incoming.length + (data.invites ? data.invites.length : 0) : 0;
+    label.textContent = n ? "FRIENDS (" + n + ")" : "FRIENDS";
+  }
+
+  // ------------------------------------------------------------ party invite toast
+
+  function showInvite(msg) {
+    style();
+    if (!toast) { toast = overlay("remaster-party-toast"); }
+    toast.textContent = "";
+    var t = el("span", "rt-text");
+    t.appendChild(el("b", null, msg.from.username));
+    t.appendChild(document.createTextNode(" invited you to their party"));
+    toast.appendChild(t);
+    button(toast, "Join", null, function () { emit("party-accept", { partyId: msg.partyId }); hideInvite(); });
+    button(toast, "Decline", "quiet", function () { emit("party-decline", { partyId: msg.partyId }); hideInvite(); });
+    toast.className = "";
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(hideInvite, 30000);
+  }
+
+  function hideInvite() { if (toast) toast.className = "hidden"; }
+
+  // ------------------------------------------------------------ player card
+
+  function minutes(m) {
+    m = Math.round(m || 0);
+    if (m < 60) return m + "m";
+    return Math.floor(m / 60) + "h " + (m % 60) + "m";
+  }
+
+  function stat(grid, value, label) {
+    var s = el("div", "rc-stat");
+    s.appendChild(el("b", null, String(value)));
+    s.appendChild(el("span", null, label));
+    grid.appendChild(s);
+  }
+
+  function buildCard() {
+    if (cardRoot) return cardRoot;
+    style();
+    cardRoot = overlay("remaster-card");
+    cardRoot.addEventListener("click", function (e) { if (e.target === cardRoot) closeCard(); });
+    document.addEventListener("keydown", function (e) {
+      if (e.keyCode !== 27) return;
+      if (cardRoot && cardRoot.className !== "hidden") closeCard();
+      else if (panel && panel.className !== "hidden") close();
+    });
+    return cardRoot;
+  }
+
+  function closeCard() { if (cardRoot) cardRoot.className = "hidden"; }
+
+  // c: the server's card (found) or what the lobby row knew (name, level, rank).
+  function renderCard(c, full) {
+    var root = buildCard();
+    root.textContent = "";
+    var p = el("div", "rc-panel");
+    var x = el("div", "rf-close", "X");
+    x.style.zIndex = 2;
+    x.addEventListener("click", closeCard);
+    var banner = el("div", "rc-banner");
+    withCard(banner, c.cardID);
+    banner.appendChild(el("div", "rc-level", String(c.level || 1)));
+    var who = el("div", "rc-who");
+    who.appendChild(el("div", "rc-name", c.username || c.name || "Player"));
+    var sub = c.status ? statusText(c.status) : (c.rank ? c.rank : "");
+    who.appendChild(el("div", "rc-sub", sub));
+    banner.appendChild(who);
+    if (c.rank) banner.appendChild(emblem(c.rank, "rc-emblem"));
+    p.appendChild(banner);
+    p.appendChild(x);
+    var body = el("div", "rc-body");
+    p.appendChild(body);
+
+    if (!full) {
+      var s0 = section(body, "Record");
+      s0.className = "rc-section";
+      s0.appendChild(el("div", "rc-private", "This player keeps their stats private."));
+    } else {
+      var rec = section(body, "Record", c.memberSince ? "Playing since " + new Date(c.memberSince).toLocaleDateString() : null);
+      rec.className = "rc-section";
+      var grid = el("div", "rc-grid");
+      stat(grid, c.wins, "Wins");
+      stat(grid, c.losses, "Losses");
+      stat(grid, c.kills, "Kills");
+      stat(grid, c.kd.toFixed ? c.kd.toFixed(2) : c.kd, "K/D");
+      stat(grid, c.games, "Matches");
+      stat(grid, c.winRate + "%", "Win rate");
+      stat(grid, minutes(c.minutesPlayed), "Time played");
+      stat(grid, c.damage, "Damage");
+      rec.appendChild(grid);
+
+      var rk = section(body, "Ranked", c.ranked ? c.ranked.season.name : null);
+      rk.className = "rc-section";
+      if (c.ranked) {
+        var r = el("div", "rc-ranked");
+        r.appendChild(emblem(c.ranked.tier, "big"));
+        var info = el("div");
+        info.appendChild(el("div", "rc-tier", c.ranked.tier));
+        info.appendChild(el("div", "rc-detail", c.ranked.rating + " rating · " + c.ranked.matches + " ranked matches · " + c.ranked.wins + " wins"));
+        r.appendChild(info);
+        var peak = el("div", "rc-peak", "Highest rank");
+        peak.appendChild(el("b", null, c.ranked.peakTier));
+        r.appendChild(peak);
+        rk.appendChild(r);
+        var tiers = el("div", "rc-tiers");
+        TIERS.forEach(function (t) {
+          var img = emblem(t, c.ranked.tiersReached.indexOf(t) >= 0 ? "reached" : "");
+          img.title = t;
+          tiers.appendChild(img);
+        });
+        rk.appendChild(tiers);
+      } else {
+        rk.appendChild(el("div", "rc-private", "No ranked matches this season yet."));
+      }
+
+      var sd = section(body, "Showdown");
+      sd.className = "rc-section";
+      var g2 = el("div", "rc-grid");
+      stat(g2, c.showdown.won, "Series won");
+      stat(g2, c.showdown.lost, "Series lost");
+      sd.appendChild(g2);
+    }
+
+    var buttons = el("div", "rc-buttons");
+    var name = c.username || c.name;
+    if (full && c.relation === "none") button(buttons, "Add friend", null, function () { emit("friend-request", { username: name }); closeCard(); });
+    if (full && c.relation === "asked-you") button(buttons, "Accept friend", null, function () { emit("friend-accept", { username: name }); closeCard(); });
+    if (full && c.relation === "friend" && !inParty(name)) button(buttons, "Invite to party", null, function () { emit("party-invite", { username: name }); });
+    button(buttons, "Close", "quiet", closeCard);
+    body.appendChild(buttons);
+    root.appendChild(p);
+    root.className = "";
+  }
+
+  // Opens a player's card. who: { username, level, rank, cardID } as a list
+  // or lobby row knows them; { self: true } for yours; contestant: no public
+  // profile to ask for.
+  function showCard(who) {
+    who = who || {};
+    if (who.self) {
+      pendingCard = { username: myName(), level: typeof ClientwebData != "undefined" && ClientwebData.Stats ? ClientwebData.Stats.level : 1, cardID: 0 };
+      emit("player-card", {});
+      return;
+    }
+    pendingCard = { username: who.username || who.name, level: who.level, rank: who.rank, cardID: who.cardID };
+    if (who.contestant) return renderCard(pendingCard, false);
+    emit("player-card", { username: pendingCard.username });
+  }
+
+  // ------------------------------------------------------------ server pushes
+
+  function onResult(r) {
+    if (r.action === "player-card") { if (pendingCard) renderCard(pendingCard, false); return; }
+    if (r.action === "friends-get") {
+      unavailable = r.error ? ERRORS[r.error] || "Friends are unavailable right now." : null;
+      return renderPanel();
+    }
+    if (r.error) return say(ERRORS[r.error] || "That didn't work.");
+    var who = r.username || "";
+    if (r.action === "friend-request") {
+      say(r.state === "friends" ? "You and " + who + " are now friends." : "Request sent to " + who + ".", true);
+      var input = panel && panel.querySelector("input");
+      if (input) input.value = "";
+    } else if (r.action === "friend-accept") say("You and " + who + " are now friends.", true);
+    else if (r.action === "friend-remove") say(who + " removed.", true);
+    else if (r.action === "party-invite") say("Party invite sent to " + who + ".", true);
+    else if (r.action === "party-accept") say("You joined the party.", true);
+    else if (r.action === "party-leave") say("You left the party.", true);
+    else say("");
+  }
+
+  function on(name, msg) {
+    if (name === "remaster-friends") { data = msg; renderPanel(); badge(); }
+    else if (name === "remaster-friend-result") onResult(msg || {});
+    else if (name === "remaster-party-invite") showInvite(msg);
+    else if (name === "remaster-player-card") {
+      if (msg.found) renderCard(msg, true);
+      else if (pendingCard) renderCard(pendingCard, false);
+    }
+  }
+
+  window.RemasterFriends = { open: open, close: close, showCard: showCard, on: on,
+    connected: function () { emit("friends-get"); } };
+
+  // The footer's Invite button and the main menu's FRIENDS item open the panel.
+  window.OnInvitePressed = open;
+  if (typeof BaseMenuScreen != "undefined") {
+    var selected = BaseMenuScreen.prototype.OnOptionElemSelected;
+    BaseMenuScreen.prototype.OnOptionElemSelected = function (elem) {
+      if (elem && elem.id == "remaster-friends-item") return open();
+      return selected.apply(this, arguments);
+    };
+  }
+  // Your own card, top right.
+  document.addEventListener("click", function (e) {
+    for (var n = e.target; n && n !== document; n = n.parentNode) {
+      if (n.className && typeof n.className == "string" && n.className.indexOf("local-culling-card-container") >= 0) return showCard({ self: true });
+    }
+  });
+})();

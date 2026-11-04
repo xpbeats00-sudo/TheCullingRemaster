@@ -1414,6 +1414,16 @@ function BindClientwebEvents(deferred) {
           engine.call("StartOfflineMatch", offlineMap);
           return;
       }
+      // Duo (make_duo.py): the pairs mode, through the Survival slots' URLs.
+      if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("duo:") == 0) {
+          var duoMap = parseInt(msg.gameServer.substring(4), 10) || 0;
+          console.log("match-ready:: duo on map " + duoMap);
+          Matchmaking.MatchmakingState = "JOINING";
+          Matchmaking.SetMatchmaking(false);
+          engine.call("PostSoundEvent", "Stop_MenuMusic");
+          engine.call("StartTraining", duoMap == 1 ? "SurvivalAdvanced" : "SurvivalBasic");
+          return;
+      }
       // Showdown (make_showdown.py): you against one bot in the Jungle arena. Its
       // URL is DefaultGame.ini's TrainingMapAdvanced, reached by "Practice".
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("showdown:") == 0) {
@@ -1746,6 +1756,15 @@ function BindClientwebEvents(deferred) {
   // Remaster: the Showdown series - the next round, or the final score (Showdown.js).
   socketConnection.on("remaster-showdown", function (msg) {
     if (window.RemasterShowdown) window.RemasterShowdown.onState(msg);
+  });
+  // Remaster: friends, parties and player cards (Friends.js).
+  ["remaster-friends", "remaster-friend-result", "remaster-party-invite", "remaster-player-card"].forEach(function (name) {
+    socketConnection.on(name, function (msg) {
+      if (window.RemasterFriends) window.RemasterFriends.on(name, msg);
+    });
+  });
+  socketConnection.on("auth-response", function () {
+    if (window.RemasterFriends) window.RemasterFriends.connected();
   });
   socketConnection.on("notify-left-queue", function () {
     Matchmaking.SetMatchmaking(false);

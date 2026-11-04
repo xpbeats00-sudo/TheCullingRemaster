@@ -140,6 +140,16 @@ const A = "steam:76561190000000801";
       assert.strictEqual(hud.json.active, false);
     });
 
+    await test("Duo starts the pairs mode on the voted map (duo:<map>)", async () => {
+      for (const [queue, want] of [["ffa_jungle_coop2", "duo:0"], ["ffa_prison_coop2", "duo:1"]]) {
+        const lobby = next(a, "remaster-lobby");
+        a.emit("join-mm", { queueName: queue });
+        await lobby;
+        const ready = await next(a, "match-ready");
+        assert.strictEqual(ready.gameServer, want, queue);
+      }
+    });
+
     console.log("all %d showdown tests passed", passed);
   } catch (e) {
     console.error("FAIL", e.stack || e.message);

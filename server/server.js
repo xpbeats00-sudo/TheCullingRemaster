@@ -56,6 +56,7 @@ const { CoalescedJsonFile, writeAtomicSync } = require('./store');
 const { createMetrics, metricsAllowed } = require('./metrics');
 const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
+const { Friends } = require('./friends');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -286,6 +287,13 @@ const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
   onSaveError: (e) => { metrics.error('save'); log('saving sessions failed:', e.message); }
 });
 const tickets = new MatchTickets();
+// Friends (friends.json) and parties (memory); see friends.js.
+const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
+  saveDelayMs: SAVE_DELAY_MS,
+  onSaveError: (e) => { metrics.error('save'); log('saving friends failed:', e.message); }
+});
+// Friend requests, removals and party invites per player: one a second, bursts of 20.
+const allowFriendAction = rateLimiter(1, 20);
 const allowHttp = rateLimiter(20, 60);
 const allowSocket = rateLimiter(30, 90);
 // New profiles per address: a burst of 10, then one a minute.
@@ -524,11 +532,13 @@ app.post('/api/matchresult', (req, res) => {
   let showdownResult = null;
   if (showdown) {
     const series = showdowns.recordRound(userID, r.victory);
+    if (series && series.over) recordShowdown(userID, series.won);
     if (series) {
       showdownResult = showdownState(series.over ? 'over' : 'round-over', series);
       log('showdown round', userID, series.round, r.victory ? 'won' : 'lost', series.wins + '-' + series.losses, series.over ? (series.won ? 'VICTORY' : 'defeat') : '');
     }
   }
+  setPresence(userID, 'menu');
   res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: showdownResult });
 });
 
@@ -949,6 +959,7 @@ const lobbies = new MatchLobbies({
   },
   describe: (m) => lobbyCard(m.id),
   send: (m, payload) => {
+    setPresence(m.id, payload.state === 'searching' ? 'searching' : 'lobby', { mode: lobbyQueue(payload.queue).mode });
     if (!m.socket.connected) return;
     m.socket.emit('remaster-lobby', payload);
     m.socket.emit('players-in-queue', { count: payload.players.length });
@@ -988,9 +999,28 @@ function startLocalMatch(socket, queue) {
   const { mode, map } = lobbyQueue(queue);
   socket.emit('join-mm-ack');
   if (mode === SHOWDOWN.queue) {
+    const before = showdowns.current(socket.userID);
     const series = showdowns.startRound(socket.userID);
+    // A round left unplayed can end the series before this one starts.
+    if (before && before.over) recordShowdown(socket.userID, before.won);
     socket.emit('remaster-showdown', showdownState('round', series));
+    setPresence(socket.userID, 'match', { mode: SHOWDOWN.queue, round: series.round });
     return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map);
+  }
+  // A party leader queues the party: everyone online and in the menu joins
+  // the same lobby, and their menus show the queue (join-mm-group).
+  const p = friends.party(socket.userID);
+  if (p && p.leader === socket.userID && p.members.length > 1) {
+    const group = [{ id: socket.userID, socket }];
+    for (const id of p.members) {
+      const s = socketsByUser.get(id);
+      if (id === socket.userID || !s || !s.connected || presenceState(id) === 'match') continue;
+      group.push({ id, socket: s });
+      s.emit('join-mm-group');
+    }
+    lobbies.joinGroup(mode, group, map);
+    log('party', p.id, 'queued', mode, group.length + '/' + p.members.length, 'player(s)');
+    return;
   }
   lobbies.join(mode, { id: socket.userID, socket }, map);
 }
@@ -999,6 +1029,9 @@ function startLocalMatch(socket, queue) {
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
 function launchMatch(socket, queue, map) {
   const showdown = queue === SHOWDOWN.queue;
+  // Duo: the pairs mode, you and a teammate (patch/make_duo.py); the menu
+  // starts it from "duo:<map>".
+  const duo = lobbyQueue(queue).mode === 'coop2';
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   tickets.start(socket.userID, socketIp(socket), { map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
   if (String(queue).startsWith('ranked')) {
@@ -1008,9 +1041,10 @@ function launchMatch(socket, queue, map) {
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
     saveProfiles();
   }
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : 'offline map ' + mapIndex);
+  if (!showdown) setPresence(socket.userID, 'match', { mode: lobbyQueue(queue).mode });
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : 'offline:' + mapIndex,
+    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (duo ? 'duo:' : 'offline:') + mapIndex,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
@@ -1035,6 +1069,140 @@ function sendShowdown(socket) {
     s.announced = true;
     socket.emit('remaster-showdown', showdownState('over', showdowns.view(s)));
   }
+}
+
+// ---------------------------------------------------------------- friends, parties, player cards
+
+// What each player is doing, for their friends: menu, searching, lobby or
+// match (with the mode, and the round in Showdown). Offline is derived.
+const presence = new Map();     // userID -> { state, mode, round, since }
+const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning' };
+
+function usernameOf(userID) {
+  const key = accounts.keyForUserID(userID);
+  const a = key ? accounts.get(key) : null;
+  return a ? a.username : null;
+}
+
+function userIDForName(raw) {
+  const a = accounts.get(acc.usernameKey(raw));
+  return a ? a.userID : null;
+}
+
+function presenceState(userID) { return statusOf(userID).state; }
+
+function setPresence(userID, state, extra = {}) {
+  const was = presence.get(userID);
+  const now = { state, mode: extra.mode || null, round: extra.round || null, since: Date.now() };
+  if (was && was.state === now.state && was.mode === now.mode && was.round === now.round) return;
+  presence.set(userID, now);
+  notifyFriends(userID);
+}
+
+// A player's status as their friends see it.
+function statusOf(userID) {
+  const s = socketsByUser.get(userID);
+  const st = presence.get(userID);
+  const playing = tickets.peek({ userID });
+  let state = 'offline';
+  if (st && st.state === 'match' && playing) state = 'match';
+  else if (s && s.connected) state = st ? st.state : 'menu';
+  else if (playing) state = 'match';
+  const mode = st && st.mode && MODE_LABELS[st.mode] ? MODE_LABELS[st.mode] : null;
+  let label = { offline: 'Offline', menu: 'In menu', searching: 'Searching', lobby: 'In lobby', match: 'In match' }[state];
+  if (mode && state !== 'offline' && state !== 'menu') label += ' · ' + mode + (st.round && mode === 'Showdown' ? ' round ' + st.round : '');
+  return { state, label, lastSeen: state === 'offline' ? friends.peek(userID).seen : null };
+}
+
+// A player as friends and party lists show them.
+function friendEntry(userID) {
+  return Object.assign({ username: usernameOf(userID) || 'Player' }, lobbyCard(userID), { status: statusOf(userID) });
+}
+
+function partyView(userID) {
+  const p = friends.party(userID);
+  if (!p) return null;
+  return { id: p.id, leader: usernameOf(p.leader), you: usernameOf(userID),
+    members: p.members.map((id) => Object.assign(friendEntry(id), { leader: id === p.leader })) };
+}
+
+const STATE_ORDER = { match: 0, lobby: 1, searching: 2, menu: 3, offline: 4 };
+
+// Everything a player's friends panel shows, pushed whenever it changes.
+function sendFriends(userID) {
+  const socket = socketsByUser.get(userID);
+  if (!socket || !socket.connected) return;
+  const me = friends.peek(userID);
+  const list = me.friends.map(friendEntry)
+    .sort((a, b) => STATE_ORDER[a.status.state] - STATE_ORDER[b.status.state] || a.username.localeCompare(b.username));
+  socket.emit('remaster-friends', {
+    you: usernameOf(userID),
+    friends: list,
+    incoming: me.incoming.map(friendEntry),
+    outgoing: me.outgoing.map(friendEntry),
+    party: partyView(userID),
+    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: friendEntry(i.from) })),
+    maxParty: friends.limits.maxParty
+  });
+}
+
+// Someone's status or friendships changed: refresh their panel and their
+// friends' and party members'.
+function notifyFriends(userID) {
+  const told = new Set([userID]);
+  sendFriends(userID);
+  const p = friends.party(userID);
+  for (const id of friends.friendsOf(userID).concat(p ? p.members : [])) {
+    if (told.has(id)) continue;
+    told.add(id);
+    sendFriends(id);
+  }
+}
+
+// A finished Showdown series on the player's record (their card shows it).
+function recordShowdown(userID, won) {
+  const p = getProfile(userID);
+  p.showdown = p.showdown || { won: 0, lost: 0 };
+  if (won) p.showdown.won++; else p.showdown.lost++;
+  saveProfiles();
+}
+
+// A player's card: who they are and what their profile records.
+function playerCard(userID, viewer) {
+  const p = peekProfile(userID) || BLANK_PROFILE;
+  const s = p.stats || {};
+  const games = s.gamesPlayed || 0;
+  const wins = s.wins || 0;
+  const kills = s.kills || 0;
+  const losses = Math.max(0, games - wins);          // every match not won ends in a death
+  const card = Object.assign({ username: usernameOf(userID) || 'Player' }, lobbyCard(userID), {
+    wins, losses, games, kills,
+    kd: losses ? Math.round(kills / losses * 100) / 100 : kills,
+    winRate: games ? Math.round(wins / games * 1000) / 10 : 0,
+    minutesPlayed: s.minutesAlive || 0,
+    damage: Math.round(s.totalDamage || 0),
+    memberSince: p.createdAt || null,
+    showdown: p.showdown ? { won: p.showdown.won || 0, lost: p.showdown.lost || 0 } : { won: 0, lost: 0 },
+    ranked: null,
+    status: statusOf(userID)
+  });
+  const r = p.ranked;
+  if (r && Number.isFinite(r.rating)) {
+    const rating = Math.min(ranked.CONFIG.maxRating, r.rating);
+    card.ranked = {
+      season: { id: ranked.CONFIG.season.id, name: ranked.CONFIG.season.name },
+      tier: ranked.tierFor(rating).name, rating,
+      peakTier: r.peakTier || ranked.tierFor(rating).name,
+      matches: r.matches || 0, wins: r.wins || 0,
+      tiersReached: ranked.TIERS.filter((t) => r.tiersReached && r.tiersReached[t.name]).map((t) => t.name)
+    };
+  }
+  if (viewer) {
+    const me = friends.peek(viewer);
+    card.relation = viewer === userID ? 'you' : me.friends.includes(userID) ? 'friend'
+      : me.outgoing.includes(userID) ? 'requested' : me.incoming.includes(userID) ? 'asked-you' : 'none';
+  }
+  return card;
 }
 
 // A short string from a client message, or `fallback`.
@@ -1120,14 +1288,34 @@ io.on('connection', (socket) => {
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);
     later(() => sendShowdown(socket), 1500);
+    friends.seen(userID);
+    if (presenceState(userID) !== 'match') presence.delete(userID);   // back in the menu
+    notifyFriends(userID);
   });
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
-  on('leave-mm', () => { lobbies.leave(socket.userID); socket.emit('leave-mm-ack'); });
+  on('leave-mm', () => {
+    lobbies.leave(socket.userID);
+    socket.emit('leave-mm-ack');
+    setPresence(socket.userID, 'menu');
+    // The party leader cancelling takes the party out of the lobby too.
+    const p = friends.party(socket.userID);
+    if (p && p.leader === socket.userID) {
+      for (const id of p.members) {
+        if (id === socket.userID || !lobbies.leave(id)) continue;
+        const s = socketsByUser.get(id);
+        if (s) s.emit('leave-mm-group');
+        setPresence(id, 'menu');
+      }
+    }
+  });
   // Showdown: leave the series from the menu (the next round isn't played).
   on('showdown-leave', () => {
     const series = showdowns.leave(socket.userID);
-    if (series) socket.emit('remaster-showdown', showdownState('left', series));
+    if (series) {
+      recordShowdown(socket.userID, false);
+      socket.emit('remaster-showdown', showdownState('left', series));
+    }
   });
   // Matchmaking lobby: this player's map vote (MatchLobby.js).
   on('lobby-vote-map', (msg) => { lobbies.vote(socket.userID, msg && typeof msg.map === 'string' ? msg.map : null); });
@@ -1221,6 +1409,75 @@ io.on('connection', (socket) => {
   on('get-friends', () => socket.emit('get-friends-ack', []));
   on('group-invite', () => socket.emit('group-invite-fail', { reason: 'target-offline' }));
 
+  // Friends and parties (Friends.js). Every action answers with
+  // remaster-friend-result and pushes the new state (remaster-friends).
+  const friendAction = (action, fn) => on(action, (msg) => {
+    const me = socket.userID;
+    const reply = (r) => socket.emit('remaster-friend-result', Object.assign({ action }, r));
+    if (!usernameOf(me)) return reply({ error: 'no-account' });
+    if (action !== 'friends-get' && action !== 'player-card' && !allowFriendAction(me)) return reply({ error: 'slow-down' });
+    fn(me, msg && typeof msg === 'object' ? msg : {}, reply);
+  });
+  const target = (msg) => (typeof msg.username === 'string' && msg.username.length <= 40 ? userIDForName(msg.username) : null);
+  friendAction('friends-get', (me) => sendFriends(me));
+  friendAction('friend-request', (me, msg, reply) => {
+    const to = target(msg);
+    if (!to) return reply({ error: 'no-such-player', username: msg.username });
+    const r = friends.request(me, to);
+    reply(Object.assign({ username: usernameOf(to) }, r));
+    if (r.ok) { notifyFriends(me); sendFriends(to); }
+  });
+  for (const [action, method] of [['friend-accept', 'accept'], ['friend-decline', 'decline'], ['friend-remove', 'remove']]) {
+    friendAction(action, (me, msg, reply) => {
+      const other = target(msg);
+      if (!other) return reply({ error: 'no-such-player', username: msg.username });
+      const r = friends[method](me, other);
+      reply(Object.assign({ username: usernameOf(other) }, r));
+      if (r.ok) { notifyFriends(me); notifyFriends(other); }
+    });
+  }
+  friendAction('party-invite', (me, msg, reply) => {
+    const to = target(msg);
+    if (!to) return reply({ error: 'no-such-player', username: msg.username });
+    const r = friends.invite(me, to);
+    reply(Object.assign({ username: usernameOf(to) }, r));
+    if (!r.ok) return;
+    const s = socketsByUser.get(to);
+    if (s && s.connected) s.emit('remaster-party-invite', { partyId: r.partyId, from: friendEntry(me) });
+    notifyFriends(me);
+    sendFriends(to);
+  });
+  // Who was in a party before a change: a party left with one player is
+  // dropped, and that last player hears of it too.
+  const membersOf = (p) => (p ? p.members.slice() : []);
+  friendAction('party-accept', (me, msg, reply) => {
+    const before = membersOf(friends.party(me));
+    const r = friends.acceptInvite(me, shortString(msg.partyId, 40, ''));
+    reply(r.ok ? { ok: true, partyId: r.party.id } : r);
+    if (!r.ok) return;
+    for (const id of before) sendFriends(id);
+    for (const id of r.party.members) notifyFriends(id);
+  });
+  friendAction('party-decline', (me, msg, reply) => {
+    const partyId = shortString(msg.partyId, 40, '');
+    const before = membersOf(friends.parties.get(partyId));
+    const r = friends.declineInvite(me, partyId);
+    reply(r.ok ? { ok: true } : r);
+    if (r.ok) for (const id of new Set([me].concat(before))) sendFriends(id);
+  });
+  friendAction('party-leave', (me, msg, reply) => {
+    const before = membersOf(friends.party(me));
+    const p = friends.leave(me);
+    reply(p ? { ok: true } : { error: 'not-in-party' });
+    for (const id of new Set([me].concat(before))) sendFriends(id);
+  });
+  // A player's card: yours, or anyone's by username (no such player: found false).
+  friendAction('player-card', (me, msg) => {
+    const id = msg.username === undefined ? me : target(msg);
+    socket.emit('remaster-player-card', id ? Object.assign({ found: true }, playerCard(id, me))
+      : { found: false, username: typeof msg.username === 'string' ? msg.username.slice(0, 40) : null });
+  });
+
   // Private ("custom") lobbies also go straight to a local bot match.
   on('lobby-create', (msg) => {
     socket.lobby = {
@@ -1253,6 +1510,8 @@ io.on('connection', (socket) => {
     if (socket.userID && socketsByUser.get(socket.userID) === socket) {
       lobbies.leave(socket.userID);
       socketsByUser.delete(socket.userID);
+      friends.seen(socket.userID);
+      notifyFriends(socket.userID);
     }
   });
 });
@@ -1267,6 +1526,7 @@ function flushAll(why) {
   const wroteProfiles = profileStore.flushSync();
   const wroteSessions = sessions.flushSync();
   const wroteAccounts = accounts.flushSync();
+  friends.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {
     log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
       .filter(Boolean).join(', '));
@@ -1293,6 +1553,7 @@ function shutdown(signal) {
   profileStore.close();
   if (sessions.store) sessions.store.close();
   accounts.close();
+  friends.close();
   // Let replies already in flight go out, then exit.
   io.close();
   server.close();

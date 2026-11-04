@@ -8,7 +8,8 @@
 //   bottom middle: the map vote (Jungle or Prison; click to vote, until the
 //                  countdown locks the winner in);
 //   right:         the players, each on their calling card (animated cards play,
-//          through AnimatedCards.js).
+//          through AnimatedCards.js). Click a row for the player's card
+//          (Friends.js).
 // When the countdown starts it becomes the pregame lobby: the map is locked
 // and the right column is the roster of the match about to load, you and the
 // bots the game fills it with (matches run on each player's PC, so the other
@@ -34,12 +35,14 @@
     "#remaster-lobby { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 40; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); pointer-events: none; }",
     "#remaster-lobby.hidden { display: none; }",
     "body.rl-on #queue-widget { display: none !important; }",
-    "#remaster-lobby .rl-top { position: absolute; top: 4.5vh; left: 50%; transform: translateX(-50%); min-width: 22vw; padding: 1.4vh 1.6vw 1.6vh; text-align: center; border-radius: 1.8vh; background: rgba(10, 6, 8, 0.88); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.75), 0 0.8vh 2.4vh rgba(0, 0, 0, 0.6); }",
-    "#remaster-lobby .rl-state { font: 2.4vw Creepster, Impact, sans-serif; letter-spacing: 0.12vw; line-height: 1; white-space: nowrap; color: rgba(204, 0, 0, 1); }",
-    "#remaster-lobby .rl-what { margin-top: 0.7vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.85; }",
-    "#remaster-lobby .rl-clock { margin-top: 0.3vh; font: 2vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; color: white; }",
-    "#remaster-lobby .rl-cancel { display: inline-block; margin-top: 1vh; padding: 0.7vh 1.4vw; border-radius: 3vh; font: 0.8vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(204, 0, 0, 0.85); pointer-events: all; cursor: pointer; transition: background 0.15s; }",
-    "#remaster-lobby .rl-cancel:hover { background: rgba(255, 40, 30, 1); color: white; }",
+    "#remaster-lobby .rl-top { position: absolute; top: 1.8vh; left: 50%; transform: translateX(-50%); display: flex; align-items: center; padding: 0.8vh 0.8vw 0.8vh 1.3vw; border-radius: 4vh; white-space: nowrap; background: rgba(10, 6, 8, 0.82); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0.6vh 2vh rgba(0, 0, 0, 0.5); }",
+    "#remaster-lobby .rl-state { display: flex; align-items: center; font: 1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.18vw; text-transform: uppercase; white-space: nowrap; color: rgba(255, 70, 60, 1); }",
+    "#remaster-lobby .rl-state:before { content: \"\"; display: inline-block; width: 0.55vw; height: 0.55vw; margin-right: 0.6vw; border-radius: 50%; background: rgba(255, 70, 60, 1); animation: rl-pulse 1.2s ease-in-out infinite; }",
+    "@keyframes rl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }",
+    "#remaster-lobby .rl-what { margin-left: 1vw; font: 0.75vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.7; }",
+    "#remaster-lobby .rl-clock { margin-left: 1vw; min-width: 2.6vw; font: 1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; text-align: center; color: white; }",
+    "#remaster-lobby .rl-cancel { display: inline-block; margin-left: 1vw; padding: 0.55vh 1vw; border-radius: 3vh; font: 0.68vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(255, 255, 255, 0.1); pointer-events: all; cursor: pointer; transition: background 0.15s; }",
+    "#remaster-lobby .rl-cancel:hover { background: rgba(204, 0, 0, 0.9); color: white; }",
     "#remaster-lobby .rl-bottom { position: absolute; bottom: 6vh; left: 50%; transform: translateX(-50%); width: 32vw; text-align: center; }",
     "#remaster-lobby .rl-maps-title { margin-bottom: 0.8vh; font: 0.85vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.14vw; text-transform: uppercase; text-shadow: 0 0 0.6vh black; }",
     "#remaster-lobby .rl-maps { display: flex; }",
@@ -67,6 +70,8 @@
     "#remaster-lobby .rl-name { flex: 1 1 auto; font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.4vh black; }",
     "#remaster-lobby .rl-vote { margin-right: 0.5vw; padding: 0.2vh 0.5vw; border-radius: 2vh; font: 0.65vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; text-transform: uppercase; background: rgba(8, 6, 8, 0.75); border: 1px solid rgba(255, 255, 255, 0.25); }",
     "#remaster-lobby .rl-rank { width: 2.4vw; height: 2.4vw; margin-right: 0.5vw; flex: 0 0 auto; }",
+    "#remaster-lobby .rl-row.rl-click { pointer-events: all; cursor: pointer; }",
+    "#remaster-lobby .rl-row.rl-click:hover { box-shadow: inset 0 0 0 0.12vw rgba(255, 255, 255, 0.45); }",
     "#remaster-lobby .rl-row.me { box-shadow: inset 0 0 0 0.15vw rgba(204, 0, 0, 1); }",
     "#remaster-lobby .rl-row.empty { background: rgba(18, 14, 16, 0.55); border: 1px dashed rgba(255, 255, 255, 0.16); }",
     "#remaster-lobby .rl-row.empty::before, #remaster-lobby .rl-row.more::before { display: none; }",
@@ -135,10 +140,18 @@
     if (typeof TrackCullingCardElement == "function") TrackCullingCardElement(li);
   }
 
+  // Clicking a row opens that player's card.
+  function clickable(li, who) {
+    if (!window.RemasterFriends) return;
+    li.className += " rl-click";
+    li.addEventListener("click", function () { window.RemasterFriends.showCard(who); });
+  }
+
   function row(p, me) {
     var li = el("li", "rl-row" + (me ? " me" : "") + (shownNames[p.name] ? "" : " joined"));
     li.style.backgroundImage = cardImage(p.cardID);
     animate(li);
+    clickable(li, me ? { self: true } : { username: p.name, level: p.level, rank: p.rank, cardID: p.cardID });
     li.appendChild(el("span", "rl-level", String(p.level || 1)));
     li.appendChild(el("span", "rl-name", p.name || "Player"));
     if (p.vote && MAPS[p.vote]) li.appendChild(el("span", "rl-vote", MAPS[p.vote].name));
@@ -190,10 +203,12 @@
     var key = name + "#" + seed, x = 5381;
     for (var c = 0; c < key.length; c++) x = (x * 33 + key.charCodeAt(c)) % 2147483647;
     x = x % 233280;
-    li.appendChild(el("span", "rl-level", String(1 + Math.floor(x / 233280 * MAX_LEVEL))));
+    var level = 1 + Math.floor(x / 233280 * MAX_LEVEL);
+    var tier = x % 3 === 0 ? RANKS[x % RANKS.length] : null;
+    li.appendChild(el("span", "rl-level", String(level)));
     li.appendChild(el("span", "rl-name", name));
-    if (x % 3 === 0) {
-      var tier = RANKS[x % RANKS.length];
+    clickable(li, { username: name, level: level, rank: tier, cardID: cardID, contestant: true });
+    if (tier) {
       var img = el("img", "rl-rank");
       img.src = "/images/ranked/" + tier.toLowerCase() + ".png";
       img.alt = tier;
@@ -244,7 +259,7 @@
       time = clock((last.startsInMs || 0) - elapsed);
     } else {
       state = last.players.length > 1 ? "Players Found" : "Searching";
-      what = (MODES[last.queue] || last.queue) + " · " + (last.players.length > 1 ? "searching for more" : "searching for players");
+      what = MODES[last.queue] || last.queue;
       time = clock((last.searchingMs || 0) + elapsed);
     }
     root.querySelector(".rl-state").textContent = state;
