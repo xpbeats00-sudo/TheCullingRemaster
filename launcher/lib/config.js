@@ -12,7 +12,7 @@ const DEFAULTS = {
     api: "https://xplab.shop:8443/api", status: "https://xplab.shop:8443/health" }],
   serverId: "xplab",
   // Footer links; an empty one is hidden.
-  links: { website: "https://xplab.shop/", discord: "", support: "https://xplab.shop/faq.html" },
+  links: { website: "https://xplab.shop/", discord: "https://discord.com/invite/tson", support: "https://xplab.shop/faq.html" },
   closeOnLaunch: false,
   // The in-game name chosen before PLAY (lib/playername.js writes it into the game).
   playerName: "",
@@ -36,7 +36,8 @@ function sanitize(c) {
   for (const [k, def] of Object.entries(DEFAULTS)) {
     const v = c[k];
     if (Array.isArray(def)) out[k] = Array.isArray(v) && v.every(validServer) ? v : def;
-    else if (k === "links") out[k] = validLinks(v) ? v : def;
+    // Links come with the launcher, not from saved settings (a new link reaches everyone).
+    else if (k === "links") out[k] = def;
     else if (CHOICES[k]) out[k] = CHOICES[k].includes(v) ? v : def;
     else out[k] = typeof v === typeof def ? v : def;
   }
@@ -45,12 +46,6 @@ function sanitize(c) {
 
 function validServer(s) {
   return s && typeof s.id === "string" && typeof s.name === "string" && typeof s.api === "string";
-}
-
-// Only https links (or empty, for hidden).
-function validLinks(l) {
-  return l && typeof l === "object" &&
-    Object.values(l).every((u) => u === "" || (typeof u === "string" && u.startsWith("https://")));
 }
 
 function save(file, c) {

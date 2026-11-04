@@ -59,4 +59,42 @@ function write(root, raw) {
   return v.name;
 }
 
-module.exports = { validate, supported, read, write, MAX };
+// The Steam ID the game logs in with. A Remaster account has its own; the
+// launcher writes it to force_steamid.txt before PLAY. Without that file the
+// Steam layer uses the PC-wide ID in %APPDATA%\Goldberg SteamEmu Saves.
+const ID_FILE = "force_steamid.txt";
+const STEAM_ID = /^7656\d{13}$/;              // 76561197960265728 + a 32-bit account number
+
+// The ID this install plays as now ("steam:<id>"), or null. appData is
+// %APPDATA%, for the PC-wide fallback.
+function readSteamId(root, appData) {
+  const candidates = settingsDirs(root).map((d) => path.join(d, ID_FILE));
+  if (appData) candidates.push(path.join(appData, "Goldberg SteamEmu Saves", "settings", "user_steam_id.txt"));
+  for (const file of candidates) {
+    try {
+      const id = fs.readFileSync(file, "utf8").replace(/^﻿/, "").trim();
+      if (STEAM_ID.test(id)) return "steam:" + id;
+    } catch { /* not set */ }
+  }
+  return null;
+}
+
+// Makes the game log in as `userID` ("steam:<id>"). A different ID already
+// there is kept once as force_steamid.txt.before-account.
+function writeSteamId(root, userID) {
+  const id = String(userID || "").replace(/^steam:/, "");
+  if (!STEAM_ID.test(id)) throw new Error("not a Steam ID: " + userID);
+  const dirs = settingsDirs(root);
+  if (!dirs.length) throw new Error("This install uses your Steam account, so it can't use a Remaster account. Choose an install made by the launcher in Settings");
+  for (const dir of dirs) {
+    const file = path.join(dir, ID_FILE);
+    let old = null;
+    try { old = fs.readFileSync(file, "utf8").trim(); } catch { /* none */ }
+    if (old === id) continue;
+    if (old && !fs.existsSync(file + ".before-account")) fs.copyFileSync(file, file + ".before-account");
+    fs.writeFileSync(file + ".tmp", id, "utf8");
+    fs.renameSync(file + ".tmp", file);
+  }
+}
+
+module.exports = { validate, supported, read, write, readSteamId, writeSteamId, MAX };

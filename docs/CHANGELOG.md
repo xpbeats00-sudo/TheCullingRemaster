@@ -1,5 +1,17 @@
 # Changelog
 
+## Launcher 1.3.0 (not yet published)
+
+**Accounts**
+- Players create a Remaster account in the launcher: a username, an email and a password. The username is the name everyone sees in game, and it replaces the old player-name box.
+- Signing in is the first step before PLAY. The launcher remembers the sign-in, encrypted with Windows' own data protection. It never stores the password.
+- Progress a player already has on the server moves to their new account when they create it from the same PC and connection.
+- Signing out, an expired sign-in and a password reset all lead back to the sign-in dialog.
+
+**Other**
+- The Discord button opens the community server.
+- Footer links now come with the launcher, so a changed link reaches everyone.
+
 ## Launcher 1.2.0 (not yet published)
 
 **Downloads**

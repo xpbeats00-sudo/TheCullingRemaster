@@ -218,58 +218,103 @@
     else if (notInstalled()) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
     else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
     else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
-    else if (nameNeeded()) { label = "Set your name"; btn.classList.add("secondary"); }
+    else if (accountNeeded()) { label = "Sign in"; btn.classList.add("secondary"); }
     $("#play-label").textContent = label;
   }
 
-  // ---------------------------------------------------------------- player name
-  // The same rules as lib/playername.js (it checks again before saving).
-  function checkName(raw) {
-    const name = String(raw || "").replace(/\s+/g, " ").trim();
-    if (!name) return { error: "Enter a name" };
-    if ([...name].length > 32) return { error: "Names are at most 32 characters" };
-    if (!/^[\p{L}\p{N} _.\-[\]()!?'#]+$/u.test(name)) return { error: "Use letters, numbers, spaces and _ . - [ ] ( ) ! ? ' #" };
-    return { name };
-  }
-  const nameNeeded = () => state.nameSupported && !state.settings.playerName;
+  // ---------------------------------------------------------------- account
+  // The account comes first: its username is the in-game name, and online
+  // play needs it (the launcher asks the server to let the game in as it).
+  const accountNeeded = () => state.accountSupported && !state.account;
+  let accountMode = "signin";
 
-  function renderName(message, kind) {
-    const box = $("#player-name");
-    const input = $("#name-input");
-    box.hidden = !state.nameSupported;
-    if (document.activeElement !== input) input.value = state.settings.playerName || "";
-    const typed = checkName(input.value);
-    const changed = typed.name !== (state.settings.playerName || "");
-    box.classList.toggle("needed", nameNeeded() && document.activeElement !== input);
-    box.classList.toggle("invalid", kind === "error" || (input.value !== "" && !!typed.error));
-    box.classList.toggle("saved", kind === "saved");
-    $("#name-save").disabled = !!typed.error || !changed;
-    $("#name-hint").textContent = message ||
-      (input.value !== "" && typed.error ? typed.error : nameNeeded() ? "Choose the name everyone sees in game" : "Shown to everyone in game");
+  function renderAccount() {
+    const box = $("#account-box");
+    box.hidden = !state.accountSupported;
+    const a = state.account;
+    box.classList.toggle("signed-out", !a);
+    // Nudged once the game is ready to play: signing in is the last step.
+    box.classList.toggle("needed", accountNeeded() && !!state.installed);
+    $("#account-name").textContent = a ? a.username : "Not signed in";
+    $("#account-hint").textContent = a ? "Your name in game" : "Needed to play online";
+    $("#account-open").hidden = !!a;
+    $("#account-signout").hidden = !a;
   }
 
-  async function saveName() {
-    const input = $("#name-input");
-    const typed = checkName(input.value);
-    if (typed.error) { renderName(typed.error, "error"); return false; }
-    if (typed.name === state.settings.playerName) { renderName(); return true; }
-    try {
-      state = await api.setPlayerName(typed.name);
-      input.value = state.settings.playerName;
-      render();
-      renderName("Saved: this is your name in game", "saved");
-      return true;
-    } catch (e) {
-      renderName(errorText(e), "error");
-      return false;
+  function setAccountMode(mode) {
+    accountMode = mode;
+    const create = mode === "create";
+    $$(".modal-tab").forEach((t) => {
+      const on = t.dataset.mode === mode;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-selected", on);
+    });
+    $$("#account-form [data-create]").forEach((el) => { el.hidden = !create; });
+    $$("#account-form [data-signin]").forEach((el) => { el.hidden = create; });
+    $("#account-title").textContent = create ? "Create your account" : "Sign in";
+    $("#acc-submit").textContent = create ? "Create account" : "Sign in";
+    $("#acc-password").autocomplete = create ? "new-password" : "current-password";
+    $("#acc-error").textContent = "";
+  }
+
+  function openAccount(mode) {
+    setAccountMode(mode || accountMode);
+    $("#account-modal").hidden = false;
+    $("#acc-password").value = "";
+    $("#acc-confirm").value = "";
+    $("#acc-username").focus();
+  }
+
+  function closeAccount() {
+    $("#account-modal").hidden = true;
+    $("#acc-password").value = "";
+    $("#acc-confirm").value = "";
+    $("#acc-error").textContent = "";
+    $("#account-open").focus();
+  }
+
+  async function submitAccount(e) {
+    e.preventDefault();
+    const btn = $("#acc-submit");
+    const form = {
+      username: $("#acc-username").value,
+      password: $("#acc-password").value
+    };
+    if (accountMode === "create") {
+      form.email = $("#acc-email").value;
+      form.confirm = $("#acc-confirm").value;
+      if (form.password !== form.confirm) { $("#acc-error").textContent = "The passwords don't match"; $("#acc-confirm").focus(); return; }
     }
+    btn.disabled = true;
+    $("#acc-error").textContent = "";
+    try {
+      const r = accountMode === "create" ? await api.createAccount(form) : await api.signIn(form);
+      state = r;
+      closeAccount();
+      render();
+      if (accountMode === "create") {
+        toast(r.claimed ? `Welcome, ${state.account.username}! Your progress on this server moved to your new account.` : `Welcome, ${state.account.username}! Your account is ready.`, "info");
+      } else {
+        toast(`Signed in as ${state.account.username}.`, "info");
+      }
+    } catch (err) {
+      $("#acc-error").textContent = errorText(err);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function signOut() {
+    state = await call(api.signOut);
+    render();
+    toast("Signed out.", "info");
   }
 
   function render() {
     renderServers();
     renderStatus();
     renderSync();
-    renderName();
+    renderAccount();
     renderPlay();
   }
 
@@ -367,11 +412,8 @@
     if (notInstalled()) return runSync();
     if (!state.game.ok) { selectTab("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();
-    // The name comes first: an unsaved edit is saved, a missing name asked for.
-    const input = $("#name-input");
-    if (state.nameSupported && (nameNeeded() || input.value.trim() !== state.settings.playerName)) {
-      if (!(await saveName()) || nameNeeded()) { input.focus(); return; }
-    }
+    // The account comes first.
+    if (accountNeeded()) return openAccount("signin");
     const btn = $("#play");
     btn.disabled = true;
     btn.classList.add("working");
@@ -379,7 +421,10 @@
     try {
       await call(api.play);
     } catch (e) {
-      /* toast already shown */
+      // Signed out on the server (a password reset, an old sign-in): sign in again.
+      state = await api.state();
+      render();
+      if (accountNeeded()) openAccount("signin");
     } finally {
       setTimeout(renderPlay, 2500);
     }
@@ -400,12 +445,12 @@
   }
 
   function wire() {
-    const nameInput = $("#name-input");
-    nameInput.addEventListener("input", () => renderName());
-    nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveName(); } });
-    nameInput.addEventListener("blur", () => { if (nameInput.value.trim() && !checkName(nameInput.value).error) saveName(); else renderName(); });
-    $("#name-save").addEventListener("mousedown", (e) => e.preventDefault());   // keep focus: save once, not on blur too
-    $("#name-save").addEventListener("click", saveName);
+    $("#account-open").addEventListener("click", () => openAccount("signin"));
+    $("#account-signout").addEventListener("click", signOut);
+    $$(".modal-tab").forEach((t) => t.addEventListener("click", () => setAccountMode(t.dataset.mode)));
+    $("#account-form").addEventListener("submit", submitAccount);
+    $("#acc-cancel").addEventListener("click", closeAccount);
+    $("#account-modal").addEventListener("keydown", (e) => { if (e.key === "Escape") closeAccount(); });
     $("#refresh-servers").addEventListener("click", refreshPings);
     $("#region-select").addEventListener("change", (e) => chooseServer(e.target.value));
     $("#choose-folder").addEventListener("click", chooseFolder);
