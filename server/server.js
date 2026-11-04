@@ -864,9 +864,13 @@ function queueName(raw) {
 const lobbies = new MatchLobbies({
   options: {
     gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
-    countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '5000', 10),
+    // The pregame lobby: long enough to see the match's roster and the map.
+    countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '10000', 10),
     maxPlayers: 16,
     maps: Object.keys(MAPS),
+    // Who else is in each player's match: the game fills it with bots up to
+    // 16 contestants (Victory.exe caps players plus bots at 16).
+    matchBots: 15,
     note: 'Each player fights bots on their own PC'
   },
   describe: (m) => lobbyCard(m.id),

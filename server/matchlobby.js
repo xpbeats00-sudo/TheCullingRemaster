@@ -137,6 +137,8 @@ class MatchLobbies {
       startsInMs: lobby.state === "starting" ? Math.max(0, lobby.startAt - now) : null,
       gatherEndsInMs: lobby.state === "searching" ? Math.max(0, lobby.createdAt + this.options.gatherMs - now) : null,
       maps: this.options.maps ? this.tally(lobby) : null,
+      // Bots in each player's own match (for the pregame roster).
+      matchBots: this.options.matchBots || 0,
       map: lobby.map,
       note: this.options.note || null
     };
