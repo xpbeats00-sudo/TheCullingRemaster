@@ -130,4 +130,12 @@ test('simulation: skill levels separate', () => {
 });
 
 if (failures) { console.log(failures + ' failing'); process.exit(1); }
+test("bots are never rated above T4 (Hunter): the season just started", () => {
+  for (const mmr of [500, 1000, 1300, 1800, 2400]) {
+    const bots = R.opponentsFor("m-cap-" + mmr, mmr);
+    assert.ok(bots.every((r) => r <= 1399), "mmr " + mmr + ": max bot " + Math.max(...bots));
+  }
+  assert.ok(Math.max(...R.opponentsFor("m-cap-low", 1000)) > 1000, "below the cap the spread is unchanged");
+});
+
 console.log('all ranked tests passed');
