@@ -12,6 +12,7 @@
   once as patch/branding/originals/LoadingScreen.mp4.
 
 usage: python make_branding.py <game root (TheCulling)> <extracted uiresources FrontEnd.html>
+       python make_branding.py --menu-only [generated FrontEnd.html]
 """
 import os
 import shutil
@@ -232,6 +233,7 @@ def rebrand_html(src_html):
     html = add_play_screen(html)
     html = add_airdrop_unlocks(html)
     html = hide_survival(html)
+    html = add_friends(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
 
@@ -370,6 +372,42 @@ def hide_survival(html):
                         + item + "          -->" + nl)
 
 
+FRIENDS_ITEM = """          <li tabindex="0" id="remaster-friends-item">
+            <div class="vertical-list-menu-item">
+              FRIENDS
+            </div>
+          </li>
+"""
+FRIENDS_SCRIPT = '<script src="js/Friends.js"></script>'
+
+
+def add_friends(html):
+    """Friends, parties and player cards (js/Friends.js): a FRIENDS item on the
+    main menu before PROFILE, the footer's Invite button labelled Friends (it
+    opens the same panel), and the script after the main menu's. Safe to run on a
+    page that already has it."""
+    nl = "\r\n" if "\r\n" in html else "\n"
+    if 'id="remaster-friends-item"' not in html:
+        profile = '          <li tabindex="0" data-push-screen="Profile"'
+        assert html.count(profile) == 1, "PROFILE menu item"
+        html = html.replace(profile, FRIENDS_ITEM.replace("\n", nl) + profile)
+    html = html.replace('<span class="control-text">Invite Player</span>', '<span class="control-text">Friends</span>')
+    if FRIENDS_SCRIPT not in html:
+        menu = '<script src="js/Screens/MainMenu.js"></script>'     # after ClientWeb.js and the menu screens
+        assert html.count(menu) == 1, menu
+        html = html.replace(menu, menu + nl + "  " + FRIENDS_SCRIPT)
+    return html
+
+
+def apply_menu_changes(path):
+    """--menu-only: the friends menu edits applied to an already generated
+    FrontEnd.html in place (no logos, fonts or movies). Safe to repeat."""
+    html = open(path, "rb").read().decode("utf-8")
+    html = add_friends(html)
+    open(path, "wb").write(html.encode("utf-8"))
+    print(path, "updated")
+
+
 def make_intro(game_root):
     movie = os.path.join(game_root, "Victory", "Content", "Movies", "LoadingScreen.mp4")
     original = os.path.join(BRAND, "originals", "LoadingScreen.mp4")
@@ -441,6 +479,9 @@ def make_loading_screens(paks_dir):
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--menu-only" in sys.argv:
+        apply_menu_changes(args[0] if args else os.path.join(UI, "FrontEnd.html"))
+        sys.exit(0)
     make_logos()
     install_font()
     rebrand_html(args[1])

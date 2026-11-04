@@ -8,7 +8,8 @@
 //   bottom middle: the map vote (Jungle or Prison; click to vote, until the
 //                  countdown locks the winner in);
 //   right:         the players, each on their calling card (animated cards play,
-//          through AnimatedCards.js).
+//          through AnimatedCards.js). Click a row for the player's card
+//          (Friends.js).
 // When the countdown starts it becomes the pregame lobby: the map is locked
 // and the right column is the roster of the match about to load, you and the
 // bots the game fills it with (matches run on each player's PC, so the other
@@ -69,6 +70,8 @@
     "#remaster-lobby .rl-name { flex: 1 1 auto; font: 1.1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.05vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.4vh black; }",
     "#remaster-lobby .rl-vote { margin-right: 0.5vw; padding: 0.2vh 0.5vw; border-radius: 2vh; font: 0.65vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; text-transform: uppercase; background: rgba(8, 6, 8, 0.75); border: 1px solid rgba(255, 255, 255, 0.25); }",
     "#remaster-lobby .rl-rank { width: 2.4vw; height: 2.4vw; margin-right: 0.5vw; flex: 0 0 auto; }",
+    "#remaster-lobby .rl-row.rl-click { pointer-events: all; cursor: pointer; }",
+    "#remaster-lobby .rl-row.rl-click:hover { box-shadow: inset 0 0 0 0.12vw rgba(255, 255, 255, 0.45); }",
     "#remaster-lobby .rl-row.me { box-shadow: inset 0 0 0 0.15vw rgba(204, 0, 0, 1); }",
     "#remaster-lobby .rl-row.empty { background: rgba(18, 14, 16, 0.55); border: 1px dashed rgba(255, 255, 255, 0.16); }",
     "#remaster-lobby .rl-row.empty::before, #remaster-lobby .rl-row.more::before { display: none; }",
@@ -137,10 +140,18 @@
     if (typeof TrackCullingCardElement == "function") TrackCullingCardElement(li);
   }
 
+  // Clicking a row opens that player's card.
+  function clickable(li, who) {
+    if (!window.RemasterFriends) return;
+    li.className += " rl-click";
+    li.addEventListener("click", function () { window.RemasterFriends.showCard(who); });
+  }
+
   function row(p, me) {
     var li = el("li", "rl-row" + (me ? " me" : "") + (shownNames[p.name] ? "" : " joined"));
     li.style.backgroundImage = cardImage(p.cardID);
     animate(li);
+    clickable(li, me ? { self: true } : { username: p.name, level: p.level, rank: p.rank, cardID: p.cardID });
     li.appendChild(el("span", "rl-level", String(p.level || 1)));
     li.appendChild(el("span", "rl-name", p.name || "Player"));
     if (p.vote && MAPS[p.vote]) li.appendChild(el("span", "rl-vote", MAPS[p.vote].name));
@@ -192,10 +203,12 @@
     var key = name + "#" + seed, x = 5381;
     for (var c = 0; c < key.length; c++) x = (x * 33 + key.charCodeAt(c)) % 2147483647;
     x = x % 233280;
-    li.appendChild(el("span", "rl-level", String(1 + Math.floor(x / 233280 * MAX_LEVEL))));
+    var level = 1 + Math.floor(x / 233280 * MAX_LEVEL);
+    var tier = x % 3 === 0 ? RANKS[x % RANKS.length] : null;
+    li.appendChild(el("span", "rl-level", String(level)));
     li.appendChild(el("span", "rl-name", name));
-    if (x % 3 === 0) {
-      var tier = RANKS[x % RANKS.length];
+    clickable(li, { username: name, level: level, rank: tier, cardID: cardID, contestant: true });
+    if (tier) {
       var img = el("img", "rl-rank");
       img.src = "/images/ranked/" + tier.toLowerCase() + ".png";
       img.alt = tier;

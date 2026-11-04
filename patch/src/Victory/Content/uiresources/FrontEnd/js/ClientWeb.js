@@ -1757,6 +1757,15 @@ function BindClientwebEvents(deferred) {
   socketConnection.on("remaster-showdown", function (msg) {
     if (window.RemasterShowdown) window.RemasterShowdown.onState(msg);
   });
+  // Remaster: friends, parties and player cards (Friends.js).
+  ["remaster-friends", "remaster-friend-result", "remaster-party-invite", "remaster-player-card"].forEach(function (name) {
+    socketConnection.on(name, function (msg) {
+      if (window.RemasterFriends) window.RemasterFriends.on(name, msg);
+    });
+  });
+  socketConnection.on("auth-response", function () {
+    if (window.RemasterFriends) window.RemasterFriends.connected();
+  });
   socketConnection.on("notify-left-queue", function () {
     Matchmaking.SetMatchmaking(false);
   });
