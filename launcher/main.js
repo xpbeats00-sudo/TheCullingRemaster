@@ -17,6 +17,7 @@ const clientdll = require("./lib/clientdll");
 const playername = require("./lib/playername");
 const build = require("./lib/build");
 const { createLog } = require("./lib/log");
+const { friendly } = require("./lib/errors");
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
 const PAGES = { splash: "src/splash.html", main: "src/main.html" };
@@ -108,7 +109,7 @@ async function boot() {
     await latestManifest();
   } catch (e) {
     manifest = null;
-    bootResult = { online: false, error: e.message };
+    bootResult = { online: false, error: friendly(e) };
     log("manifest", { error: e.message });
   }
   const installed = game.check(settings.gamePath).ok;
@@ -172,7 +173,13 @@ async function ping(server) {
 function handle(channel, fn) {
   ipcMain.handle(channel, async (e, ...args) => {
     if (!win || e.sender !== win.webContents) throw new Error("unexpected sender");
-    return fn(...args);
+    try {
+      return await fn(...args);
+    } catch (err) {
+      // The raw error goes to the log; the window gets what to do about it.
+      log("error", { channel, kind: err.kind, code: err.code, error: String(err.message || err) });
+      throw new Error(friendly(err));
+    }
   });
 }
 

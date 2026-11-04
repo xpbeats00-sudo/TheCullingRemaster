@@ -357,6 +357,30 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(events.find(([ev]) => ev === "download")[1].files, 1, "the log counts downloaded files");
     });
 
+    await test("a corrupted state file is rebuilt by rehashing, nothing is downloaded again", async () => {
+      const data = { "Victory/x.pak": Buffer.alloc(70000, 3), "Victory/y.ini": Buffer.from("y") };
+      release("corrupt-state", "1", data);
+      const r = path.join(tmp, "corrupt-state");
+      await install("corrupt-state", r);
+      fs.writeFileSync(path.join(r, ".remaster", "sync-state.json"), "{\"format\":2,\"files\":{\"Victor");   // cut off mid-write
+      for (const k of Object.keys(hits)) delete hits[k];
+      const m = await get("corrupt-state");
+      assert.deepStrictEqual(await sync.plan(m, r), [], "every file verified by hash");
+      assert.ok(!Object.keys(hits).some((k) => k.includes("/o/")), "nothing downloaded");
+      const rebuilt = JSON.parse(fs.readFileSync(path.join(r, ".remaster", "sync-state.json"), "utf8"));
+      assert.strictEqual(Object.keys(rebuilt.files).length, 2, "records rebuilt");
+    });
+
+    await test("install folders with spaces and non-English characters work end to end", async () => {
+      const files = { "Victory/Content/Paks/a b.pak": Buffer.alloc(50000, 1), "Victory/Ünïcödé/日本.txt": Buffer.from("ok") };
+      release("unicode", "1", files);
+      const r = path.join(tmp, "Mes Jeux", "Spiele Ünïcode 游戏", "The Culling");
+      await install("unicode", r);
+      for (const [p, b] of Object.entries(files)) assert.ok(read(r, p).equals(b), p);
+      assert.deepStrictEqual(await sync.plan(await get("unicode"), r), []);
+      assert.strictEqual(sync.installedVersion(r), "1");
+    });
+
     await test("versions compare numerically", async () => {
       assert.strictEqual(sync.compareVersions("1.10.0", "1.9.9"), 1);
       assert.strictEqual(sync.compareVersions("1.1", "1.1.0"), 0);
