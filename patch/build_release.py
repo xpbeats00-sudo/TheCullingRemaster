@@ -56,6 +56,7 @@ Options:
                         them the SHOWDOWN tile has no picture, as in 1.3.5)
   --catalog             also rebuild the stock catalog (build_catalog.py)
   --skip-generators     steps 0-2, then 4-6 (after a reviewed, committed generator run)
+  --from GENERATOR      resume step 3 at that generator (e.g. --from make_camos.py) after a failure
   --no-release          stop after the tests (step 5)
   --stage DIR           the staging folder (default: a temp folder, removed after)
   --key, --out, --allow-dirty, --overwrite, --skip-gate, --no-setup   passed to make_release.py
@@ -247,6 +248,8 @@ def main(argv=None):
     ap.add_argument("--server", default="https://xplab.shop:8443")
     ap.add_argument("--catalog", action="store_true", help="also rebuild the stock catalog (build_catalog.py)")
     ap.add_argument("--skip-generators", action="store_true")
+    ap.add_argument("--from", dest="start_at", metavar="GENERATOR",
+                    help="resume at this generator (e.g. make_camos.py) after a failure; the earlier ones' output is kept")
     ap.add_argument("--no-release", action="store_true")
     ap.add_argument("--stage")
     for flag in ("--allow-dirty", "--overwrite", "--skip-gate", "--no-setup"):
@@ -263,7 +266,13 @@ def main(argv=None):
         clean_test_content()
         paks, frontend = stage_paks(a.game, stage)
         if not a.skip_generators:
-            for label, argv_ in generators(a, paks, frontend):
+            steps = generators(a, paks, frontend)
+            if a.start_at:
+                names = [label for label, _ in steps]
+                if a.start_at not in names:
+                    raise BuildError("--from %s: not a generator of this build (%s)" % (a.start_at, ", ".join(names)))
+                steps = steps[names.index(a.start_at):]
+            for label, argv_ in steps:
                 run(label, argv_)
             clean_test_content()
         run("release consistency gate", PY + [os.path.join(HERE, "test_release_consistency.py"), "--paks", paks])
