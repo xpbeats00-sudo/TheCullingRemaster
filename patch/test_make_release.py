@@ -92,6 +92,16 @@ try:
         assert not os.path.exists(out), "the out folder was written"
 
     @test
+    def not_steam_exe():
+        """a Victory.exe that isn't the Steam build patch_exe.py is for is refused"""
+        saved, mr.MIN_FULL_FILES = mr.MIN_FULL_FILES, 5       # enough files: the exe is checked next
+        try:
+            refuses("is not the Steam Victory.exe", build, game)
+        finally:
+            mr.MIN_FULL_FILES = saved
+        assert not os.path.exists(out), "the out folder was written"
+
+    @test
     def excluded():
         """excluded files don't count towards a full release"""
         for rel in mr.FULL_EXCLUDE:

@@ -45,10 +45,19 @@
    It reasserts each refresh, so join order and timing don't matter.
 
 The bytes are checked first, so it only patches the exe it was written for and
-is safe to run on an exe that already has it.
+is safe to run on an exe that already has it. The file is rewritten through a
+temporary file swapped in whole (os.replace): writing it in place would also
+rewrite every hard link of it (a release's files are hard links of the install).
+
+check(path) only reads: which fixes the exe has. verify(path) is what
+make_release.py asserts on the exe it ships: every fix, and exactly the bytes
+of the stock Steam exe (STOCK_SHA256) with these fixes (PATCHED_SHA256).
 
 usage: python patch_exe.py <Victory.exe> [max contestants, default 24]
+       python patch_exe.py --check <Victory.exe>
 """
+import hashlib
+import os
 import sys
 
 CAP_AT = 0x231790                   # file offset of "mov eax, 16" (b8 10 00 00 00)
@@ -81,6 +90,11 @@ DUO_STUB = bytes.fromhex(
     "418b9c242004000031f639de7d1c498b4cf5004885c9740e89f2d1eaffc241b0"
     "01e8973b1f00ffc6ebe04c89e1e82b901e004c89e74883c428415d415c5e5bc3")
 DUO_PAD = b"\xcc" * len(DUO_STUB)
+
+# The Steam build of Victory.exe this patch is for, and the same exe with every
+# fix at the default 24 contestants (what a release ships).
+STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
+PATCHED_SHA256 = "489950775e7ed69ad9a593493988eac625067f4aa07ed70a5b0ad2c3ab405593"
 
 
 def _cap(data, path, contestants):
@@ -134,22 +148,80 @@ def _duoteam(data, path):
     return True
 
 
+def _read(path):
+    with open(path, "rb") as f:
+        return bytearray(f.read())
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def check(path):
+    """Which fixes the exe has, without changing it:
+    {"cap": contestants, "sha1": bool, "slots": bool, "duoteam": bool}.
+    Raises ValueError for an exe this patch isn't for."""
+    data = _read(path)
+    _cap(bytearray(data), path, MAX)                    # raises for another exe
+    return {"cap": data[CAP_AT + 1],
+            "sha1": not _sha1(bytearray(data), path),     # nothing to change = already fixed
+            "slots": not _slots(bytearray(data), path),
+            "duoteam": not _duoteam(bytearray(data), path)}
+
+
+def verify(path, contestants=MAX):
+    """Raises ValueError unless the exe has every fix (cap = contestants) and,
+    at the default cap, is byte for byte the patched Steam exe."""
+    fixes = check(path)
+    missing = [name for name, ok in (("contestant cap %d (has %d)" % (contestants, fixes["cap"]), fixes["cap"] == contestants),
+                                     ("the SHA-1 crash fix", fixes["sha1"]),
+                                     ("the StartTraining URL slots", fixes["slots"]),
+                                     ("the Duo team pairing", fixes["duoteam"])) if not ok]
+    if missing:
+        raise ValueError("%s lacks %s" % (path, ", ".join(missing)))
+    if contestants == MAX:
+        digest = sha256(path)
+        if digest != PATCHED_SHA256:
+            raise ValueError("%s has the fixes but isn't the patched Steam exe (SHA-256 %s, expected %s)"
+                             % (path, digest, PATCHED_SHA256))
+    return fixes
+
+
 def patch(path, contestants=MAX):
     """Apply every fix; returns True when the file changed."""
     if not STOCK <= contestants <= 64:
         raise ValueError("contestants must be 16-64")
-    data = bytearray(open(path, "rb").read())
+    data = _read(path)
     changed = _cap(data, path, contestants)
     changed = _sha1(data, path) or changed
     changed = _slots(data, path) or changed
     changed = _duoteam(data, path) or changed
     if changed:
-        with open(path, "wb") as f:
+        # A new file swapped in whole: the old file (and any hard link of it) is never written.
+        tmp = path + ".patching"
+        with open(tmp, "wb") as f:
             f.write(data)
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            os.remove(tmp)
+            raise
     return changed
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--check"]:
+        fixes = check(sys.argv[2])
+        digest = sha256(sys.argv[2])
+        kind = {STOCK_SHA256: "the stock Steam exe",
+                PATCHED_SHA256: "the patched Steam exe (what a release ships)"}.get(digest, "not a known build")
+        print("%s: cap %d, SHA-1 fix %s, StartTraining URLs %s, Duo team pairing %s; SHA-256 %s (%s)"
+              % (sys.argv[2], fixes["cap"], fixes["sha1"], fixes["slots"], fixes["duoteam"], digest, kind))
+        sys.exit(0 if fixes["cap"] == MAX and fixes["sha1"] and fixes["slots"] and fixes["duoteam"] else 1)
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
     print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing%s" % (sys.argv[1], n, "" if changed else " (already)"))

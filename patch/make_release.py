@@ -80,6 +80,25 @@ def check_game_dir(game):
         raise ReleaseError("--full: %s is not a game install (missing %s)" % (game, ", ".join(missing)))
 
 
+def check_source_exe(game):
+    exe = os.path.join(game, *GAME_EXE.split("/"))
+    digest = patch_exe.sha256(exe)
+    if digest not in (patch_exe.STOCK_SHA256, patch_exe.PATCHED_SHA256):
+        raise ReleaseError("--full: %s is not the Steam Victory.exe patch_exe.py is for (SHA-256 %s)" % (exe, digest))
+
+
+def check_exe(release):
+    """The shipped Victory.exe has every patch_exe.py fix and is exactly the
+    patched Steam exe (patch_exe.verify)."""
+    exe = os.path.join(release, *GAME_EXE.split("/"))
+    try:
+        fixes = patch_exe.verify(exe)
+    except ValueError as e:
+        raise ReleaseError("the release's Victory.exe: %s" % e)
+    print("Victory.exe: cap %d, SHA-1 crash fix, StartTraining URL slots, Duo team pairing; SHA-256 %s"
+          % (fixes["cap"], patch_exe.PATCHED_SHA256))
+
+
 def game_files(game):
     """The install's files a full release ships (relative, "/"), minus FULL_EXCLUDE."""
     out = []
@@ -125,6 +144,7 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False):
         if len(files) < MIN_FULL_FILES:
             raise ReleaseError("--full: %s has only %d files to ship (a full release has at least %d): nothing built"
                                % (game, len(files), MIN_FULL_FILES))
+        check_source_exe(game)
     out = out or os.path.join(ROOT, "releases", version)
     release = os.path.join(out, "release")
     publish = os.path.join(out, "publish")
@@ -148,6 +168,8 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False):
                 "api": base + "/api", "status": base + "/health"}]
     with open(os.path.join(out, "servers.json"), "w") as f:
         json.dump(servers, f, indent=1)
+    if game:
+        check_exe(release)
     cmd = ["node", os.path.join(ROOT, "launcher", "tools", "make_manifest.js"), release, version, publish]
     setup_exe = os.path.join(ROOT, "launcher", "dist", "TheCullingRemasterSetup.exe")
     if setup and os.path.exists(setup_exe):
