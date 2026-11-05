@@ -235,6 +235,7 @@ def rebrand_html(src_html):
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)
+    html = fix_custom_screen(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
 
@@ -430,14 +431,40 @@ def add_leaderboard(html):
     return html
 
 
+CUSTOM_TILE_TEXT = "Your own match: pick the map, the loot, health stations and recyclers."
+CUSTOM_TILE_STOCK = "<p>Create or join a Custom Match.</p>"
+LOBBY_CODE_ITEM = '<li tabindex="0" rv-if="LobbyData.Code" class="custom-game-code-container"'
+SETTINGS_BUTTON = '<div id="match_settings" class="start-disabled" data-list="options">SETTINGS</div>'
+
+
+def fix_custom_screen(html):
+    """The CUSTOM screen (patch/custom_match.py): a custom match is played on
+    your PC, so its lobby code (for others to join) is removed; the SETTINGS
+    button looks enabled (stock: always drawn disabled; START is still
+    enabled by ClientWeb.js); the Play screen's CUSTOM tile says what it is.
+    Every stock setting works, so none are hidden. Safe to run again."""
+    nl = "\r\n" if "\r\n" in html else "\n"
+    html = html.replace(CUSTOM_TILE_STOCK, "<p>%s</p>" % CUSTOM_TILE_TEXT)
+    if LOBBY_CODE_ITEM in html:
+        assert html.count(LOBBY_CODE_ITEM) == 1, "lobby code item"
+        start = html.rindex(nl, 0, html.index(LOBBY_CODE_ITEM)) + len(nl)
+        end = html.index("</li>", start) + len("</li>")
+        end = html.index(nl, end) + len(nl)
+        html = html[:start] + html[end:]
+    html = html.replace(SETTINGS_BUTTON, SETTINGS_BUTTON.replace('class="start-disabled"', 'class="start"'))
+    assert "<p>%s</p>" % CUSTOM_TILE_TEXT in html, "CUSTOM tile"
+    return html
+
+
 def apply_menu_changes(path):
-    """--menu-only: the friends menu, the leaderboard and the SURVIVAL item
-    applied to an already generated FrontEnd.html in place (no logos, fonts or
-    movies). Safe to repeat."""
+    """--menu-only: the friends menu, the leaderboard, the SURVIVAL item and
+    the CUSTOM screen applied to an already generated FrontEnd.html in place
+    (no logos, fonts or movies). Safe to repeat."""
     html = open(path, "rb").read().decode("utf-8")
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)
+    html = fix_custom_screen(html)
     open(path, "wb").write(html.encode("utf-8"))
     print(path, "updated")
 
