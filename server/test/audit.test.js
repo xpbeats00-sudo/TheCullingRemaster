@@ -103,6 +103,34 @@ async function waitUp(port) {
       assert.strictEqual((await fail).reason, "unknown-item");
     });
 
+    await test("Ranked Duo is refused instead of starting Ranked Solo", async () => {
+      const fail = next(a, "join-mm-fail");
+      a.emit("join-mm", { queueName: "ranked_coop2" });
+      assert.strictEqual((await fail).reason, "queue-unavailable");
+    });
+
+    await test("a ranked placement beyond the field still scores (as last place at worst)", async () => {
+      await play("ranked_ffa_prison");
+      const r = await srv.request("POST", "/api/matchresult", { victory: false, kills: 0, damage: 10, timeAlive: 200, placement: 21, cap: 24 });
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.json.ranked && r.json.ranked.entry, "scored");
+      assert.strictEqual(r.json.ranked.entry.placement, r.json.ranked.entry.field);
+    });
+
+    await test("Duo results get their own record; the stock coop board shows them", async () => {
+      await play("ffa_jungle_coop2");
+      const r = await srv.request("POST", "/api/matchresult", { victory: true, kills: 5, damage: 400, timeAlive: 700, placement: 1, cap: 24 });
+      assert.strictEqual(r.status, 200);
+      const p = srv.profiles()[A];
+      assert.strictEqual(p.modes.coop2.played, 1);
+      assert.strictEqual(p.modes.coop2.wins, 1);
+      const lb = next(a, "player-leaderboard-response");
+      a.emit("player-leaderboard-request", {});
+      const data = (await lb).data;
+      assert.strictEqual(data.coop.currentSeasonWins, 1);
+      assert.strictEqual(data.coop.currentSeasonKills, 5);
+    });
+
     await test("the game's login needs a user ID", async () => {
       const r = await srv.request("POST", "/api/login", { authType: "steam" });
       assert.strictEqual(r.status, 400);
@@ -155,6 +183,31 @@ async function waitUp(port) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
+  // ---- the menu logging in again closes a match that never reported
+  const g = startServer(8176, { vars: { CULLING_ABANDON_GRACE_MS: "200" } });
+  try {
+    await g.ready();
+    const U = "steam:76561190000000953";
+    let s = await g.connect(await g.login(U));
+    const ready = next(s, "match-ready");
+    s.emit("join-mm", { queueName: "ffa_jungle" });
+    await ready;
+    s.close();
+    await sleep(400);
+    s = await g.connect(await g.login(U));              // back in the menu, no result was sent
+    await sleep(300);
+    await test("a match that never reported is closed when the menu logs in again", async () => {
+      const r = await g.request("POST", "/api/matchresult", { victory: false, kills: 0, damage: 0, timeAlive: 30, placement: 20, cap: 24 });
+      assert.strictEqual(r.status, 409, "a later Survival/Training result can't claim it");
+    });
+    s.close();
+  } catch (e) {
+    console.error("FAIL", e.stack || e.message);
+    process.exitCode = 1;
+  } finally {
+    g.stop();
+  }
+
   // ---- sign-in lockout and password reset (accounts required)
   const acc = startServer(8179, { vars: { CULLING_REQUIRE_ACCOUNT: "1" } });
   try {
@@ -184,6 +237,34 @@ async function waitUp(port) {
       const fail = await next(s, "auth-fail");
       s.close();
       assert.strictEqual(fail.reason, "invalid-token", "the old game session no longer logs in");
+    });
+    await test("two players on one address are told apart by their in-game name", async () => {
+      const ip = "192.0.2.50";
+      const make = async (name) => {
+        const reg = await request(8179, "POST", "/api/account/register",
+          { username: name, email: name.replace(/ /g, "") + "@example.com", password: "household pass" }, from(ip));
+        assert.strictEqual(reg.status, 200, JSON.stringify(reg.json));
+        await request(8179, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + reg.json.token }, from(ip)));
+        const game = await request(8179, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from(ip));
+        const io = require("socket.io-client");
+        const s = io("http://127.0.0.1:8179", { transports: ["websocket"], forceNew: true, forceNode: true, extraHeaders: from(ip) });
+        await next(s, "login_ready");
+        s.emit("login", { token: game.json.token });
+        await next(s, "auth-response");
+        const ready = next(s, "match-ready");
+        s.emit("join-mm", { queueName: "ffa_jungle" });
+        await ready;
+        return { s, userID: reg.json.userID };
+      };
+      const one = await make("House One"), two = await make("House Two");
+      one.s.close(); two.s.close();
+      const r1 = await request(8179, "POST", "/api/matchresult", { victory: false, kills: 1, damage: 50, timeAlive: 200, placement: 9, cap: 24, nickname: "House Two" }, from(ip));
+      assert.strictEqual(r1.status, 200, JSON.stringify(r1.json));
+      const r2 = await request(8179, "POST", "/api/matchresult", { victory: false, kills: 2, damage: 60, timeAlive: 200, placement: 7, cap: 24, nickname: "House One" }, from(ip));
+      assert.strictEqual(r2.status, 200, JSON.stringify(r2.json));
+      const profiles = acc.profiles();
+      assert.strictEqual(profiles[two.userID].stats.kills, 1);
+      assert.strictEqual(profiles[one.userID].stats.kills, 2);
     });
     console.log("all %d audit tests passed", passed);
   } catch (e) {

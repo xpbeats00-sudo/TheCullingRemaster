@@ -157,19 +157,25 @@ class MatchTickets {
     for (const [ip, r] of this.recent) { if (r.at >= recentCutoff) break; this.recent.delete(ip); }
   }
 
-  // Take the ticket for a result: by userID (token) or by address.
-  claim({ userID, ip }) {
+  // Take the ticket for a result: by userID (token) or by address. When
+  // several players share the address (a household, a LAN), `pick` (a test on
+  // a ticket, e.g. "this player's name is the one the HUD sent") chooses.
+  claim({ userID, ip, pick }) {
     this.expire();
     let t = null;
     if (userID) {
       t = this.open.get(userID) || null;
       if (!t) return { error: "no-match" };
     } else {
-      let found = 0;
-      for (const x of this.open.values()) {
-        if (x.ip !== ip) continue;
-        if (++found > 1) return { error: "ambiguous" };
-        t = x;
+      const mine = [...this.open.values()].filter((x) => x.ip === ip);
+      if (mine.length > 1 && pick) {
+        const chosen = mine.filter(pick);
+        if (chosen.length === 1) t = chosen[0];
+        else return { error: "ambiguous" };
+      } else if (mine.length > 1) {
+        return { error: "ambiguous" };
+      } else {
+        t = mine[0] || null;
       }
       if (!t) return { error: "no-match" };
     }
@@ -178,6 +184,18 @@ class MatchTickets {
     this.recent.delete(ip);         // re-insert so the Map stays oldest-first
     this.recent.set(ip, { userID: t.userID, at: this.now() });
     return { ticket: t, elapsed: (this.now() - t.startedAt) / 1000 };
+  }
+
+  // Drops a player's open ticket that has been running for more than graceMs
+  // (the menu logged in again: that match ended without a result, by a quit
+  // or a crash), so a later Survival or Training result can't claim it.
+  // Returns the dropped ticket.
+  abandon(userID, graceMs) {
+    const t = this.open.get(userID);
+    if (!t || this.now() - t.startedAt < graceMs) return null;
+    this.open.delete(userID);
+    this.save();
+    return t;
   }
 
   // The open ticket for a player (by userID, or the only one from an address),

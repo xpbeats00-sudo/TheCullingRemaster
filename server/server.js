@@ -197,6 +197,9 @@ function seasonClamp(p) {
 // A win (or a ranked placement) needs the match to have run this long: the
 // ticket starts when the match is sent, so an instant "victory" is refused.
 const MIN_MATCH_SECONDS = parseInt(process.env.CULLING_MIN_MATCH_SECONDS || '120', 10);
+// The menu logging in again this long after a match started means that match
+// is over: a ticket still open then had no result (quit or crash).
+const ABANDON_GRACE_MS = parseInt(process.env.CULLING_ABANDON_GRACE_MS || '60000', 10);
 
 // ---------------------------------------------------------------- profiles
 
@@ -492,7 +495,11 @@ function matchXP(r) {
 // found by address when needed).
 app.post('/api/matchresult', (req, res) => {
   const body = bodyObject(req);
-  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req) });
+  // Players sharing an address are told apart by the in-game name the HUD
+  // sends (their Remaster account name).
+  const nick = typeof body.nickname === 'string' ? body.nickname.trim().toLowerCase() : '';
+  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req),
+    pick: nick ? (t) => String(usernameOf(t.userID) || '').toLowerCase() === nick : null });
   if (claim.error) {
     log('match result rejected', claim.error, requestIp(req));
     return res.status(409).json({ error: claim.error });
@@ -523,7 +530,10 @@ app.post('/api/matchresult', (req, res) => {
   // Only the result of the ranked match itself scores it: a Solo, Duo or
   // Showdown result never finishes a ranked match left pending.
   if (p.ranked && p.ranked.pending && claim.ticket.ranked && p.ranked.pending.id === claim.ticket.ranked) {
-    const placement = tooShort ? field : r.victory ? 1 : parseInt(body.placement, 10);
+    const reported = parseInt(body.placement, 10);
+    // Within the field: a map whose contestants outnumber its field (or a
+    // malformed rank) still scores, as last place at worst.
+    const placement = tooShort ? field : r.victory ? 1 : Math.min(field, Math.max(1, Number.isFinite(reported) ? reported : field));
     if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
     const out = ranked.finishMatch(p, { matchId: body.matchId, placement, field, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
       Date.now(), rankedGrant(p));
@@ -548,6 +558,16 @@ app.post('/api/matchresult', (req, res) => {
   s.totalDamage += Math.round(r.damage);
   s.minutesAlive += Math.round(r.timeAlive / 60);
   s.funcEarned += r.func;
+  const mode = claim.ticket.mode || (showdown ? SHOWDOWN.queue : 'ffa');
+  if (mode !== SHOWDOWN.queue) {
+    if (!p.modes || typeof p.modes !== 'object') p.modes = {};
+    const m = p.modes[mode] || (p.modes[mode] = { played: 0, wins: 0, kills: 0, damage: 0, minutesAlive: 0 });
+    m.played += 1;
+    m.wins += r.victory ? 1 : 0;
+    m.kills += r.kills;
+    m.damage += Math.round(r.damage);
+    m.minutesAlive += Math.round(r.timeAlive / 60);
+  }
   p.lastMatch = Object.assign({ at: Date.now(), xpEarned: earned }, r);
   saveProfiles();
   log('match result', userID, JSON.stringify(r), `+${earned} XP (${startXP} -> ${s.xp}), +${credits} credits`);
@@ -945,13 +965,15 @@ if (process.env.CULLING_DEBUG_TRANSPORT) {
 }
 
 function emptyLeaderboard(p) {
-  const side = () => ({
+  // Solo side: every mode but Duo; coop side: Duo (p.modes, from match results).
+  const duo = (p.modes && p.modes.coop2) || { wins: 0, kills: 0 };
+  const side = (wins, kills) => ({
     topWins: [], topKills: [], topTenMatches: [],
     tier4TopTen: [], tier3TopTen: [], tier2TopTen: [], tier1TopTen: [], tier0TopTen: [],
     currentSeasonTier: {}, currentSeasonScore: 0,
-    currentSeasonWins: p.stats.wins, currentSeasonKills: p.stats.kills
+    currentSeasonWins: wins, currentSeasonKills: kills
   });
-  return { solo: side(), coop: side() };
+  return { solo: side(Math.max(0, p.stats.wins - duo.wins), Math.max(0, p.stats.kills - duo.kills)), coop: side(duo.wins, duo.kills) };
 }
 
 // ---------------------------------------------------------------- ranked
@@ -1045,6 +1067,12 @@ function lobbyQueue(raw) {
 
 function startLocalMatch(socket, queue) {
   const { mode, map } = lobbyQueue(queue);
+  const q = queueName(queue);           // cleaned: a malformed name is 'ffa'
+  if (/^ranked/.test(q) && /coop2/.test(q)) {
+    // Ranked Duo isn't a mode (yet): say so rather than start Ranked Solo.
+    socket.emit('join-mm-fail', { reason: 'queue-unavailable' });
+    return;
+  }
   socket.emit('join-mm-ack');
   if (mode === SHOWDOWN.queue) {
     const before = showdowns.current(socket.userID);
@@ -1349,6 +1377,8 @@ io.on('connection', (socket) => {
     // never reported (a crash) no longer keeps the player "In match", so a
     // party leader's queue includes them again. The ticket stays claimable.
     presence.delete(userID);
+    const dropped = tickets.abandon(userID, ABANDON_GRACE_MS);
+    if (dropped) log('match ended without a result', userID, dropped.mode || '', Math.round((Date.now() - dropped.startedAt) / 1000) + ' s');
     notifyFriends(userID);
   });
 
