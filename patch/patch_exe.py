@@ -26,6 +26,24 @@
    open their own URLs (make_duo.py, make_showdown.py). The stock menu only
    ever passes the four names.
 
+4. Pairs teams locally. Which team a contestant is on is VictoryPlayerState's
+   TeamNumber (offset +0x490; read by GetTeamNum VA 0x140249320, written by
+   SetTeamNum VA 0x14024e7e0). The in-world TEAM/KILLS/STATUS board groups by
+   it (SetTeamNum also writes the board's scoreboard entry via 0x140243680)
+   and the Duo teammate HUD matches players whose TeamNumber is equal and > 0
+   (AVictoryPlayerHUD tick VA 0x1401fbea1). The stock game only ever assigns
+   TeamNumber through the online team subsystem (0x1401f2de0, from matchmaking
+   partners); in a local match that subsystem is empty, so nobody gets a team
+   and the board stays blank with no teammate. This detours the scoreboard
+   refresh (VA 0x140203b3a, where GameState is live, just before the sort at
+   0x140243c80) to a stub in the int3 padding at VA 0x14005ac03. The stub,
+   ONLY when GameState.GameModeType == ClassicTeams (byte +0x4e4 == 2, i.e.
+   the pairs modes CoopRanked/Coop; Solo=1, Lightning/Showdown=3 and the rest
+   are left untouched), walks GameState.PlayerArray (ptr +0x418, count +0x420)
+   and calls SetTeamNum(playerState, (index >> 1) + 1, true) so contestants
+   pair up (0,1 -> team 1; 2,3 -> team 2; ...), then runs the original sort.
+   It reasserts each refresh, so join order and timing don't matter.
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it.
 
@@ -50,6 +68,19 @@ TRAIN_JUMP_NEW = bytes.fromhex("7528")    # jne 0x1401ea4b3 (the stub)
 TRAIN_STUB_AT = 0x1E9AB3            # the 13 int3 bytes after StartTraining
 TRAIN_STUB = bytes.fromhex("4c89faebda")  # mov rdx, r15; jmp 0x1401ea492
 PAD = b"\xcc" * 13
+
+# 4. Local team pairing (see the module docstring).
+DUO_HOOK_AT = 0x20313A              # file offset of "mov rcx, rax; call 0x140243c80" (VA 0x140203b3a)
+DUO_HOOK = bytes.fromhex("488bc8e83e010400")
+DUO_HOOK_NEW = bytes.fromhex("e8c470e5ff909090")   # call 0x14005ac03 (the stub); nop; nop; nop
+DUO_STUB_AT = 0x5A203               # int3 padding at VA 0x14005ac03 (253 bytes free)
+# push rbx/rsi/r12/r13; sub rsp,0x28; r12=GameState; if [+0x4e4]!=2 skip; loop
+# PlayerArray[+0x418] (count [+0x420]) -> SetTeamNum(PS,(i>>1)+1,1); then the sort.
+DUO_STUB = bytes.fromhex(
+    "5356415441554883ec284989fc0fb687e40400003c0275324d8bac2418040000"
+    "418b9c242004000031f639de7d1c498b4cf5004885c9740e89f2d1eaffc241b0"
+    "01e8973b1f00ffc6ebe04c89e1e82b901e004c89e74883c428415d415c5e5bc3")
+DUO_PAD = b"\xcc" * len(DUO_STUB)
 
 
 def _cap(data, path, contestants):
@@ -90,6 +121,19 @@ def _slots(data, path):
     return True
 
 
+def _duoteam(data, path):
+    hook = bytes(data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)])
+    stub = bytes(data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)])
+    if hook == DUO_HOOK_NEW and stub == DUO_STUB:
+        return False
+    if hook != DUO_HOOK or stub != DUO_PAD:
+        raise ValueError("%s is not the Victory.exe this patch is for (team pairing %s / %s)"
+                         % (path, hook.hex(), stub[:8].hex()))
+    data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)] = DUO_STUB
+    data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = DUO_HOOK_NEW
+    return True
+
+
 def patch(path, contestants=MAX):
     """Apply every fix; returns True when the file changed."""
     if not STOCK <= contestants <= 64:
@@ -98,6 +142,7 @@ def patch(path, contestants=MAX):
     changed = _cap(data, path, contestants)
     changed = _sha1(data, path) or changed
     changed = _slots(data, path) or changed
+    changed = _duoteam(data, path) or changed
     if changed:
         with open(path, "wb") as f:
             f.write(data)
@@ -107,4 +152,4 @@ def patch(path, contestants=MAX):
 if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
-    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs%s" % (sys.argv[1], n, "" if changed else " (already)"))
+    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing%s" % (sys.argv[1], n, "" if changed else " (already)"))
