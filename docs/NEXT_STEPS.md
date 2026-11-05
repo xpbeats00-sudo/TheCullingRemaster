@@ -17,7 +17,7 @@ In order. Each step says who can do it.
    - **Code signing:** a certificate removes the SmartScreen warning.
    - **CDN:** only if many players download at once or from far away.
    - **SSH for deploys:** authorize this PC's key on the VPS if you want deploys without Remote Desktop.
-8. **Playtest the bot tuning** (draft PR #10) using its checklist.
+8. **Playtest the AI difficulty tiers** (`patch/make_bot_ai.py`) using docs/BOT_AI_FULL_OVERHAUL.md section 8, and pick the tier to ship.
 
 ## Engineering (can continue autonomously)
 

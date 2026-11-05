@@ -118,9 +118,10 @@
 - About 60 times lower p95 latency at 1,000 clients in a local test (733 ms to 11.5 ms).
 - Dependencies (branch `server-deps`): Express 4.22.3 and socket.io 2.5.1 fix 3 high-severity denial-of-service issues.
 
-## Bot AI (draft PR #10, not released)
+## Bot AI (branch `bot-ai`, not released)
 
-- Faster bot reactions and wider sight, from game-config and asset values. Untested in a real match.
+- Five difficulty tiers (Beginner, Casual, Experienced, Advanced, Elite), one built into the patch pak by `patch/make_bot_ai.py` (default Experienced). Each sets how often the AI decides in a fight (stock re-rolled block/shove every frame), how far it sees, how long it remembers a contestant it lost, how it weighs threats, its charged-attack, block and bow timing, and (Casual and up) loots healing and armour instead of guns and traps it can't use. Every tier: archers hold position while drawing (they walked toward the map's origin). Scripted values, not machine learning; no health or damage changes. Untested in a real match (docs/BOT_AI_FULL_OVERHAUL.md).
+- Replaces draft PR #10's AI values in `patch_assets.py`, and drops its no-op wander tweak.
 
 ## Launcher 1.1.0 (published 2026-11-04)
 

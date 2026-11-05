@@ -11,7 +11,7 @@ As of 2026-11-04. Each issue has a severity and the reason it is still open.
 | Launcher 1.2.0 isn't published | Players get 1.1.0, which has the stall freeze and one-at-a-time downloads | Running `Publish Release.bat` on the VPS. The publish script now also takes 1.2.0's setup |
 | The account-server fixes aren't live, including a remote crash | Any logged-in client can crash the production server with one message (WinSW restarts it in about 10 s) | Merging the `server-hardening` PR, then `Update Culling Server.bat` on the VPS. It also adds the watchdog and the objects cache rule |
 | No CDN | Untested with many players downloading at once, and far from the US | A CDN account (UPDATE_INFRASTRUCTURE.md has the options) |
-| Bot AI tuning (draft PR #10) untested | Unknown feel and performance | A playtest |
+| Bot AI difficulty tiers (`make_bot_ai.py`, branch `bot-ai`) untested in a match | Unknown feel; Experienced is slower to block than stock | A playtest (docs/BOT_AI_FULL_OVERHAUL.md, section 8) |
 
 ## Launcher
 
