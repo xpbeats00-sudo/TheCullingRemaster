@@ -145,8 +145,22 @@ function isSteamFolder(folder) {
 const STEAM_FOLDER = "That folder is Steam's copy of The Culling (or inside a Steam library): installing there would replace Steam's files. " +
   "Choose another folder, for example an empty one in your user folder";
 
+// Network test start (docs/MULTIPLAYER_NETPLAY_FEASIBILITY.md). With
+// CULLING_NET_URL set in the launcher's environment, PLAY starts the game
+// straight into that URL instead of the menu: Func.Launcher's -FuncJoin puts it
+// first on Victory's command line, where the engine reads its start URL.
+// "217.60.97.88:7777" joins a server; "Jungle_P?listen?..." asks to host.
+// Unset or empty: a normal start. Anything with characters a URL here never
+// needs (spaces, quotes, ...) is refused, so it can't add other arguments.
+const NET_URL = /^[A-Za-z0-9_.:/?=&%+-]{1,512}$/;
+function netTestArgs(url) {
+  if (url === undefined || url === "") return [];
+  if (!NET_URL.test(url)) throw new Error("CULLING_NET_URL isn't a plain game URL: " + JSON.stringify(url));
+  return ["-FuncJoin=" + url];
+}
+
 // Start the game; resolves once the Func launcher process has spawned.
-function launch(root, logDir) {
+function launch(root, logDir, env = process.env) {
   const status = check(root);
   if (!status.ok) return Promise.reject(new Error(status.reason));
   if (!status.funcLauncher) return Promise.reject(new Error("Func launcher not found in the game folder"));
@@ -154,6 +168,11 @@ function launch(root, logDir) {
   const dir = win64(root);
   const args = ["-FuncSkipUpdateCheck", "-FuncClientDll=" + path.join(dir, CLIENT_DLL)];
   if (logDir) args.push("-FuncClientLog=" + path.join(logDir, "Func.Client.log"));
+  try {
+    args.push(...netTestArgs(env.CULLING_NET_URL));
+  } catch (e) {
+    return Promise.reject(Object.assign(e, { op: "launch" }));
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(path.join(dir, FUNC_LAUNCHER), args, {
       cwd: dir,
@@ -190,5 +209,5 @@ function inside(child, dir) {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-module.exports = { check, detect, launch, steamLibraries, win64, defaultInstallDir, installTarget, isRunning, inside, isSteamFolder,
+module.exports = { check, detect, launch, netTestArgs, steamLibraries, win64, defaultInstallDir, installTarget, isRunning, inside, isSteamFolder,
   INSTALL_NAME, STEAM_FOLDER };
