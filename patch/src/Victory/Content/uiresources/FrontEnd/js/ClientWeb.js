@@ -35,6 +35,9 @@ var httpStatus = {
 var Matchmaking = {
   IsMatchmaking: false,
   IsStartingMatchmaking: false,
+  // Remaster: the player asked to leave this search or pregame lobby; a
+  // match-ready that still arrives for it is ignored. Cleared on the next queue.
+  LeaveRequested: false,
   ShowQueueTimeScheduled : false,
   ShowQueueTime : false,
   UseLegacyMatchmaking : false,
@@ -999,6 +1002,7 @@ function LeaveMatchmaking() {
         };
 
         if (IsOnline()) {
+            Matchmaking.LeaveRequested = true;
             socketConnection.emit("leave-mm", params);
         }
         else {
@@ -1378,6 +1382,7 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("join-mm-group", function () {
       console.log("Group leader just queued us!");
+      Matchmaking.LeaveRequested = false;
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
@@ -1394,6 +1399,8 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("leave-mm-fail", function (msg) {
       console.log("Failed to leave matchmaking.  Error: " + msg.reason);
+      Matchmaking.LeaveRequested = false;     // still in it: its match goes ahead
+      if (window.RemasterLobby && window.RemasterLobby.refresh) window.RemasterLobby.refresh();
       ShowError("Failed to leave matchmaking: " + msg.reason);
   });
   socketConnection.on("join-mm-fail", function (msg) {
@@ -1414,6 +1421,14 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("match-ready", function (msg) {
       if (window.RemasterLobby) window.RemasterLobby.hide();
+      // Remaster: the player left the search or the pregame lobby (Leave
+      // lobby, Cancel search, Y) and this match was already on its way.
+      if (Matchmaking.LeaveRequested && !LobbyData.IsInLobby) {
+          console.log("match-ready:: ignored, the player asked to leave");
+          Matchmaking.SetMatchmaking(false);
+          StoppedMatchmaking();
+          return;
+      }
       // Local server: "offline:<map>" means play a local match against bots.
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("offline:") == 0) {
           var offlineMap = parseInt(msg.gameServer.substring(8), 10) || 0;
@@ -2410,6 +2425,7 @@ function DoQueueMatchmaking(GameType, ticket, userid)
 
         //We're matchmaking once we try to queue - this way we can show
         //a queuing message if the actual server ack is running slow
+        Matchmaking.LeaveRequested = false;
         Matchmaking.SetMatchmaking(true);
         Matchmaking.MatchmakingState = "QUEUING";
         var authType = GetAuthType();

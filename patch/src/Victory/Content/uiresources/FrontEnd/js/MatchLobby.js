@@ -104,11 +104,24 @@
       '<div class="rl-bottom"><div class="rl-maps-title"></div><div class="rl-maps"></div><div class="rl-note"></div></div>' +
       '<div class="rl-players"><div class="rl-players-title"><span>Players</span><span class="rl-count"></span></div><ul class="rl-list"></ul></div>';
     panel.querySelector(".rl-cancel").addEventListener("click", function () {
+      if (leaving()) return;
       if (typeof OnCancelMatchmaking == "function") OnCancelMatchmaking();
       else if (typeof LeaveMatchmaking == "function") LeaveMatchmaking();
+      if (last) cancelButton(last.state);
     });
     document.body.appendChild(panel);
     return panel;
+  }
+
+  // The player asked to leave (ClientWeb.js ignores a match-ready after that).
+  function leaving() { return typeof Matchmaking != "undefined" && !!Matchmaking.LeaveRequested; }
+
+  // Cancel search while searching; Leave lobby in the pregame lobby (the
+  // server lets you leave until the match loads); Leaving... once asked.
+  function cancelButton(state) {
+    var b = build().querySelector(".rl-cancel");
+    b.style.display = state === "searching" || state === "starting" ? "" : "none";
+    b.textContent = leaving() ? "Leaving..." : state === "starting" ? "Leave lobby" : "Cancel search";
   }
 
   function cardImage(cardID) {
@@ -308,7 +321,7 @@
     if (lobby.state !== "searching" && lobby.matchBots) {
       renderRoster(lobby, list, names);
       shownNames = names;
-      root.querySelector(".rl-cancel").style.display = "none";
+      cancelButton(lobby.state);
       renderMaps();
       renderHead();
       root.className = "";
@@ -336,7 +349,7 @@
     shownNames = names;
     root.querySelector(".rl-count").textContent = lobby.players.length + "/" + lobby.maxPlayers;
     root.querySelector(".rl-note").textContent = lobby.note || "";
-    root.querySelector(".rl-cancel").style.display = lobby.state === "searching" ? "" : "none";
+    cancelButton(lobby.state);
     renderMaps();
     renderHead();
     root.className = "";
@@ -368,7 +381,8 @@
 
   function isShown() { return !!panel && panel.className !== "hidden"; }
 
-  window.RemasterLobby = { show: render, hide: hide, notice: notice, isShown: isShown };
+  window.RemasterLobby = { show: render, hide: hide, notice: notice, isShown: isShown,
+    refresh: function () { if (last) cancelButton(last.state); } };
 
   // The stock queue widget (QUEUING / PLAYERS QUEUED / ELAPSED TIME / CANCEL
   // SEARCH) never shows: this lobby's search pill replaces it. Hidden from the
