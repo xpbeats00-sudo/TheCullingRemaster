@@ -701,27 +701,41 @@ static void test_team_hud(void)
     CHECK(!*last_message("TMS|"));
     printf("ok    Quads HUD: two teammates beyond the panel; no HUD, no message\n");
 
-    /* The team summary, once a match: who is on your team, by TeamNumber. */
-    showdown_setup(6, 2, "?TeamSize=3");
+    /* The team summary: debug only. Without ?TeamDebug=1 (every menu URL) no
+       team match ever shows it. */
+    {
+        static const char *off[] = { "?TeamSize=3", "?TeamSize=4", 0, "?TeamDebug=0?TeamSize=3",
+            "?TeamDebug=10?TeamSize=3", "?TeamDebug=1x?TeamSize=3", "?MyTeamDebug=1?TeamSize=3", "TeamDebug=1" };
+        int d, t;
+        for (d = 0; d < (int)(sizeof(off) / sizeof(off[0])); d++) {
+            showdown_setup(8, 2, off[d]);
+            nmessages = 0;
+            refresh(sgs);
+            for (t = 0; t < 3; t++) sd_should_end(sgm);
+            CHECK(!*last_message("Your team"));
+        }
+    }
+    /* With ?TeamDebug=1: once a match, who is on your team, by TeamNumber. */
+    showdown_setup(6, 2, "?TeamSize=3?TeamDebug=1");
     nmessages = 0;
     refresh(sgs);
     sd_should_end(sgm);
     CHECK(!strcmp(last_message("Your team"), "Your team of 3: Bot|1, Bot|2"));
     sd_should_end(sgm);
     CHECK(nmessages == 3);                                               /* TMS twice, the summary once */
-    showdown_setup(8, 2, "?TeamSize=4");
+    showdown_setup(8, 2, "?TeamSize=4?TeamDebug=1");
     nmessages = 0;
     refresh(sgs);
     sd_should_end(sgm);
     CHECK(!strcmp(last_message("Your team"), "Your team of 4: Bot|1, Bot|2, Bot|3"));
-    showdown_setup(4, 2, 0);                                             /* Duo: the stub's pair */
+    showdown_setup(4, 2, "?teamdebug=1");                                /* Duo: the stub's pair */
     nmessages = 0;
     refresh(sgs);
     sd_should_end(sgm);
     CHECK(!strcmp(last_message("Your team"), "Your team of 2: Bot|1"));
     CHECK(!*last_message("TMS|"));
     /* Trios whose teams stayed pairs (the in-game failure this tells apart). */
-    showdown_setup(6, 2, "?TeamSize=3");
+    showdown_setup(6, 2, "?TeamSize=3?TeamDebug=1");
     nmessages = 0;
     {
         int k;
@@ -730,7 +744,7 @@ static void test_team_hud(void)
     sd_should_end(sgm);
     CHECK(!strcmp(last_message("Your team"), "Your team of 3: Bot|1"));
     /* Too early, then no team at all by 10 s. */
-    showdown_setup(6, 2, "?TeamSize=3");
+    showdown_setup(6, 2, "?TeamSize=3?TeamDebug=1");
     nmessages = 0;
     F(sgs, 0x4e8, i32) = 2;
     sd_should_end(sgm);
@@ -742,11 +756,11 @@ static void test_team_hud(void)
     sd_should_end(sgm);
     CHECK(!strcmp(last_message("Your team"), "Your team of 3: no team"));
     /* Solo and Showdown never. */
-    showdown_setup(2, 3, 0);
+    showdown_setup(2, 3, "?TeamDebug=1");
     nmessages = 0;
     sd_should_end(sgm);
     CHECK(!*last_message("Your team"));
-    printf("ok    team summary once a match: \"Your team of N: names\" (Duo, Trios, Quads; pairs, no team)\n");
+    printf("ok    team summary only with ?TeamDebug=1 (never otherwise); then once a match: \"Your team of N: names\"\n");
 }
 
 /* ---------------------------------------------------------------- Chokening */

@@ -543,6 +543,28 @@ static i32 url_team_size(u8 *gm)
     return 0;
 }
 
+/* The match URL has the option exactly ("?TeamDebug=1", the key in any case,
+   then the next option or the end). opt is lower case. */
+static int url_flag(u8 *gm, const char *opt)
+{
+    FString *o = gm ? (FString *)(gm + GM_OPTIONS) : 0;
+    i32 i, k, n;
+    if (!o || !o->data) return 0;
+    n = o->num;
+    for (i = 0; i < n; i++) {
+        if (o->data[i] != '?') continue;
+        for (k = 0; opt[k] && i + 1 + k < n; k++) {
+            u16 ch = o->data[i + 1 + k];
+            if (ch >= 'A' && ch <= 'Z') ch = (u16)(ch + 32);
+            if (ch != (u16)opt[k]) break;
+        }
+        if (opt[k]) continue;
+        k += i + 1;
+        if (k >= n || !o->data[k] || o->data[k] == '?') return 1;
+    }
+    return 0;
+}
+
 /* The team size of a match (gm, its game state's mode type): ClassicTeams
    2-8 (?TeamSize=, else Duo's 2), Lightning only with ?TeamSize= (team
    Showdown), 0 = no teams (Solo, 1v1 Showdown and the rest). */
@@ -653,7 +675,8 @@ static void report_mates(u8 *gm, u8 *world)
     send(pc, at);
 }
 
-/* Once a match, a few seconds in, a team match (Duo, Trios, Quads) says who is
+/* Debug only (the match URL has ?TeamDebug=1; no menu URL does): once a
+   match, a few seconds in, a team match (Duo, Trios, Quads) says who is
    on your team as an ordinary game message: "Your team of <N>: <names>" -
    N the team size the module read from the URL, the names every contestant
    with your TeamNumber, in PlayerArray order (alive or not). It is also the
@@ -876,7 +899,7 @@ char sd_should_end(u8 *gm)
         if ((world = world_of(gm)) != 0) {
             teams = team_size(gm, CLASSIC_TEAMS);
             if (teams > DUO) report_mates(gm, world);
-            announce_team(gm, world, teams);
+            if (url_flag(gm, "teamdebug=1")) announce_team(gm, world, teams);   /* debug only */
         }
         return duo_should_end(gm);
     }

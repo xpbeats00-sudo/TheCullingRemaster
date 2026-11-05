@@ -45,6 +45,10 @@ for n in make_duo.TEAM_SIZES:
     for url in make_duo.TEAM_URLS[n].values():
         check(url.endswith("?TeamSize=%d" % n) and make_duo.MODE in url, "Trios/Quads URL %s" % url)
 check('engine.call("StartTraining", REMASTER_TEAM_URLS[' in js, "Trios/Quads aren't started with StartTraining(url)")
+# The module's team summary is debug only (?TeamDebug=1): no shipped URL turns it on.
+check("teamdebug" not in js.lower() and not any("teamdebug" in u.lower() for n in make_duo.TEAM_SIZES
+                                                 for u in make_duo.TEAM_URLS[n].values()),
+      "a shipped match URL has ?TeamDebug= (the debug team summary)")
 check('engine.call("StartTraining", REMASTER_DUO_URLS' in js, "Duo isn't started with StartTraining(url)")
 check('engine.call("StartTraining", REMASTER_SHOWDOWN_URL' in js, "Showdown isn't started with StartTraining(url)")
 check('"ConnectToServer", REMASTER' not in js, "a match is opened with ConnectToServer")

@@ -62,6 +62,13 @@ PARTIAL.
     one panel = the `TMS|` report or the panel fails (hud.js now logs every
     report: "Remaster teammates: TMS|..." in the game log). Pin
     `af04c6e874bd6a23299b4f0202765372b99501642ff07ab7d3999d0458cb5c23`.
+  - **In-game, af04c6e8 with the 7dbc73d pak: Trios PASS** - the game's panel
+    and a stacked second panel, placed above the armor row. The earlier
+    one-panel Trios result was the 574bec67 exe with an older pak (hud.js
+    before the TMS panels), not the module. The team summary is now debug
+    only: the module sends it only when the match URL has `?TeamDebug=1`,
+    which no menu or server URL does (`test_match_urls.py` checks). Pin
+    `1b53c5273fd5d629d29d4717b37611e0514e18609cc475266172fec0ca847b1d`.
 - 24 contestants divide by 2, 3 and 4. Teams are by PlayerArray index; you
   join first, so you are on team 1 with the next N - 1 contestants.
 
