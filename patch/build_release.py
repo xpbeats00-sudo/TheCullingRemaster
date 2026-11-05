@@ -137,6 +137,7 @@ def tests(a, stage):
         p("test_release_gate.py"), p("test_extract_func_anims.py"), p("test_menu_items.py"),
         p("test_match_urls.py", stage), p("test_eye_skins.py", stage), p("test_loot_tables.py"),
         p("test_vfx_camos.py", stage),
+        p("test_custom_match.py", stage), ("test_showdown_hud.js", ["node", os.path.join(HERE, "test_showdown_hud.js")], ROOT),
         d("stage_objects.test.js"), d("publish.test.js"), d("make_manifest.test.js"),
         ("launcher: npm test", [NPM, "test"], os.path.join(ROOT, "launcher")),
     ]
