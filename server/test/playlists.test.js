@@ -68,7 +68,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.strictEqual(playlists.checkParty(P.ranked_showdown, 1).error, "mode-not-supported");
   });
 
-  const srv = startServer(8195);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

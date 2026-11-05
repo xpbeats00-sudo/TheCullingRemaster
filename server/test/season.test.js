@@ -18,7 +18,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     stats: { xp: 300000, level: 40, kills: 0, wins: 0, gamesPlayed: 0, totalDamage: 0, minutesAlive: 0, funcEarned: 0, rank: 0 },
     ranked: null
   };
-  const srv = startServer(8151, { profiles: { [OLD]: old }, vars: { CULLING_MIN_MATCH_SECONDS: "120" } });
+  const srv = startServer({ profiles: { [OLD]: old }, vars: { CULLING_MIN_MATCH_SECONDS: "120" } });
   const sockets = [];
   try {
     await srv.ready();

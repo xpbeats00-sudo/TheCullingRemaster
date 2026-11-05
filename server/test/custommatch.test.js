@@ -40,7 +40,7 @@ const STOCK = custom.defaults();
     assert.strictEqual(custom.gameServer("anything else", STOCK), "custom:0:");
   });
 
-  const srv = startServer(8174);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

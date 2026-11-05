@@ -15,7 +15,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "culling-activity-"));
 
 (async () => {
-  const srv = startServer(8131);
+  const srv = startServer();
   try {
     await test("matches count for 24 hours, players for 7 days", async () => {
       let t = 1e12;

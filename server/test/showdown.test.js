@@ -148,7 +148,7 @@ const A = "steam:76561190000000801";
   });
 
   // ------------------------------------------------------------ server
-  const srv = startServer(8157);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

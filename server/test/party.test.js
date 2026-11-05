@@ -112,9 +112,9 @@ async function run(srv, label) {
 }
 
 (async () => {
-  const srv = startServer(8191, { vars: { CULLING_LOBBY_GATHER_MS: "400", CULLING_LOBBY_COUNTDOWN_MS: "400",
+  const srv = startServer({ vars: { CULLING_LOBBY_GATHER_MS: "400", CULLING_LOBBY_COUNTDOWN_MS: "400",
     CULLING_PARTY_OFFLINE_MS: "2500" } });
-  const fault = startServer(8193, { vars: { CULLING_LOBBY_GATHER_MS: "200", CULLING_LOBBY_COUNTDOWN_MS: "100",
+  const fault = startServer({ vars: { CULLING_LOBBY_GATHER_MS: "200", CULLING_LOBBY_COUNTDOWN_MS: "100",
     CULLING_FAULT_ALLOCATION: "1" } });
   let h = null, hf = null;
   try {

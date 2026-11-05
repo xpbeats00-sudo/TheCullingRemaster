@@ -9,8 +9,9 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const ioClient = require('socket.io-client');
+const { freePort } = require('./helpers');
 
-const PORT = 8124;
+let PORT = 0;                   // the system's pick (helpers.freePort), set first thing
 const USER = 'steam:test-camo-buyer';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'culling-test-'));
 fs.copyFileSync(path.join(__dirname, '..', 'data', 'catalog.json'), path.join(dir, 'catalog.json'));
@@ -60,6 +61,7 @@ function credits() {
 }
 
 (async () => {
+  PORT = await freePort();
   // A profile from before the rule: owns Lava Storm on the Ice Axe only.
   const lava = camo('Lava_Storm');
   const iceLava = lava.find((i) => i.asset.includes('/IceAxe_XP_'));

@@ -1,5 +1,11 @@
 // Shared test harness: a throwaway server on its own port and data folder,
 // HTTP helpers, and logged-in socket clients.
+//
+// Ports: the server listens on a port the system picks (CULLING_PORT=0) and
+// writes it to a file in its data folder; srv.port is that port once
+// srv.ready() resolves. So suites run side by side (other worktrees, a
+// server already on 8000) never collide. freePort() is for the tests that
+// launch server.js themselves.
 "use strict";
 
 const fs = require("fs");
@@ -7,10 +13,30 @@ const os = require("os");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const net = require("net");
 const ioClient = require("socket.io-client");
 
-function startServer(port, env = {}) {
+// A port nothing listens on now (the system's pick), for a server a test
+// launches itself.
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.unref();
+    s.on("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+// startServer(env): env.profiles / env.files to start with, env.vars for the
+// server's environment. (A number as the first argument, the fixed port of
+// older tests, is ignored: the port is always the system's pick.)
+function startServer(env = {}, legacyEnv) {
+  if (typeof env === "number") env = legacyEnv || {};
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "culling-test-"));
+  const portFile = path.join(dir, "port");
   fs.copyFileSync(path.join(__dirname, "..", "data", "catalog.json"), path.join(dir, "catalog.json"));
   if (env.profiles) fs.writeFileSync(path.join(dir, "profiles.json"), JSON.stringify(env.profiles));
   // Other data files to start with ({ "accounts.json": {...} }).
@@ -20,7 +46,7 @@ function startServer(port, env = {}) {
     // profiles.json right after a request (the service coalesces to 1 s).
     // CULLING_REQUIRE_ACCOUNT=0: the game's /api/login without an account (the
     // tests that aren't about accounts); accounts.test.js turns it on.
-    env: Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: "0",
+    env: Object.assign({}, process.env, { CULLING_PORT: "0", CULLING_PORT_FILE: portFile, CULLING_DATA_DIR: dir, CULLING_SAVE_DELAY_MS: "0",
       CULLING_REQUIRE_ACCOUNT: "0",
       CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100",
       // Results right after the match starts (season.test.js tests the real minimum).
@@ -28,11 +54,12 @@ function startServer(port, env = {}) {
     stdio: "ignore"
   });
   const srv = {
-    dir, port, proc,
+    dir, port: null, proc,
     profiles: () => JSON.parse(fs.readFileSync(path.join(dir, "profiles.json"), "utf8")),
     request(method, url, body, headers = {}) {
       return new Promise((resolve, reject) => {
-        const req = http.request({ host: "127.0.0.1", port, path: url, method,
+        if (!srv.port) return reject(new Error("srv.ready() first: the port isn't known yet"));
+        const req = http.request({ host: "127.0.0.1", port: srv.port, path: url, method,
           headers: Object.assign({ "Content-Type": "application/json" }, headers) }, (res) => {
           let data = "";
           res.on("data", (c) => (data += c));
@@ -43,7 +70,14 @@ function startServer(port, env = {}) {
         req.end();
       });
     },
+    // Resolves once the server answers /health; srv.port is its port then.
     async ready() {
+      for (let i = 0; i < 100 && !srv.port; i++) {
+        if (proc.exitCode !== null) throw new Error("server exited (code " + proc.exitCode + ")");
+        try { srv.port = parseInt(fs.readFileSync(portFile, "utf8"), 10) || null; } catch { /* not yet */ }
+        if (!srv.port) await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!srv.port) throw new Error("server did not start (no port)");
       for (let i = 0; i < 100; i++) {
         try { await srv.request("GET", "/health"); return; } catch { await new Promise((r) => setTimeout(r, 100)); }
       }
@@ -55,7 +89,7 @@ function startServer(port, env = {}) {
     },
     // A socket logged in with a token; resolves with the socket.
     async connect(token) {
-      const socket = ioClient(`http://127.0.0.1:${port}`, { transports: ["websocket"], forceNew: true, reconnection: false });
+      const socket = ioClient(`http://127.0.0.1:${srv.port}`, { transports: ["websocket"], forceNew: true, reconnection: false });
       await next(socket, "login_ready");
       const ok = Promise.race([next(socket, "auth-response").then(() => true), next(socket, "auth-fail").then(() => false)]);
       socket.emit("login", { token });
@@ -70,4 +104,4 @@ function next(socket, event) {
   return new Promise((resolve) => socket.once(event, resolve));
 }
 
-module.exports = { startServer, next };
+module.exports = { startServer, next, freePort };

@@ -63,7 +63,7 @@ async function play(srv, id, queue) {
     }
   });
 
-  const off = startServer(8171);
+  const off = startServer();
   try {
     await off.ready();
     await test("a default server: two maps in the vote, the stock answer", async () => {
@@ -73,7 +73,7 @@ async function play(srv, id, queue) {
     });
   } finally { off.stop(); }
 
-  const on = startServer(8172, { vars: { CULLING_NIGHT_MAPS: "1" } });
+  const on = startServer({ vars: { CULLING_NIGHT_MAPS: "1" } });
   try {
     await on.ready();
     await test("night maps on: four maps in the vote; Jungle Night opens by URL with weather", async () => {
@@ -103,7 +103,7 @@ async function play(srv, id, queue) {
     });
   } finally { on.stop(); }
 
-  const day = startServer(8173, { vars: { CULLING_WEATHER_DAY: "1", CULLING_WEATHER_PRESETS: "rainy" } });
+  const day = startServer({ vars: { CULLING_WEATHER_DAY: "1", CULLING_WEATHER_PRESETS: "rainy" } });
   try {
     await day.ready();
     await test("day weather on: the day map opens by URL with the listed preset", async () => {

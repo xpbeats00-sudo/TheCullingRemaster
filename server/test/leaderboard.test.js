@@ -142,7 +142,7 @@ const get = (view, id) => view.boards.find((b) => b.id === id);
   // Profiles without an account, with more of everything: never listed.
   for (let i = 100; i < 105; i++) profiles[id(i)] = profile(id(i), { games: 999, wins: 999, kills: 9999, minutes: 99999, rating: 1399 });
 
-  const srv = startServer(8175, { profiles, files: { "accounts.json": { version: 1, accounts, tokens: {}, grants: {} } },
+  const srv = startServer({ profiles, files: { "accounts.json": { version: 1, accounts, tokens: {}, grants: {} } },
     vars: { CULLING_LEADERBOARD_MIN_AGE_MS: "0" } });
   const sockets = [];
   try {
@@ -228,7 +228,7 @@ const get = (view, id) => view.boards.find((b) => b.id === id);
     });
 
     await test("a socket that hasn't logged in gets nothing", async () => {
-      const raw = require("socket.io-client")("http://127.0.0.1:8175", { transports: ["websocket"], forceNew: true, reconnection: false });
+      const raw = require("socket.io-client")("http://127.0.0.1:" + srv.port, { transports: ["websocket"], forceNew: true, reconnection: false });
       sockets.push(raw);
       await next(raw, "login_ready");
       let got = false;

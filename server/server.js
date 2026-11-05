@@ -26,7 +26,9 @@ const HOST = process.env.CULLING_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.CULLING_PORT || '8000', 10);
 // The address clients are told to use (behind HTTPS on the VPS, e.g.
 // https://xplab.shop:8443); defaults to the listen address for local play.
-const BASE = (process.env.CULLING_PUBLIC_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
+// CULLING_PORT=0 listens on a free port the system picks (the tests: suites
+// never collide); the port is then written to CULLING_PORT_FILE, if set.
+let BASE = (process.env.CULLING_PUBLIC_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
 const DATA_DIR = process.env.CULLING_DATA_DIR || path.join(__dirname, 'data');
 const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 
@@ -2041,5 +2043,12 @@ process.on('unhandledRejection', (e) => {
 });
 
 server.listen(PORT, HOST, () => {
+  const port = server.address().port;
+  if (!process.env.CULLING_PUBLIC_URL) BASE = `http://${HOST}:${port}`;
+  if (process.env.CULLING_PORT_FILE) {
+    const file = process.env.CULLING_PORT_FILE;
+    fs.writeFileSync(file + '.tmp', String(port));
+    fs.renameSync(file + '.tmp', file);
+  }
   log(`The Culling local server listening on ${BASE}  (ClientWeb root: ${BASE}/api)`);
 });

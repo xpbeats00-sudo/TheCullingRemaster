@@ -26,7 +26,7 @@ async function owned(socket) {
 }
 
 (async () => {
-  const srv = startServer(8153, { profiles: { [LOW]: profile(LOW, 0, 1), [HIGH]: profile(HIGH, 850, 9) } });
+  const srv = startServer({ profiles: { [LOW]: profile(LOW, 0, 1), [HIGH]: profile(HIGH, 850, 9) } });
   const sockets = [];
   try {
     await srv.ready();

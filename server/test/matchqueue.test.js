@@ -18,7 +18,7 @@ function gameBody(queue) {
 }
 
 (async () => {
-  const srv = startServer(8173);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

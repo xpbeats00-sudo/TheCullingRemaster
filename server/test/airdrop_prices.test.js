@@ -49,7 +49,7 @@ const quarterOff = (stock) => Math.floor((2 * stock * 3 + 4) / 8);
     }
   });
 
-  const srv = startServer(8161, { profiles: { [USER]: {
+  const srv = startServer({ profiles: { [USER]: {
     userID: USER, cullCredits: 500, premiumCurrency: 0, cardID: 0, economy: 1, owned: [],
     stats: { xp: 0, level: 1, kills: 0, wins: 0, gamesPlayed: 0, totalDamage: 0, minutesAlive: 0, funcEarned: 0, rank: 0 }, ranked: null } } });
   let socket = null;

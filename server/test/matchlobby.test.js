@@ -170,7 +170,7 @@ function setup(options = {}) {
     assert.strictEqual(lobbies.lobbyOf("lead"), null, "out of the lobby once started");
   });
 
-  const srv = startServer(8141);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

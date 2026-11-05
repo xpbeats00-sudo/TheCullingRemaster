@@ -34,7 +34,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.strictEqual(s.maxMs, 100);
   });
 
-  const srv = startServer(8125);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

@@ -15,7 +15,7 @@ const os = require("os");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
-const { startServer, next } = require("./helpers");
+const { startServer, next, freePort } = require("./helpers");
 
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
@@ -77,7 +77,7 @@ async function waitUp(port) {
     assert.ok(summary.season.daysLeft > 0);
   });
 
-  const srv = startServer(8177);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();
@@ -169,12 +169,13 @@ async function waitUp(port) {
   // ---- a match in progress survives a server restart
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "culling-audit-"));
   fs.copyFileSync(path.join(__dirname, "..", "data", "catalog.json"), path.join(dir, "catalog.json"));
-  let proc = launch(8178, dir);
+  const restartPort = await freePort();
+  let proc = launch(restartPort, dir);
   try {
-    await waitUp(8178);
+    await waitUp(restartPort);
     const io = require("socket.io-client");
-    const login = await request(8178, "POST", "/api/login", { userid: "steam:76561190000000952", authType: "steam" });
-    const s = io("http://127.0.0.1:8178", { transports: ["websocket"], forceNew: true });
+    const login = await request(restartPort, "POST", "/api/login", { userid: "steam:76561190000000952", authType: "steam" });
+    const s = io("http://127.0.0.1:" + restartPort, { transports: ["websocket"], forceNew: true });
     await next(s, "login_ready");
     s.emit("login", { token: login.json.token });
     await next(s, "auth-response");
@@ -190,10 +191,10 @@ async function waitUp(port) {
     });
     proc.kill();                                          // the hardest stop
     await sleep(500);
-    proc = launch(8178, dir);
-    await waitUp(8178);
+    proc = launch(restartPort, dir);
+    await waitUp(restartPort);
     await test("a result after a server restart is still paid", async () => {
-      const r = await request(8178, "POST", "/api/matchresult", { victory: true, kills: 4, damage: 300, timeAlive: 600, placement: 1, cap: 24 });
+      const r = await request(restartPort, "POST", "/api/matchresult", { victory: true, kills: 4, damage: 300, timeAlive: 600, placement: 1, cap: 24 });
       assert.strictEqual(r.status, 200, JSON.stringify(r.json));
       assert.ok(r.json.stats && r.json.stats.wins === 1);
     });
@@ -207,7 +208,7 @@ async function waitUp(port) {
   }
 
   // ---- the menu logging in again closes a match that never reported
-  const g = startServer(8176, { vars: { CULLING_ABANDON_GRACE_MS: "200" } });
+  const g = startServer({ vars: { CULLING_ABANDON_GRACE_MS: "200" } });
   try {
     await g.ready();
     const U = "steam:76561190000000953";
@@ -232,29 +233,29 @@ async function waitUp(port) {
   }
 
   // ---- sign-in lockout and password reset (accounts required)
-  const acc = startServer(8179, { vars: { CULLING_REQUIRE_ACCOUNT: "1" } });
+  const acc = startServer({ vars: { CULLING_REQUIRE_ACCOUNT: "1" } });
   try {
     await acc.ready();
     const from = (ip) => ({ "X-Forwarded-For": ip });
-    const reg = await request(8179, "POST", "/api/account/register",
+    const reg = await request(acc.port, "POST", "/api/account/register",
       { username: "Lockout Test", email: "lock@example.com", password: "the right one" }, from("198.51.100.7"));
     assert.strictEqual(reg.status, 200, JSON.stringify(reg.json));
     await test("someone else's wrong passwords can't lock a player out", async () => {
       for (let i = 0; i < 12; i++) {
-        await request(8179, "POST", "/api/account/login", { username: "lockout test", password: "wrong " + i }, from("203.0.113.9"));
+        await request(acc.port, "POST", "/api/account/login", { username: "lockout test", password: "wrong " + i }, from("203.0.113.9"));
       }
-      const ok = await request(8179, "POST", "/api/account/login", { username: "Lockout Test", password: "the right one" }, from("198.51.100.7"));
+      const ok = await request(acc.port, "POST", "/api/account/login", { username: "Lockout Test", password: "the right one" }, from("198.51.100.7"));
       assert.strictEqual(ok.status, 200, "the right password from the player's own address works");
     });
     await test("a password reset also ends the game sessions", async () => {
-      const l = await request(8179, "POST", "/api/account/login", { username: "Lockout Test", password: "the right one" }, from("198.51.100.7"));
-      assert.strictEqual((await request(8179, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + l.json.token }, from("198.51.100.7")))).status, 200);
-      const game = await request(8179, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from("198.51.100.7"));
+      const l = await request(acc.port, "POST", "/api/account/login", { username: "Lockout Test", password: "the right one" }, from("198.51.100.7"));
+      assert.strictEqual((await request(acc.port, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + l.json.token }, from("198.51.100.7")))).status, 200);
+      const game = await request(acc.port, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from("198.51.100.7"));
       assert.strictEqual(game.status, 200);
-      const reset = await request(8179, "POST", "/admin/reset-password", { username: "lockout test" });
+      const reset = await request(acc.port, "POST", "/admin/reset-password", { username: "lockout test" });
       assert.strictEqual(reset.status, 200, JSON.stringify(reset.json));
       const io = require("socket.io-client");
-      const s = io("http://127.0.0.1:8179", { transports: ["websocket"], forceNew: true });
+      const s = io("http://127.0.0.1:" + acc.port, { transports: ["websocket"], forceNew: true });
       await next(s, "login_ready");
       s.emit("login", { token: game.json.token });
       const fail = await next(s, "auth-fail");
@@ -264,13 +265,13 @@ async function waitUp(port) {
     await test("two players on one address are told apart by their in-game name", async () => {
       const ip = "192.0.2.50";
       const make = async (name) => {
-        const reg = await request(8179, "POST", "/api/account/register",
+        const reg = await request(acc.port, "POST", "/api/account/register",
           { username: name, email: name.replace(/ /g, "") + "@example.com", password: "household pass" }, from(ip));
         assert.strictEqual(reg.status, 200, JSON.stringify(reg.json));
-        await request(8179, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + reg.json.token }, from(ip)));
-        const game = await request(8179, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from(ip));
+        await request(acc.port, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + reg.json.token }, from(ip)));
+        const game = await request(acc.port, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from(ip));
         const io = require("socket.io-client");
-        const s = io("http://127.0.0.1:8179", { transports: ["websocket"], forceNew: true, forceNode: true, extraHeaders: from(ip) });
+        const s = io("http://127.0.0.1:" + acc.port, { transports: ["websocket"], forceNew: true, forceNode: true, extraHeaders: from(ip) });
         await next(s, "login_ready");
         s.emit("login", { token: game.json.token });
         await next(s, "auth-response");
@@ -281,9 +282,9 @@ async function waitUp(port) {
       };
       const one = await make("House One"), two = await make("House Two");
       one.s.close(); two.s.close();
-      const r1 = await request(8179, "POST", "/api/matchresult", { victory: false, kills: 1, damage: 50, timeAlive: 200, placement: 9, cap: 24, nickname: "House Two" }, from(ip));
+      const r1 = await request(acc.port, "POST", "/api/matchresult", { victory: false, kills: 1, damage: 50, timeAlive: 200, placement: 9, cap: 24, nickname: "House Two" }, from(ip));
       assert.strictEqual(r1.status, 200, JSON.stringify(r1.json));
-      const r2 = await request(8179, "POST", "/api/matchresult", { victory: false, kills: 2, damage: 60, timeAlive: 200, placement: 7, cap: 24, nickname: "House One" }, from(ip));
+      const r2 = await request(acc.port, "POST", "/api/matchresult", { victory: false, kills: 2, damage: 60, timeAlive: 200, placement: 7, cap: 24, nickname: "House One" }, from(ip));
       assert.strictEqual(r2.status, 200, JSON.stringify(r2.json));
       const profiles = acc.profiles();
       assert.strictEqual(profiles[two.userID].stats.kills, 1);
@@ -295,13 +296,13 @@ async function waitUp(port) {
       let n = 60;
       const player = async (name) => {
         const ip = "198.51.100." + (n++);
-        const reg = await request(8179, "POST", "/api/account/register",
+        const reg = await request(acc.port, "POST", "/api/account/register",
           { username: name, email: name.replace(/ /g, "") + "@example.com", password: "party pass" }, from(ip));
         assert.strictEqual(reg.status, 200, JSON.stringify(reg.json));
-        await request(8179, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + reg.json.token }, from(ip)));
-        const game = await request(8179, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from(ip));
+        await request(acc.port, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + reg.json.token }, from(ip)));
+        const game = await request(acc.port, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from(ip));
         const io = require("socket.io-client");
-        const s = io("http://127.0.0.1:8179", { transports: ["websocket"], forceNew: true, forceNode: true, extraHeaders: from(ip) });
+        const s = io("http://127.0.0.1:" + acc.port, { transports: ["websocket"], forceNew: true, forceNode: true, extraHeaders: from(ip) });
         await next(s, "login_ready");
         s.emit("login", { token: game.json.token });
         await next(s, "auth-response");

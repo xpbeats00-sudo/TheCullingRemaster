@@ -144,7 +144,7 @@ function friendsWhen(socket, check, ms = 3000) {
   });
 
   // ------------------------------------------------------------ server
-  const srv = startServer(8163);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

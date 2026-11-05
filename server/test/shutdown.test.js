@@ -14,6 +14,7 @@ const path = require("path");
 const http = require("http");
 const { spawn, execFileSync } = require("child_process");
 const ioClient = require("socket.io-client");
+const { freePort } = require("./helpers");
 
 const SERVER = path.join(__dirname, "..", "server.js");
 const PS_HELPER = path.join(__dirname, "winsw_stop.ps1");
@@ -133,14 +134,14 @@ async function gracefulStopKeepsEverything(port, how) {
 (async () => {
   try {
     if (win) {
-      await test("WinSW-style stop (Ctrl+C to node's console) saves everything and exits 0", () => gracefulStopKeepsEverything(8126, "winsw"));
+      await test("WinSW-style stop (Ctrl+C to node's console) saves everything and exits 0", async () => gracefulStopKeepsEverything(await freePort(), "winsw"));
     } else {
-      await test("SIGTERM saves everything and exits 0", () => gracefulStopKeepsEverything(8126, "SIGTERM"));
-      await test("SIGINT saves everything and exits 0", () => gracefulStopKeepsEverything(8127, "SIGINT"));
+      await test("SIGTERM saves everything and exits 0", async () => gracefulStopKeepsEverything(await freePort(), "SIGTERM"));
+      await test("SIGINT saves everything and exits 0", async () => gracefulStopKeepsEverything(await freePort(), "SIGINT"));
     }
 
     await test("a hard kill loses at most about one save interval", async () => {
-      const port = 8128;
+      const port = await freePort();
       const dir = dataDir();
       const user = "steam:76561190000009999";
       const srv = launch(port, dir, 1000, false);
