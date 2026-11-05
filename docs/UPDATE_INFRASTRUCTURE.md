@@ -70,12 +70,12 @@ python C:\Culling\patch\build_release.py 1.4.0 --game C:\Culling\TheCulling --ca
    - `make_branding.py --skip-intro`, then `make_branding.py --menu-only`;
    - `make_night_sky.py`, `make_night_cube.py`, `make_moon.py`, `make_meteors.py`, `make_sky_fx.py`, `build_menu_arenas.py`;
    - `make_showdown_tile.py` (skipped with `--skip-showdown-tile`: its source screenshot isn't in the repo or the branding folder);
-   - `make_camos.py`, `make_eye_skins.py`, `make_calling_cards.py`, `make_ranked.py`, `make_card_image_map.py`, `make_showdown.py`, `extract_func_anims.py`.
+   - `make_camos.py`, `make_vfx_camos.py`, `make_eye_skins.py`, `make_calling_cards.py`, `make_ranked.py`, `make_card_image_map.py`, `make_showdown.py`, `extract_func_anims.py`.
 5. **Release consistency gate** (`patch/test_release_consistency.py --paks <stage>`). It checks:
    - item IDs are unique;
-   - `patch\registry\{camos,eye_skins,calling_cards,ranked}.bin` are present and list exactly the catalog items of their source;
+   - `patch\registry\{camos,vfx_camos,eye_skins,calling_cards,ranked}.bin` are present and list exactly the catalog items of their source;
    - every catalog item's asset is in the stock paks or `patch\src`;
-   - there is no test content;
+   - there is no test content (`make_pak.test_content`: `*XPAnim*`, `*XPTest*`, `Camo_XP_Anim_*`, files mentioning them or `TEST BUILD`, and plain `*_XP_*` camo skins with a GeoSkin/BC/BC2 tag; the `*_XP_VFX_*` and Necro Mist camos are released content);
    - `DefaultGame.ini`, `FrontEnd.html` and `hud.html` equal what their generators make.
 6. **Tests:** every `patch\test_*.py`, every `deploy\*.test.js` and the launcher's `npm test`.
 7. **`patch/make_release.py https://xplab.shop:8443 1.4.0 --full C:\Culling\TheCulling`.** It refuses, and builds nothing, when:
