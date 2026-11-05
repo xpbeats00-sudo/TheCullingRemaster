@@ -126,6 +126,19 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #player-card .culling-card .left-column { width: 16%; }
 #player-card .culling-card .right-column { width: auto; flex: 1 1 auto; }
 #player-card .culling-card .player-name { width: auto; }
+/* One panel: the card, with your credits in a slim strip under it; party
+   members' cards follow (Friends.js). The token currency isn't used. */
+#player-card, #player-card .player-card-container { height: auto; justify-content: flex-start; }
+#player-card .player-card-container { border-radius: 0.9vw; background: rgba(10, 8, 10, 0.82);
+  box-shadow: 0 0 0 0.12vw rgba(255, 255, 255, 0.12), 0 0.8vh 2vh rgba(0, 0, 0, 0.5); }
+#player-card .local-culling-card-container { border-radius: 0.9vw 0.9vw 0 0; }
+#player-card .player-premium-container { display: none; }
+#player-card .culling-cash-container, #player-card .culling-cash { width: 24.06vw; height: 2.2vw; margin-top: 0; }
+#player-card .culling-cash { justify-content: flex-end; }
+#player-card .player-cullcredits-container { width: auto; height: 2.2vw; margin: 0; padding: 0 0.9vw;
+  background: transparent; border-radius: 0; }
+#player-card .culling-cash .player-currency-icon { width: 1.3vw; height: 1.3vw; margin-right: 0.35vw; }
+#player-card .culling-cash .player-cash { height: 1.3vw; font-size: 1.3vw; line-height: 1.3vw; padding-top: 0; }
 .rb-bar { width: 8vw; height: 0.45vh; margin-top: 0.4vh; border-radius: 0.3vh; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
 .rb-bar div { height: 100%; background: rgba(204, 0, 0, 1); }
 #ranked-panel { position: absolute; left: 6vw; right: 6vw; bottom: 9vh; padding: 1.6vh 1.6vw; border-radius: 1.4vh;

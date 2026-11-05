@@ -286,7 +286,8 @@
     ".rc-banner { position: relative; display: flex; align-items: center; height: 13vh; padding: 0 5vw 0 1.6vw; background-color: rgba(30, 20, 24, 1); background-size: cover; background-position: center; border-radius: 1.8vh 1.8vh 0 0; overflow: hidden; }",
     ".rc-banner::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: linear-gradient(90deg, rgba(8, 6, 8, 0.85) 20%, rgba(8, 6, 8, 0.1)); }",
     ".rc-banner > * { position: relative; }",
-    ".rc-level { width: 4.4vw; height: 4.4vw; line-height: 4.4vw; margin-right: 1.2vw; flex: 0 0 auto; text-align: center; border-radius: 50%; font: 2vw Sucrose-Bold, Arial, sans-serif; background: rgba(204, 0, 0, 0.9); box-shadow: 0 0 1.2vh rgba(0, 0, 0, 0.7); }",
+    // The level as on your card in the main menu: a plain white number in its face.
+    ".rc-level { min-width: 3vw; margin-right: 1.2vw; flex: 0 0 auto; text-align: center; font: 3.4vw ForgottenFuturist-Bold, Sucrose-Bold, Arial, sans-serif; line-height: 1; color: white; text-shadow: 0 0 0.8vh black, 0 0 0.3vh black; }",
     ".rc-who { flex: 1 1 auto; min-width: 0; }",
     ".rc-name { font: 2.6vw Creepster, Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 0.8vh black; }",
     ".rc-sub { font-size: 0.85vw; text-shadow: 0 0 0.6vh black; }",
@@ -308,9 +309,16 @@
     ".rc-tiers img.reached { opacity: 1; filter: none; }",
     ".rc-private { margin-top: 0.8vh; padding: 2vh 1vw; border-radius: 1.2vh; text-align: center; font-size: 0.9vw; opacity: 0.7; background: rgba(255, 255, 255, 0.06); }",
     ".rc-buttons { display: flex; justify-content: flex-end; margin-top: 2vh; }",
+    // Party members' cards, under your own card (top right of the menus).
+    "#remaster-party-cards { width: 24.06vw; margin-top: 0.2vw; pointer-events: all; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
+    "#remaster-party-cards .rf-row { height: 3vw; margin-top: 0.4vw; border-radius: 0.9vw; box-shadow: 0 0 0 0.12vw rgba(255, 255, 255, 0.12); }",
+    "#remaster-party-cards .rf-level { font: 1.7vw ForgottenFuturist-Bold, Sucrose-Bold, Arial, sans-serif; }",
+    "#remaster-party-cards .rf-name { font: 1vw ForgottenFuturist-Bold, Sucrose-Bold, Arial, sans-serif; }",
+    "#remaster-party-cards .rf-status { font-size: 0.68vw; }",
+    "#remaster-party-cards .rf-rank { width: 1.9vw; height: 1.9vw; }",
     // A party invite, over any screen: top right under the player card, clear
     // of the lobby's map vote (bottom middle).
-    "#remaster-party-toast { position: absolute; right: 2.6vw; top: 15vh; z-index: 100; display: flex; align-items: center; padding: 1.2vh 1.2vw; border-radius: 1.6vh; white-space: nowrap; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
+    "#remaster-party-toast { position: absolute; right: 2.6vw; top: 34vh; z-index: 100; display: flex; align-items: center; padding: 1.2vh 1.2vw; border-radius: 1.6vh; white-space: nowrap; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     "#remaster-party-toast .rt-text { margin-right: 1vw; font-size: 0.95vw; }",
     "#remaster-party-toast .rt-text b { color: rgba(255, 70, 60, 1); }"
   ].join("\n");
@@ -440,6 +448,27 @@
     if (!data || !data.party) return false;
     for (var i = 0; i < data.party.members.length; i++) if (data.party.members[i].username === username) return true;
     return false;
+  }
+
+  // The other party members, as cards under yours (top right). Nothing when
+  // you're not in a party or the list isn't known (offline).
+  function renderParty() {
+    var host = document.getElementById("player-card");
+    if (!host) return;
+    var strip = document.getElementById("remaster-party-cards");
+    if (!strip) {
+      style();
+      strip = el("section");
+      strip.id = "remaster-party-cards";
+      strip.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+      host.appendChild(strip);
+    }
+    strip.textContent = "";
+    if (!data || !data.party || offline()) return;
+    data.party.members.forEach(function (m) {
+      if (m.username === data.you) return;
+      strip.appendChild(personRow(m, { tag: m.leader ? "Leader" : null }));
+    });
   }
 
   function renderPanel() {
@@ -766,7 +795,7 @@
   }
 
   function on(name, msg) {
-    if (name === "remaster-friends") { data = msg; renderPanel(); badge(); }
+    if (name === "remaster-friends") { data = msg; renderPanel(); renderParty(); badge(); }
     else if (name === "remaster-friend-result") onResult(msg || {});
     else if (name === "remaster-party-invite") showInvite(msg);
     else if (name === "remaster-player-card") {
@@ -777,7 +806,7 @@
 
   window.RemasterFriends = { open: open, close: close, showCard: showCard, on: on,
     connected: function () { emit("friends-get"); },
-    disconnected: renderPanel,
+    disconnected: function () { renderPanel(); renderParty(); },
     // Your account username from the server; false: no account; null: not known yet.
     account: function () { return data ? data.you || false : (noAccount ? false : null); } };
 
