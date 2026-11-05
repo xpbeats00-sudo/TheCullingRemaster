@@ -194,7 +194,10 @@ def git_state():
     try:
         commit = run("rev-parse", "HEAD").strip()
         branch = run("rev-parse", "--abbrev-ref", "HEAD").strip()
-        changed = [line[3:] for line in run("status", "--porcelain", "--untracked-files=normal").splitlines() if line.strip()]
+        # By content (git diff), not git status: with core.autocrlf a generator
+        # writing LF where the checkout had CRLF shows in status but changes nothing.
+        changed = [p for p in (run("diff", "--name-only", "HEAD").splitlines()
+                               + run("ls-files", "--others", "--exclude-standard").splitlines()) if p.strip()]
     except (OSError, subprocess.CalledProcessError) as e:
         raise ReleaseError("can't read the git state of %s (%s): a release records the commit it was built from" % (ROOT, e))
     return commit, branch, changed
