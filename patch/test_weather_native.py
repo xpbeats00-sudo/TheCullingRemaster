@@ -2,6 +2,13 @@
 with the blob's own flags) against fake game objects (test_weather_native.c),
 and check it against make_weather.py's Python copy of the schedule:
 
+- crash (VA 0x1414516ab): a rain template freed by the garbage collector
+  while the rain was off is loaded again before the next spawn (never the
+  freed one); a dead (pending kill) level object gets no call; the 900 s
+  runs collect unused templates about once a minute;
+- night look: on every night map, over 20 minutes of every preset and
+  seed, moonlight and sky light never exceed the level's own (lightning
+  aside), cloud is never brighter than its colour, and thick cloud is dark;
 - shelter: under a roof (the centre and 2+ of 4 side traces hit) the rain
   turns off after 2 ticks and stays off; back in the open it returns after
   2; a small overhang or a roof only beside you keeps it; in and out every
@@ -94,13 +101,18 @@ def run(exe, *args):
 
 
 def header_maps():
+    """weather_maps.h rows: (fog path, density k, sun base, sky base, stars base, night,
+    cloud colour, rim base, whole-cloud rim base)."""
     text = open(mw.NATIVE_HEADER).read()
+    num = r"([\d.]+)f"
     rows = re.findall(r'\{L"([^"]+)",\s*L"[^"]+",\s*L"[^"]+",\s*L"[^"]+",\s*'
-                      r'([\d.]+)f, ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\d)\}', text)
-    return [(fog, float(k), float(sun), float(sky), float(stars), int(n)) for fog, k, sun, sky, stars, n in rows]
+                      + ", ".join([num] * 4) + r", (\d),\s*\{" + ", ".join([num] * 4) + r"\}, " + num + ", " + num
+                      + r"\}", text)
+    return [(r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), int(r[5]),
+             tuple(float(x) for x in r[6:10]), float(r[10]), float(r[11])) for r in rows]
 
 
-def expected(seed, preset, cycle, t, k, sun_base, sky_base, stars_base, night):
+def expected(seed, preset, cycle, t, k, sun_base, sky_base, stars_base, night, cloud_rgb, rim, whole_rim):
     cur, prev, since, blend = mw.weather_state(seed, preset, cycle, t)
     a, b = mw.WEATHER_STATES[prev], mw.WEATHER_STATES[cur]
 
@@ -112,8 +124,29 @@ def expected(seed, preset, cycle, t, k, sun_base, sky_base, stars_base, night):
         moon *= 6.0
         sky *= 5.0
     rain = b[7] if blend >= 0.5 else a[7]
-    return (k / vis, vis * 20.0 if vis < 40.0 else 800.0, sun_base * moon, sky_base * sky,
-            lerp(1), lerp(2), stars_base * lerp(3) if night else None, rain)
+    cloud = lerp(1)
+    if night:
+        o = mw.night_overcast(cloud)
+        color = [cloud_rgb[i] + (mw.NIGHT_OVERCAST[i] - cloud_rgb[i]) * o for i in range(3)]
+        night_sky = color + [rim * (1 - mw.NIGHT_RIM_DROP * o), whole_rim * (1 - mw.NIGHT_RIM_DROP * o)]
+    else:
+        night_sky = [None] * 5
+    return [k / vis, vis * 20.0 if vis < 40.0 else 800.0, sun_base * moon, sky_base * sky,
+            cloud, lerp(2), stars_base * lerp(3) if night else None, rain] + night_sky
+
+
+def night_bounds(cloud, values, sun_base, sky_base, cloud_rgb, rim, flash):
+    """The night look holds: never brighter moonlight or sky light than the
+    level's own (lightning aside), cloud never brighter than the level's
+    cloud colour, and thick cloud (0.6+) dark: colour at most 0.06, the
+    moon's rim light on it at most 1/5 of the level's."""
+    sun, sky, color, rim_now = values
+    if not flash:
+        check(sun <= sun_base + 1e-6 and sky <= sky_base + 1e-6, "night: moon %s / sky light %s too bright" % (sun, sky))
+    check(all(color[i] <= max(cloud_rgb[i], mw.NIGHT_OVERCAST[i]) + 1e-6 for i in range(3)), "night: cloud colour")
+    if cloud >= 0.6:
+        check(max(color) <= 0.06 + 1e-6 and rim_now <= rim / 5 + 1e-6,
+              "night: thick cloud %.2f is bright (colour %s, rim %s)" % (cloud, color, rim_now))
 
 
 EXE = r"C:\Culling\TheCulling\Victory\Binaries\Win64\Victory.exe"
@@ -239,6 +272,10 @@ def exe_checks(path):
     check(registered_near(w["WX_SKY_INTENSITY"], "RecaptureSky"), "sky light SetIntensity's class")
     check(not registered_near(w["WX_SKY_INTENSITY"], "SetTemperature"), "sky light SetIntensity is a ULightComponent one")
     check(registered_near(w["WX_LIGHT_INTENSITY"], "SetTemperature"), "light SetIntensity is not ULightComponent's")
+    native_impl("SetVectorParameterValue", w["WX_MID_VECTOR"])
+    vec = [a for a, t in ex.native_sites("SetVectorParameterValue") if w["WX_MID_VECTOR"] in ex.calls(t)]
+    near = [a for a, _ in ex.native_sites("K2_CopyMaterialInstanceParameters")]
+    check(any(abs(a - b) < 0x200 for a in vec for b in near), "SetVectorParameterValue is not the MID's")
     mid = [a for a, t in ex.native_sites("SetScalarParameterValue") if w["WX_MID_SCALAR"] in ex.calls(t)]
     near = [a for a, _ in ex.native_sites("K2_CopyMaterialInstanceParameters")]
     check(any(abs(a - b) < 0x200 for a in mid for b in near), "SetScalarParameterValue is not the MID's")
@@ -302,7 +339,7 @@ def exe_checks(path):
         for h in re.findall(r"0x[0-9a-f]+", i.op_str):
             imm.add(int(h, 16))
     for k in ("WX_FIND_OBJECT", "WX_LOAD_OBJECT", "WX_FNAME", "WX_FOG_DENSITY", "WX_FOG_START",
-              "WX_LIGHT_INTENSITY", "WX_SKY_INTENSITY", "WX_MID_SCALAR", "WX_SPAWN_ATTACHED", "WX_LINE_TRACE"):
+              "WX_LIGHT_INTENSITY", "WX_SKY_INTENSITY", "WX_MID_SCALAR", "WX_MID_VECTOR", "WX_SPAWN_ATTACHED", "WX_LINE_TRACE"):
         check(w[k] in imm, "the blob doesn't call %s" % k)
     return len(w)
 
@@ -340,7 +377,8 @@ def main():
 
         maps = header_maps()
         check(len(maps) == len(mw.NATIVE_MAPS), "weather_maps.h rows: %d" % len(maps))
-        fog_path, k, sun_base, sky_base, stars_base, night = maps[0]
+        fog_path, k, sun_base, sky_base, stars_base, night, cloud_rgb, rim, whole_rim = maps[0]
+        check(night, "the first weather_maps.h row is not Jungle Night")
         prefix = fog_path.split(":")[0] + ":"
         for p, preset in enumerate(PRESETS):
             seed = 4242 + p
@@ -350,16 +388,30 @@ def main():
             seen = set()
             for ln in lines:
                 t = int(ln[1])
-                got = [float(x) for x in ln[2:9]] + [int(ln[9])]
-                want = expected(seed, p, 1, t, k, sun_base, sky_base, stars_base, night)
+                got = [float(x) for x in ln[2:9]] + [int(ln[9])] + [float(x) for x in ln[10:15]]
+                want = expected(seed, p, 1, t, k, sun_base, sky_base, stars_base, night, cloud_rgb, rim, whole_rim)
+                night_bounds(got[4], (got[2], got[3], got[8:11], got[11]), sun_base, sky_base, cloud_rgb, rim,
+                             mw.weather_flash(seed, mw.weather_state(seed, p, 1, t)[0], t))
                 seen.add(mw.weather_state(seed, p, 1, t)[0])
                 for i, (g, w) in enumerate(zip(got, want)):
                     if w is None:
                         continue
                     check(abs(g - w) <= 1e-3 * max(1.0, abs(w)),
                           "%s t %d field %d: applied %s, expected %s" % (preset, t, i, g, w))
-            ok("%s (seed %d): 900 s of applied fog, lights, sky and rain match the schedule; states %s" % (
+            ok("%s (seed %d): 900 s of applied fog, lights, sky, night clouds and rain match the schedule and stay night; states %s" % (
                 preset, seed, ", ".join(mw.WEATHER_STATES[s][0] for s in sorted(seen))))
+    n = 0
+    for fog_path, k, sun_base, sky_base, stars_base, night, cloud_rgb, rim, whole_rim in maps:
+        if not night:
+            continue
+        for seed in seeds:
+            for p in range(len(PRESETS)):
+                for t in range(0, 1201):
+                    w = expected(seed, p, 1, t, k, sun_base, sky_base, stars_base, night, cloud_rgb, rim, whole_rim)
+                    night_bounds(w[4], (w[2], w[3], w[8:11], w[11]), sun_base, sky_base, cloud_rgb, rim,
+                                 mw.weather_flash(seed, mw.weather_state(seed, p, 1, t)[0], t))
+                    n += 1
+    ok("night maps: %d seconds of every preset and seed keep the night look (moon, sky light, dark thick cloud)" % n)
     exe = sys.argv[1] if len(sys.argv) > 1 else EXE
     if os.path.exists(exe):
         n = exe_checks(exe)

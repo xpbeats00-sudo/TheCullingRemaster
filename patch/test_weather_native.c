@@ -105,40 +105,75 @@ static u8 *find_object(u8 *cls, u8 *outer, const wchar_t *name, char exact)
     if (ends(name, L".Sky Sphere mesh.MaterialInstanceDynamic_0")) return mid;
     return 0;
 }
+/* Rain templates: a template is a live object the loader returns until the
+ * "garbage collector" (collect_templates) frees it; loading it again then
+ * makes a new object (as the engine does). Each knows its level (+0x800). */
+static int loads;
+static u8 *new_template(int level)
+{
+    u8 *t = new_obj(0);
+    F(t, 0x800, int) = level;
+    reg(t);
+    return t;
+}
 static u8 *load_object(u8 *cls, u8 *outer, const wchar_t *name, const wchar_t *file, u32 flags, void *sb, char rec)
 {
+    int i;
     (void)outer; (void)file; (void)flags; (void)sb; (void)rec;
     CHECK(cls == ps_class);
-    if (!wcscmp(name, L"/Game/Remaster/Weather/P_Rain_Light.P_Rain_Light")) return tmpl[0];
-    if (!wcscmp(name, L"/Game/Remaster/Weather/P_Rain_Heavy.P_Rain_Heavy")) return tmpl[1];
-    if (!wcscmp(name, L"/Game/Remaster/Weather/P_Rain_Storm.P_Rain_Storm")) return tmpl[2];
-    return 0;
+    loads++;
+    i = !wcscmp(name, L"/Game/Remaster/Weather/P_Rain_Light.P_Rain_Light") ? 0
+        : !wcscmp(name, L"/Game/Remaster/Weather/P_Rain_Heavy.P_Rain_Heavy") ? 1
+        : !wcscmp(name, L"/Game/Remaster/Weather/P_Rain_Storm.P_Rain_Storm") ? 2 : -1;
+    if (i < 0) return 0;
+    if (!alive(tmpl[i])) tmpl[i] = new_template(i + 1);
+    return tmpl[i];
+}
+/* Frees every template no live emitter plays (nothing else references them). */
+static void collect_templates(void)
+{
+    int i;
+    for (i = 0; i < 3; i++)
+        if (!(last_comp && alive(last_comp) && F(last_comp, 0x800, u8 *) == tmpl[i])) kill_obj(tmpl[i]);
 }
 static void *make_name(u64 *out, const wchar_t *s, i32 find)
 {
     CHECK(find == 1);
     names_made++;
-    *out = !wcscmp(s, L"Cloud opacity") ? 11 : !wcscmp(s, L"Cloud speed") ? 12 : !wcscmp(s, L"Stars brightness") ? 13 : 99;
+    *out = !wcscmp(s, L"Cloud opacity") ? 11 : !wcscmp(s, L"Cloud speed") ? 12 : !wcscmp(s, L"Stars brightness") ? 13
+         : !wcscmp(s, L"Rim light brightness") ? 14 : !wcscmp(s, L"Whole Cloud Rim light") ? 15
+         : !wcscmp(s, L"Cloud color") ? 16 : 99;
     return out;
 }
-static void set_fog_density(u8 *o, float v) { CHECK(o == fog); fog_density = v; calls++; }
-static void set_fog_start(u8 *o, float v) { CHECK(o == fog); fog_start = v; calls++; }
-static void set_light(u8 *o, float v) { CHECK(o == sun); sun_i = v; calls++; }
-static void set_sky(u8 *o, float v) { CHECK(o == sky); sky_i = v; calls++; }
+/* Every setter is only ever called on a live object. */
+static void set_fog_density(u8 *o, float v) { CHECK(o == fog && alive(o)); fog_density = v; calls++; }
+static void set_fog_start(u8 *o, float v) { CHECK(o == fog && alive(o)); fog_start = v; calls++; }
+static void set_light(u8 *o, float v) { CHECK(o == sun && alive(o)); sun_i = v; calls++; }
+static void set_sky(u8 *o, float v) { CHECK(o == sky && alive(o)); sky_i = v; calls++; }
+static float p_rim, p_whole_rim, p_color[4];
 static void set_scalar(u8 *o, u64 name, float v)
 {
-    CHECK(o == mid);
+    CHECK(o == mid && alive(o));
     if (name == 11) p_cloud = v; else if (name == 12) p_speed = v; else if (name == 13) p_stars = v;
+    else if (name == 14) p_rim = v; else if (name == 15) p_whole_rim = v;
     else CHECK(0);
+    calls++;
+}
+static void set_vector(u8 *o, u64 name, const float *v)
+{
+    CHECK(o == mid && alive(o) && name == 16);
+    memcpy(p_color, v, sizeof(p_color));
     calls++;
 }
 static u8 *spawn_attached(u8 *t, u8 *parent, u64 name, const float *loc, const float *rot, i32 type, char autodestroy)
 {
     CHECK(name == 0 && loc[0] == 0 && loc[1] == 0 && loc[2] == 0 && rot[0] == 0 && type == 0 && autodestroy == 1);
+    CHECK(alive(t) && alive(parent));      /* never a freed template, never a dead pawn root */
     spawned++;
     spawn_tmpl = t;
     spawn_parent = parent;
     last_comp = new_obj(0);
+    F(last_comp, 0x800, u8 *) = t;          /* the emitter plays (holds) its template */
     reg(last_comp);
     return last_comp;
 }
@@ -179,7 +214,9 @@ static void set_options(const char *o)
 static void new_pawn(void)
 {
     pawn = new_obj(0);
+    reg(pawn);
     root = new_obj(0);
+    reg(root);
     F(root, 0x1a0, float) = 1000.0f;        /* ComponentToWorld translation */
     F(root, 0x1a4, float) = -2000.0f;
     F(root, 0x1a8, float) = 300.0f;
@@ -205,7 +242,7 @@ static void new_match(const char *options)
 
 static void tick(i32 t) { F(gs, 0x4e8, i32) = t; CHECK(sd_should_end(gm) == 0); }
 
-static int rain_level_of(u8 *t) { return t == tmpl[0] ? 1 : t == tmpl[1] ? 2 : t == tmpl[2] ? 3 : 0; }
+static int rain_level_of(u8 *t) { return t ? F(t, 0x800, int) : 0; }
 
 static void checks(void)
 {
@@ -285,6 +322,35 @@ static void checks(void)
         CHECK(spawned == s0 && deactivated == d0 && alive(last_comp));
         printf("ok    in and out every second: no thrash (no deactivate, no respawn)\n");
         roof_center = 0; roof_sides = 0;
+
+        /* The crash (VA 0x1414516ab): the rain off under a roof, the garbage
+           collector frees the template nothing plays, the rain comes back:
+           the spawn must get a live (reloaded) template, never the freed one. */
+        roof_center = 1; roof_sides = 4;
+        tick(31); tick(32);
+        CHECK(!alive(last_comp));
+        {
+            u8 *freed = tmpl[2];
+            collect_templates();
+            CHECK(!alive(freed));
+            roof_center = 0; roof_sides = 0;
+            loads = 0;
+            tick(33); tick(34);
+            CHECK(spawned == s0 + 1 && alive(spawn_tmpl) && spawn_tmpl != freed && rain_level_of(spawn_tmpl) == 3);
+            CHECK(loads >= 1);
+        }
+        printf("ok    a template freed by the garbage collector is loaded again before the rain respawns\n");
+
+        /* A level object gone pending kill (dead) is not touched. */
+        kill_obj(mid);
+        calls = 0;
+        tick(35);
+        CHECK(calls > 0);                                        /* fog and lights still set */
+        {
+            int i2;
+            for (i2 = 0; i2 < nobjs; i2++) if (objs[i2] == mid) alive_obj[i2] = 1;
+        }
+        printf("ok    a dead sky material is skipped (no call on it)\n");
     }
 
     new_match("?Weather=clear?WeatherSeed=9?WeatherCycle=0");
@@ -303,9 +369,11 @@ static void run(const char *options, const wchar_t *prefix, i32 t1)
     map_prefix = prefix;
     new_match(options);
     for (t = 0; t <= t1; t++) {
+        if (t % 61 == 60) collect_templates();      /* the engine's garbage collector, about once a minute */
         tick(t);
-        printf("T %d %.6f %.3f %.6f %.6f %.4f %.4f %.4f %d\n", t, fog_density, fog_start, sun_i, sky_i,
-               p_cloud, p_speed, p_stars, last_comp && alive(last_comp) ? rain_level_of(spawn_tmpl) : 0);
+        printf("T %d %.6f %.3f %.6f %.6f %.4f %.4f %.4f %d %.5f %.5f %.5f %.4f %.4f\n", t, fog_density, fog_start,
+               sun_i, sky_i, p_cloud, p_speed, p_stars, last_comp && alive(last_comp) ? rain_level_of(spawn_tmpl) : 0,
+               p_color[0], p_color[1], p_color[2], p_rim, p_whole_rim);
     }
 }
 
@@ -316,8 +384,9 @@ int main(int argc, char **argv)
     CHECK(image);
     cls_pc = new_class();
     ps_class = new_obj(0);
-    for (i = 0; i < 3; i++) tmpl[i] = new_obj(0);
+    for (i = 0; i < 3; i++) tmpl[i] = new_template(i + 1);
     fog = new_obj(0); sun = new_obj(0); sky = new_obj(0); mid = new_obj(0);
+    reg(ps_class); reg(fog); reg(sun); reg(sky); reg(mid);
     world = new_obj(0);
     vtable[0x120 / 8] = (void *)get_world;
     vtable[0x210 / 8] = (void *)deactivate;
@@ -333,6 +402,7 @@ int main(int argc, char **argv)
     hook(0x1271d00, (void *)set_light);
     hook(0x12c0830, (void *)set_sky);
     hook(0x1423690, (void *)set_scalar);
+    hook(0x1423970, (void *)set_vector);
     hook(0x1348fa0, (void *)spawn_attached);
     hook(0x13b7d00, (void *)line_trace);
     VirtualAlloc(image + 0x2567000, 0x1000, MEM_COMMIT, PAGE_READWRITE);   /* L"/Script/Victory" */

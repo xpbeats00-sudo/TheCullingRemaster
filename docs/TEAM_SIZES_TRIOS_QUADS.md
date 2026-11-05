@@ -45,7 +45,7 @@ PARTIAL.
     instead. The exe is upgraded from that build (and from older ones) to the
     current bytes; `test_patch_exe.py` asserts the hook site and stub, and
     `test_native_module.py` runs the stub-then-`sd_teams` path for Duo URLs.
-    New pin: PATCHED_SHA256 `574bec67b8cda1ce8d26c1675d17d4d907fb25efb0fad56f12ae5955361738d8`.
+    New pin: PATCHED_SHA256 `574bec67b8cda1ce8d26c1675d17d4d907fb25efb0fad56f12ae5955361738d8`, then `04024dcee5f1d979c219033331e7173225b0a5443430905fb8fad7830cb57e97` with the weather crash and night-cloud fixes (weather.c).
 - 24 contestants divide by 2, 3 and 4. Teams are by PlayerArray index; you
   join first, so you are on team 1 with the next N - 1 contestants.
 

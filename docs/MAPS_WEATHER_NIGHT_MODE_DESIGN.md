@@ -13,7 +13,8 @@ Status words: **PASS** (seen working in game), **PARTIAL** (some of it seen work
 | Night maps as their own maps | `Jungle_Night_P`, `Jungle2_Night_P`, opened by URL | **PARTIAL**. `Jungle2_Night_P` opened by URL from the vote and played (PASS); `Jungle_Night_P` by URL is NOT TESTED. |
 | Map choice | Server setting, `map:` answers, ClientWeb URLs, vote cards | **PARTIAL**: Prison Night from the vote PASS; Jungle Night and Duo NOT TESTED. Server tests PASS. |
 | Rain particles | `P_Rain_{Light,Heavy,Storm}` (GPU streaks) | **PARTIAL**. Streaks visible in game on Prison Night. Bug: indoors (the Prison mess hall's glass roof) the camera-attached rain fell inside, because its GPU collision only sees the depth buffer. Fixed by the shelter check (below): **NOT TESTED** in game. |
-| Weather over a match | `weather.c` in the native module | **PARTIAL**: it ran in game (rain spawned on the player); changes over a match NOT TESTED. Harness and exe-address tests PASS. |
+| Weather over a match | `weather.c` in the native module | **FAIL, then fixed (NOT TESTED in game)**. The first combined build (PATCHED_SHA256 `e02e5f98…`) crashed 3–4 minutes into Prison Night and Jungle Night matches: access violation at VA 0x1414516ab (root cause and fix below). Night maps must stay off (`CULLING_NIGHT_MAPS` unset, the default) until the fixed build is confirmed in game. Harness and exe-address tests PASS. |
+| Night look under weather | Night maps keep dark clouds as the weather thickens them | **FAIL, then fixed (NOT TESTED in game)**. On Jungle Night an overcast/rain state showed a bright light-grey sky, like a stormy day. The tick raised cloud opacity to 0.6–0.8 while the clouds kept the level's bright night cloud colour (0.45, 0.59, 1.0), rim lit by the moon at 100. Fixed below; a test bounds every night-map state. |
 | Rain shelter | Upward line traces from the pawn turn the rain off under a roof | **NOT TESTED** in game. Harness and exe-address tests PASS. |
 | Lightning | Moon and sky light pulse for one tick (1 s) | **PARTIAL** by design: there is no faster tick, so a flash lasts 1 s. Not seen in game. |
 | Thunder audio | — | **BLOCKED** for now. It needs the AkGameplayStatics::PostEvent address and an event; `Play_Lobby_Boom` and `Play_Lobby_Rumble_*` are candidates. Not attempted. |
@@ -141,7 +142,7 @@ The five presets on a night map give clear, cloudy, rainy, storm and foggy night
 | Test | Checks | Result |
 |---|---|---|
 | `python patch/test_weather.py <Paks> [--pak out.pak] [--override-pak out.pak]` | Every package saves back byte-for-byte. Only the intended exports change, and native data after the tags (cooked cubemaps) is untouched. Every import resolves to an existing object. Every streamed level exists. Preset values and fog visibility read back. `--fog` scales. For rain: stock imports, only the GPU emitter and system changed, every value read back. Menu URLs, server indices and presets, the `weather.c` table and `weather_maps.h` all agree. The paks read back. | PASS (22 checks) |
-| `python patch/test_weather_native.py [Victory.exe]` | The weather C code against fake game objects: off without `Weather=`, waits for the level, applies everything, rain on the pawn, re-spawn for a new pawn; rain off under a roof after 2 ticks, back after 2 in the open, kept under a small overhang, no thrash, no traces while dry. The schedule matches Python over 96,080 seconds (8 seeds × 5 presets × with and without cycling). Every applied value matches over 900 s per preset. All 14 game addresses re-derived from the stock exe (by registered native name, exec thunk call, log strings, vtable slot, property offsets, class neighbourhood) and present in the blob. | PASS (8 checks) |
+| `python patch/test_weather_native.py [Victory.exe]` | The weather C code against fake game objects: off without `Weather=`, waits for the level, applies everything, rain on the pawn, re-spawn for a new pawn; rain off under a roof after 2 ticks, back after 2 in the open, kept under a small overhang, no thrash, no traces while dry. The schedule matches Python over 96,080 seconds (8 seeds × 5 presets × with and without cycling). Every applied value matches over 900 s per preset. All 15 game addresses re-derived from the stock exe (by registered native name, exec thunk call, log strings, vtable slot, property offsets, class neighbourhood) and present in the blob. | PASS (8 checks) |
 | `python patch/test_native_module.py`, `python patch/test_patch_exe.py` | The existing module and exe tests | PASS |
 | `node server/test/weather.test.js` | Default off; night maps and day weather settings; answers | PASS (7 tests) |
 | The other server test files | Unchanged behaviour | PASS. `showdown.test.js` fails its last test (a missing `profiles.json`) with or without these changes. |
@@ -164,9 +165,29 @@ The five presets on a night map give clear, cloudy, rainy, storm and foggy night
 5. With the server's default settings: only Jungle and Prison in the vote, and stock answers.
 6. FPS with storm rain (16,000 drops/s, about 29,000 alive) on a mid-range GPU.
 
+## The crash at VA 0x1414516ab (fixed)
+
+- **Where it crashed:** a virtual of UParticleSystemComponent (function 0x141451540, in its vtable at 0x142a62c48). It walks Template->Emitters (`[component + 0x708]` = Template, `[Template + 0x40]` = Emitters.Data) and faulted reading an element: the Template it was given was a freed object.
+- **Root cause:** `wx_begin` loaded the three rain particle systems at match start (StaticLoadObject) and kept the raw pointers for the whole match. Nothing references a rain template that isn't playing, so the garbage collector (about once a minute) freed it. At the next change of rain level the module passed the freed pointer to SpawnEmitterAttached, and the new component's particle init read freed memory. That happens 3–4 minutes in, at the first change of state after a collection.
+- **Fix:**
+  - No UObject pointer is kept from one tick to the next except through a weak pointer.
+  - The rain template is looked up (StaticLoadObject finds it, or loads it again) right before each spawn.
+  - Every object the tick uses (fog, sun, sky light, sky material, the pawn, its root, the template) is used only if live: a weak pointer to it resolves (not destroyed, not pending kill).
+- **Test:** `test_weather_native.py` has the scenario. The rain goes off under a roof, the "garbage collector" frees the template, the rain comes back, and the spawn must get a live, reloaded template. The setters refuse dead objects, and the 900-second runs collect unused templates once a minute.
+
+## Night look under weather (fixed)
+
+- **Night maps:** the tick now also darkens the clouds as they thicken. Between cloud opacity 0.15 and 0.6:
+  - "Cloud color" goes from the level's own toward (0.030, 0.038, 0.060), set with the MID's SetVectorParameterValue (`0x1423970`, re-derived from the exe).
+  - "Rim light brightness" and "Whole Cloud Rim light" drop to a tenth of the level's.
+  - The level's cloud colour and rim come from `weather_maps.h`, read from each Lighting level.
+- **Jungle Night's static sky:** its "Sun color" (the moon's tint on the clouds) is cool white (0.80, 0.86, 1.0) instead of the stock Jungle's orange sunset.
+- **Day maps** (stock Lighting with `CULLING_WEATHER_DAY=1`) keep their bright overcast.
+- **Test:** over 20 minutes of every preset and seed on every night map, moonlight and sky light never exceed the level's own (lightning aside), cloud is never brighter than its colour, and thick cloud (0.6+) stays dark: colour at most 0.06, rim at most a fifth.
+
 ## Risks
 
-- **Native addresses.** A wrong address or offset in `weather.c` would crash a weather match. The code only runs when the URL has `Weather=`, and every address is re-derived from the exe by the test, but none has been executed in game yet. All other matches only parse the options string once per second.
+- **Native code.** A wrong address, offset or object lifetime in `weather.c` crashes a weather match (it did once: the freed rain template, above). The code only runs when the URL has `Weather=`. Every address is re-derived from the exe by the test, and every object is checked live each tick. All other matches only parse the options string once per second.
 - **Renamed persistent level.** Opening a renamed copy of a persistent level by URL is not yet proven (sublevel copies are). If it fails, the fallback is to override the stock Lighting level (the `test_override.pak` route), with the night look then covering every match on that map.
 - **Rain is the most speculative piece.**
   - The base emitter's LOD was off in stock.

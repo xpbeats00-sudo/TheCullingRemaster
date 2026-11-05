@@ -28,6 +28,15 @@
  *     multiplies both for one tick);
  *   - the sky dome's MaterialInstanceDynamic (PM_Sky): SetScalarParameterValue
  *     for "Cloud opacity", "Cloud speed" and, on night maps, "Stars brightness";
+ *     on night maps thicker cloud is also darker (SetVectorParameterValue
+ *     "Cloud color" toward a dark overcast, less of the moon's rim light on
+ *     it: "Rim light brightness", "Whole Cloud Rim light"). Thick cloud in the
+ *     night level's own bright cloud colour, rim lit by the moon, read as a
+ *     grey day sky on Jungle Night. Day maps keep their bright clouds;
+ *   - every object is found again each tick and used only if live (a weak
+ *     pointer to it resolves); the rain's particle system is looked up (or
+ *     loaded again) right before each spawn, since the garbage collector
+ *     frees one that isn't playing;
  *   - rain: /Game/Remaster/Weather/P_Rain_{Light,Heavy,Storm} (make_rain.py),
  *     spawned with UGameplayStatics::SpawnEmitterAttached on the local
  *     player's pawn root (kept in a weak pointer; a new pawn gets a new
@@ -52,6 +61,7 @@
 #define WX_LIGHT_INTENSITY 0x1271d00 /* ULightComponent::SetIntensity(float) (+0x314) */
 #define WX_SKY_INTENSITY 0x12c0830 /* USkyLightComponent::SetIntensity(float) (+0x314) */
 #define WX_MID_SCALAR    0x1423690 /* UMaterialInstanceDynamic::SetScalarParameterValue(FName, float) */
+#define WX_MID_VECTOR    0x1423970 /* UMaterialInstanceDynamic::SetVectorParameterValue(FName, const FLinearColor &) */
 #define WX_SPAWN_ATTACHED 0x1348fa0 /* UGameplayStatics::SpawnEmitterAttached(PS*, USceneComponent*, FName, FVector*, FRotator*, int, bool) */
 #define WXV_DEACTIVATE   0x210     /* UActorComponent::Deactivate (vtable offset) */
 #define WXA_ROOT         0x1e0     /* AActor::RootComponent */
@@ -67,6 +77,7 @@ typedef u8 *(*wx_load_t)(u8 *, u8 *, const u16 *, const u16 *, u32, void *, char
 typedef void *(*wx_fname_t)(u64 *, const u16 *, i32);
 typedef void (*wx_setf_t)(u8 *, float);
 typedef void (*wx_mid_t)(u8 *, u64, float);
+typedef void (*wx_midv_t)(u8 *, u64, const float *);
 typedef u8 *(*wx_spawn_t)(u8 *, u8 *, u64, const float *, const float *, i32, char);
 typedef void (*wx_void_t)(u8 *);
 typedef char (*wx_trace_t)(u8 *, const float *, const float *, u8, char, const void *, i32, u8 *, char,
@@ -125,6 +136,16 @@ static __declspec(noinline) const void *wx_launder(const void *p) { return p; }
 #define WX_BLEND 45                /* seconds a change takes */
 #define WX_FLASH_MOON 6.0f         /* lightning: moon and sky light for one tick */
 #define WX_FLASH_SKY 5.0f
+/* Night maps: thick cloud is dark, not a day-like bright overcast. From
+ * WX_NIGHT_CLOUD_THIN to _THICK cloud opacity the cloud colour goes from the
+ * level's own to WX_NIGHT_OVERCAST_* and the moon's rim light on the clouds
+ * drops to (1 - WX_NIGHT_RIM_DROP) of the level's. */
+#define WX_NIGHT_CLOUD_THIN  0.15f
+#define WX_NIGHT_CLOUD_THICK 0.60f
+#define WX_NIGHT_OVERCAST_R  0.030f
+#define WX_NIGHT_OVERCAST_G  0.038f
+#define WX_NIGHT_OVERCAST_B  0.060f
+#define WX_NIGHT_RIM_DROP    0.90f
 
 static u32 wx_next_rand(u32 *x)
 {
@@ -250,8 +271,7 @@ static struct {
     u8 *gm, *gs;
     i32 preset, cycle, map;
     u32 seed;
-    u64 n_cloud, n_speed, n_stars;
-    u8 *ps_class, *templates[4];
+    u64 n_cloud, n_speed, n_stars, n_cloud_color, n_rim, n_whole_rim;
     i32 rain_level, rain_weak[2];
     u8 *rain_pawn;
     i32 flashed;
@@ -265,9 +285,34 @@ static struct {
 #define WX_ROOF_AROUND   250.0f    /* the 4 side traces, this far out */
 #define WX_SHELTER_TICKS 2         /* ticks in a row before the rain turns off / on */
 
+/* `o` if it is a live object (not destroyed, not pending kill), else 0: a
+ * weak pointer to it resolves only then. No UObject pointer is kept from one
+ * tick to the next except through a weak pointer: anything else can be
+ * garbage collected in between. */
+static u8 *wx_live(u8 *o)
+{
+    i32 w[2];
+    if (!o) return 0;
+    ((wx_weak_set_t)AT(R_WEAK_SET))(w, o);
+    return ((wx_weak_get_t)AT(R_WEAK_GET))(w) == o ? o : 0;
+}
+
 static u8 *wx_find(const u16 *path)
 {
-    return ((wx_find_t)AT(WX_FIND_OBJECT))(0, 0, path, 0);
+    return wx_live(((wx_find_t)AT(WX_FIND_OBJECT))(0, 0, path, 0));
+}
+
+/* The rain particle system for a level, looked up (or loaded again) right
+ * before it is used. Nothing else references a template that isn't
+ * playing, so the garbage collector frees it: a template kept from match
+ * start crashed SpawnEmitterAttached minutes later (VA 0x1414516ab, in
+ * UParticleSystemComponent's particle init, reading the freed
+ * Template->Emitters). */
+static u8 *wx_template(i32 level)
+{
+    u8 *cls = wx_find(L"/Script/Engine.ParticleSystem");
+    if (!cls || level < 1 || level > 3) return 0;
+    return wx_live(((wx_load_t)AT(WX_LOAD_OBJECT))(cls, 0, WX_RAIN_PATH(level - 1), 0, 0, 0, 1));
 }
 
 static u64 wx_name(const u16 *s)
@@ -283,7 +328,7 @@ static u8 *wx_local_pawn(u8 *world)
     i32 i, num = FIELD(list, 8, i32);
     for (i = 0; i < num; i++) {
         u8 *c = weak_get(list, i);
-        if (c && is_a(c, R_CLS_PC) && FIELD(c, C_PAWN, u8 *)) return FIELD(c, C_PAWN, u8 *);
+        if (c && is_a(c, R_CLS_PC) && FIELD(c, C_PAWN, u8 *)) return wx_live(FIELD(c, C_PAWN, u8 *));
     }
     return 0;
 }
@@ -300,7 +345,7 @@ static int wx_roof(u8 *pawn, const float *at, float dx, float dy)
 /* Is a roof over the pawn (not just a small overhang)? */
 static int wx_covered(u8 *pawn)
 {
-    u8 *root = FIELD(pawn, WXA_ROOT, u8 *);
+    u8 *root = wx_live(FIELD(pawn, WXA_ROOT, u8 *));
     const float *at;
     int n;
     if (!root) return 0;
@@ -328,6 +373,7 @@ static void wx_rain(u8 *world, i32 level)
 {
     u8 *pawn = wx_local_pawn(world);
     u8 *comp = ((wx_weak_get_t)AT(R_WEAK_GET))(W.rain_weak);
+    u8 *tmpl, *root;
     float zero[3] = {0.0f, 0.0f, 0.0f};
     if (level > 0 && wx_shelter(pawn)) level = 0;          /* under a roof */
     else if (level <= 0) W.sheltered = W.shelter_flip = 0;
@@ -337,13 +383,14 @@ static void wx_rain(u8 *world, i32 level)
         ((wx_weak_set_t)AT(R_WEAK_SET))(W.rain_weak, 0);
     }
     W.rain_level = level;
-    if (comp || level <= 0 || level > 3 || !pawn || !W.templates[level]) {
+    if (comp || level <= 0 || level > 3 || !pawn) {
         if (!comp) W.rain_pawn = 0;
         return;
     }
-    if (!FIELD(pawn, WXA_ROOT, u8 *)) return;
-    comp = ((wx_spawn_t)AT(WX_SPAWN_ATTACHED))(W.templates[level], FIELD(pawn, WXA_ROOT, u8 *), 0,
-                                               zero, zero, 0, 1);
+    root = wx_live(FIELD(pawn, WXA_ROOT, u8 *));
+    tmpl = wx_template(level);
+    if (!root || !tmpl) return;
+    comp = ((wx_spawn_t)AT(WX_SPAWN_ATTACHED))(tmpl, root, 0, zero, zero, 0, 1);
     ((wx_weak_set_t)AT(R_WEAK_SET))(W.rain_weak, comp);
     W.rain_pawn = comp ? pawn : 0;
 }
@@ -352,7 +399,6 @@ static void wx_begin(u8 *gm, u8 *gs)
 {
     const FString *o = (const FString *)(gm + WXG_OPTIONS);
     int found;
-    i32 i;
     W.gm = gm;
     W.gs = gs;
     W.map = -1;
@@ -366,15 +412,20 @@ static void wx_begin(u8 *gm, u8 *gs)
     W.rain_pawn = 0;
     W.flashed = 0;
     W.sheltered = W.shelter_flip = 0;
-    for (i = 0; i < 4; i++) W.templates[i] = 0;
     if (W.preset < 0) return;
     W.n_cloud = wx_name(L"Cloud opacity");
     W.n_speed = wx_name(L"Cloud speed");
     W.n_stars = wx_name(L"Stars brightness");
-    W.ps_class = wx_find(L"/Script/Engine.ParticleSystem");
-    if (W.ps_class)
-        for (i = 1; i <= 3; i++)
-            W.templates[i] = ((wx_load_t)AT(WX_LOAD_OBJECT))(W.ps_class, 0, WX_RAIN_PATH(i - 1), 0, 0, 0, 1);
+    W.n_cloud_color = wx_name(L"Cloud color");
+    W.n_rim = wx_name(L"Rim light brightness");
+    W.n_whole_rim = wx_name(L"Whole Cloud Rim light");
+}
+
+/* Night maps: how overcast the cloud is (0 thin .. 1 thick). */
+static float wx_overcast(float cloud)
+{
+    float k = (cloud - WX_NIGHT_CLOUD_THIN) / (WX_NIGHT_CLOUD_THICK - WX_NIGHT_CLOUD_THIN);
+    return k < 0.0f ? 0.0f : k > 1.0f ? 1.0f : k;
 }
 
 static void weather_tick(u8 *gm)
@@ -418,9 +469,20 @@ static void weather_tick(u8 *gm)
     if (sun) ((wx_setf_t)AT(WX_LIGHT_INTENSITY))(sun, m->sun_base * moon);
     if (sky) ((wx_setf_t)AT(WX_SKY_INTENSITY))(sky, m->sky_base * skyf);
     if (mid) {
-        ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_cloud, wx_lerp(a->cloud, b->cloud, t));
+        float cloud = wx_lerp(a->cloud, b->cloud, t);
+        ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_cloud, cloud);
         ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_speed, wx_lerp(a->speed, b->speed, t));
-        if (m->night) ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_stars, m->stars_base * wx_lerp(a->stars, b->stars, t));
+        if (m->night) {
+            float k = wx_overcast(cloud), color[4];
+            color[0] = wx_lerp(m->cloud_rgb[0], WX_NIGHT_OVERCAST_R, k);
+            color[1] = wx_lerp(m->cloud_rgb[1], WX_NIGHT_OVERCAST_G, k);
+            color[2] = wx_lerp(m->cloud_rgb[2], WX_NIGHT_OVERCAST_B, k);
+            color[3] = m->cloud_rgb[3];
+            ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_stars, m->stars_base * wx_lerp(a->stars, b->stars, t));
+            ((wx_midv_t)AT(WX_MID_VECTOR))(mid, W.n_cloud_color, color);
+            ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_rim, m->rim_base * (1.0f - WX_NIGHT_RIM_DROP * k));
+            ((wx_mid_t)AT(WX_MID_SCALAR))(mid, W.n_whole_rim, m->whole_rim_base * (1.0f - WX_NIGHT_RIM_DROP * k));
+        }
     }
     /* Rain follows the incoming state once it is half way in. */
     rain = t >= 0.5f ? b->rain : a->rain;
