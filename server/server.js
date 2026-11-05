@@ -650,7 +650,7 @@ function showdownMatchResult(res, claim, body, userID) {
 // "W" you, "L" the rival, "D" no one). Only the next round counts, once.
 app.post('/api/showdown/round', (req, res) => {
   const body = bodyObject(req);
-  const ticket = tickets.peek({ userID: userFromRequest(req), ip: requestIp(req) });
+  const ticket = showdownTicket(req, body.nickname);
   if (!ticket || ticket.map !== SHOWDOWN.map) return res.status(409).json({ error: 'no-showdown' });
   const userID = ticket.userID;
   const round = parseInt(body.round, 10);
@@ -667,8 +667,22 @@ app.post('/api/showdown/round', (req, res) => {
 
 // Showdown: the HUD asks which round this match is and what the kit holds
 // (the pre-round panel). Only for a Showdown match that is being played.
+// The Showdown match a HUD request is about: by token, else the one Showdown
+// ticket from its address, else (players sharing an address) the one whose
+// account name the HUD sends.
+function showdownTicket(req, nickname) {
+  const userID = userFromRequest(req);
+  if (userID) return tickets.peek({ userID });
+  const ip = requestIp(req);
+  const mine = [...tickets.open.values()].filter((t) => t.ip === ip && t.map === SHOWDOWN.map);
+  if (mine.length <= 1) return mine[0] || null;
+  const nick = typeof nickname === 'string' ? nickname.trim().toLowerCase() : '';
+  const named = nick ? mine.filter((t) => String(usernameOf(t.userID) || '').toLowerCase() === nick) : [];
+  return named.length === 1 ? named[0] : null;
+}
+
 app.get('/api/showdown', (req, res) => {
-  const ticket = tickets.peek({ userID: userFromRequest(req), ip: requestIp(req) });
+  const ticket = showdownTicket(req, req.query && req.query.nickname);
   // The kits either way: on a shared address the ticket can't be told apart,
   // and the HUD then runs the series from the game's own round messages.
   if (!ticket || ticket.map !== SHOWDOWN.map) return res.json({ active: false, kit: showdownKit, kits: showdownKits });

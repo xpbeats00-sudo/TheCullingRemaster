@@ -80,7 +80,9 @@
   }
 
   function hide() {
-    if (root) root.className = "hidden";
+    if (!root) return;
+    root.className = "hidden";
+    if (window.RemasterOverlay) RemasterOverlay.close(root);
   }
 
   function card(series, title, note) {
@@ -118,8 +120,11 @@
     var note = series.forfeit ? "You left before the end: the series counts as lost."
       : series.won ? "You took " + series.wins + " rounds first." : "Your rival took " + series.losses + " rounds first.";
     var ui = card(series, title, note);
-    button(ui.buttons, "CLOSE", false, hide);
-    button(ui.buttons, "PLAY AGAIN", true, function () { hide(); queue(null, null); });
+    var items = [button(ui.buttons, "CLOSE", false, hide),
+      button(ui.buttons, "PLAY AGAIN", true, function () { hide(); queue(null, null); })];
+    // Escape / gamepad Back closes it, Select and the D-pad work its buttons
+    // (Friends.js's shared overlay stack).
+    if (window.RemasterOverlay) RemasterOverlay.open(root, { close: hide, items: items });
   }
 
   window.RemasterShowdown = {

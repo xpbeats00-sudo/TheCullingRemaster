@@ -274,6 +274,20 @@ const A = "steam:76561190000000801";
       await roundPost(1, "W");
     });
 
+    await test("another player's match from the same address doesn't hide the Showdown panel", async () => {
+      await queue();
+      const b = await srv.connect(await srv.login("steam:76561190000000802"));
+      sockets.push(b);
+      const lobby = next(b, "remaster-lobby");
+      b.emit("join-mm", { queueName: "ffa_jungle" });
+      await lobby;
+      await next(b, "match-ready");
+      const hud = (await srv.request("GET", "/api/showdown")).json;
+      assert.ok(hud.active && hud.series.round === 1, "the one Showdown ticket from this address");
+      assert.ok((await roundPost(1, "W")).json.counted);
+      b.close();
+    });
+
     await test("the HUD sees no Showdown in a normal match", async () => {
       const lobby = next(a, "remaster-lobby");
       a.emit("join-mm", { queueName: "ffa_jungle" });

@@ -91,7 +91,7 @@ test("a round won: banner, black, the round to the server once; the next round f
   p.say("SDR|E|1|1|0|W");
   p.say("SDR|E|1|1|0|W");
   p.flush();
-  assert.deepStrictEqual(p.posts, [{ round: 1, result: "W", wins: 1, losses: 0 }]);
+  assert.deepStrictEqual(p.posts, [{ round: 1, result: "W", wins: 1, losses: 0, nickname: "" }]);
   assert.strictEqual(p.doc.getElementById("sd-black").className, "on");
   assert.ok(p.doc.getElementById("sd-banner").textContent.indexOf("ROUND 1 WON") >= 0);
   p.say("SDR|S|2|1|0|3");
@@ -125,7 +125,7 @@ test("the series won: the last round message, then the stock VICTORY", () => {
   p.say("SDR|O|7|4|3|W");
   p.flush();
   assert.ok(p.doc.getElementById("sd-banner").textContent.indexOf("SHOWDOWN VICTORY") >= 0);
-  assert.deepStrictEqual(p.posts[p.posts.length - 1], { round: 7, result: "W", wins: 4, losses: 3 });
+  assert.deepStrictEqual(p.posts[p.posts.length - 1], { round: 7, result: "W", wins: 4, losses: 3, nickname: "" });
   p.g.SetDeathData({}, true);
   assert.deepStrictEqual(p.deaths, [true]);
 });

@@ -209,8 +209,13 @@
     };
   }
 
+  // Players sharing an address are told apart by their in-game name.
+  function nickname() {
+    return typeof matchData != "undefined" && matchData.playerName ? String(matchData.playerName) : "";
+  }
+
   function load(then) {
-    $.ajax({ type: "GET", url: API + "/showdown", dataType: "json", timeout: 8000,
+    $.ajax({ type: "GET", url: API + "/showdown?nickname=" + encodeURIComponent(nickname()), dataType: "json", timeout: 8000,
       success: function (state) {
         if (!state) return;
         if (state.kits) info.kits = state.kits;
@@ -231,7 +236,7 @@
     if (series.reported[round]) return;
     series.reported[round] = true;
     $.ajax({ type: "POST", url: API + "/showdown/round", contentType: "application/json", timeout: 8000,
-      data: JSON.stringify({ round: round, result: x, wins: series.wins, losses: series.losses }),
+      data: JSON.stringify({ round: round, result: x, wins: series.wins, losses: series.losses, nickname: nickname() }),
       error: function () { series.reported[round] = false; } });
   }
 
