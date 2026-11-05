@@ -120,6 +120,8 @@ try:
         exe[P.TRAIN_JUMP_AT:P.TRAIN_JUMP_AT + 2] = P.TRAIN_JUMP
         exe[P.TRAIN_CALL_AT:P.TRAIN_CALL_AT + len(P.TRAIN_CALL)] = P.TRAIN_CALL
         exe[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
+        exe[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] = P.DUO_HOOK
+        exe[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
         touch(game, mr.GAME_EXE, bytes(exe))
         touch(game, mr.SETTINGS_README_PATH, b"the install's own readme")
         release = os.path.join(tmp, "release")
