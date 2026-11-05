@@ -1186,6 +1186,8 @@ function startLocalMatch(socket, queue) {
     for (const id of p.members) {
       const s = socketsByUser.get(id);
       if (id === socket.userID || !s || !s.connected || presenceState(id) === 'match') continue;
+      // Duo is played in pairs: the leader and one party member.
+      if (mode === 'coop2' && group.length >= 2) break;
       group.push({ id, socket: s });
       s.emit('join-mm-group');
     }
@@ -1255,6 +1257,7 @@ function sendShowdown(socket, loginAt) {
 // What each player is doing, for their friends: menu, searching, lobby or
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
+const MATCH_PRESENCE_MS = 45 * 60 * 1000;
 const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning' };
 
 function usernameOf(userID) {
@@ -1282,7 +1285,10 @@ function setPresence(userID, state, extra = {}) {
 function statusOf(userID) {
   const s = socketsByUser.get(userID);
   const st = presence.get(userID);
-  const playing = tickets.peek({ userID });
+  const open = tickets.peek({ userID });
+  // A match runs 25 minutes at most: an older open ticket (alt-F4, crash) no
+  // longer shows the player as "In match".
+  const playing = open && Date.now() - open.startedAt < MATCH_PRESENCE_MS ? open : null;
   let state = 'offline';
   if (st && st.state === 'match' && playing) state = 'match';
   else if (s && s.connected) state = st ? st.state : 'menu';
@@ -1468,7 +1474,7 @@ io.on('connection', (socket) => {
     later(sendEntitlements, 2000);
     const loginAt = Date.now();
     later(() => sendShowdown(socket, loginAt), 1500);
-    friends.seen(userID);
+    if (usernameOf(userID)) friends.seen(userID);
     // The menu logging in means the game is back in the menu: a match the HUD
     // never reported (a crash) no longer keeps the player "In match", so a
     // party leader's queue includes them again. The ticket stays claimable.
@@ -1712,8 +1718,10 @@ io.on('connection', (socket) => {
     if (socket.userID && socketsByUser.get(socket.userID) === socket) {
       lobbies.leave(socket.userID);
       socketsByUser.delete(socket.userID);
-      friends.seen(socket.userID);
+      if (usernameOf(socket.userID)) friends.seen(socket.userID);
       notifyFriends(socket.userID);
+      // Offline with no match running: nothing to remember about them.
+      if (!tickets.peek({ userID: socket.userID })) presence.delete(socket.userID);
     }
   });
 });

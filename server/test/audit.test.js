@@ -54,6 +54,29 @@ async function waitUp(port) {
 }
 
 (async () => {
+  await test("a new ranked season archives the last one and starts fresh (rewards kept)", async () => {
+    const ranked = require("../ranked");
+    const s1 = ranked.seasonAt(Date.parse("2026-12-01T00:00:00Z"));
+    const s2 = ranked.seasonAt(Date.parse("2027-02-15T00:00:00Z"));
+    const s3 = ranked.seasonAt(Date.parse("2027-05-10T00:00:00Z"));
+    assert.deepStrictEqual([s1.id, s2.id, s3.id], ["S1", "S2", "S3"]);
+    assert.strictEqual(s2.start, "2027-02-01T00:00:00.000Z");
+    const p = { owned: [197001] };
+    const r = ranked.ensure(p, Date.parse("2026-12-01T00:00:00Z"));
+    Object.assign(r, { rating: 1350, mmr: 1390, matches: 30, wins: 6, peakRating: 1380, peakTier: "Hunter", tiersReached: { Hunter: true } });
+    const after = ranked.ensure(p, Date.parse("2027-02-15T00:00:00Z"));
+    assert.strictEqual(after.season, "S2");
+    assert.strictEqual(after.matches, 0);
+    assert.strictEqual(after.rating, ranked.CONFIG.startRating);
+    assert.ok(after.mmr > ranked.CONFIG.startRating && after.mmr < 1390, "MMR softly reset");
+    assert.deepStrictEqual(after.tiersReached, {});
+    assert.deepStrictEqual(after.past[0], { season: "S1", rating: 1350, peakRating: 1380, peakTier: "Hunter", matches: 30, wins: 6 });
+    assert.deepStrictEqual(p.owned, [197001], "rewards stay owned");
+    const summary = ranked.summary(p, Date.parse("2027-02-15T00:00:00Z"));
+    assert.strictEqual(summary.season.id, "S2");
+    assert.ok(summary.season.daysLeft > 0);
+  });
+
   const srv = startServer(8177);
   const sockets = [];
   try {
@@ -265,6 +288,43 @@ async function waitUp(port) {
       const profiles = acc.profiles();
       assert.strictEqual(profiles[two.userID].stats.kills, 1);
       assert.strictEqual(profiles[one.userID].stats.kills, 2);
+    });
+    await test("a party queuing Duo takes the leader and one member", async () => {
+      let n = 60;
+      const player = async (name) => {
+        const ip = "198.51.100." + (n++);
+        const reg = await request(8179, "POST", "/api/account/register",
+          { username: name, email: name.replace(/ /g, "") + "@example.com", password: "party pass" }, from(ip));
+        assert.strictEqual(reg.status, 200, JSON.stringify(reg.json));
+        await request(8179, "POST", "/api/account/play", {}, Object.assign({ Authorization: "Bearer " + reg.json.token }, from(ip)));
+        const game = await request(8179, "POST", "/api/login", { userid: reg.json.userID, authType: "steam" }, from(ip));
+        const io = require("socket.io-client");
+        const s = io("http://127.0.0.1:8179", { transports: ["websocket"], forceNew: true, forceNode: true, extraHeaders: from(ip) });
+        await next(s, "login_ready");
+        s.emit("login", { token: game.json.token });
+        await next(s, "auth-response");
+        return { name, s };
+      };
+      const act = (p, ev, msg) => { const r = next(p.s, "remaster-friend-result"); p.s.emit(ev, msg); return r; };
+      const L = await player("Duo Leader"), M1 = await player("Duo One"), M2 = await player("Duo Two");
+      for (const m of [M1, M2]) {
+        await act(L, "friend-request", { username: m.name });
+        await act(m, "friend-accept", { username: L.name });
+      }
+      for (const m of [M1, M2]) {
+        const inv = next(m.s, "remaster-party-invite");
+        await act(L, "party-invite", { username: m.name });
+        await act(m, "party-accept", { partyId: (await inv).partyId });
+      }
+      let pulled = 0;
+      for (const m of [M1, M2]) m.s.on("join-mm-group", () => pulled++);
+      const lobby = next(L.s, "remaster-lobby");
+      L.s.emit("join-mm", { queueName: "ffa_jungle_coop2" });
+      const l = await lobby;
+      await sleep(300);
+      assert.strictEqual(pulled, 1, "one member pulled in");
+      assert.ok(l.players.length <= 2);
+      for (const p of [L, M1, M2]) p.s.close();
     });
     console.log("all %d audit tests passed", passed);
   } catch (e) {
