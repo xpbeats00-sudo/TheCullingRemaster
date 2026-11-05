@@ -1,5 +1,8 @@
-"""Run the native module's Duo and Chokening code (showdown_rounds.c, compiled
-with the blob's own flags) against fake game objects (test_native_module.c).
+"""Run the native module's code (showdown_rounds.c, compiled
+with the blob's own flags) against fake game objects (test_native_module.c):
+Duo's team win, team sizes 2/3/4 (Trios, Quads) from the match URL, the
+teammates' HUD report, Showdown 1v1 and team Showdown (2v2, 3v3, 4v4), and
+the Chokening's kills.
 
 Needs the Visual Studio C++ tools (as build_showdown_rounds.py does).
 

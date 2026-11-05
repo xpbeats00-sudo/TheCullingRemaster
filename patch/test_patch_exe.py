@@ -19,6 +19,12 @@ P = patch_exe
 
 def stand_in(path):
     data = bytearray(max(P.CAP_AT + 16, P.SCORE_JG_AT + len(P.SCORE_JG), P.SCORE_STUB_AT + len(P.SCORE_STUB)))
+    stock_bytes(data)
+    open(path, "wb").write(data)
+
+
+def stock_bytes(data):
+    """The stock bytes fixes 1-4 and 6 look for."""
     data[P.CAP_AT:P.CAP_AT + 5] = bytes.fromhex("b810000000")
     data[P.SHA_GATE_AT:P.SHA_GATE_AT + 7] = P.SHA_GATE
     data[P.SHA_GATE_AT + 7:P.SHA_GATE_AT + 13] = P.SHA_JUMP
@@ -29,7 +35,6 @@ def stand_in(path):
     data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
     data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] = P.SCORE_JG
     data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] = P.SCORE_PAD
-    open(path, "wb").write(data)
 
 
 def check(path, rounds=False):
@@ -41,12 +46,14 @@ def check(path, rounds=False):
     assert data[gate:gate + 6] == b"\x90" * 6
     assert data[P.TRAIN_JUMP_AT:P.TRAIN_JUMP_AT + 2] == P.TRAIN_JUMP_NEW
     assert data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 5] == P.TRAIN_STUB
-    assert data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] == P.DUO_HOOK_NEW
+    hook = data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)]
+    # With the module the refresh keeps its mov and calls the module (fix 9), else fix 4's stub.
+    assert (hook[:4] == P.DUO_HOOK[:4] and P._module_hook(hook)) if rounds else hook == P.DUO_HOOK_NEW
     assert data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] == P.DUO_STUB
     assert data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] == P.SCORE_JG_NEW
     assert data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] == P.SCORE_STUB
     changed = [i for i in range(len(stock)) if stock[i] != data[i]]
-    duo = set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
+    duo = set() if rounds else set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
     duo |= {P.DUO_STUB_AT + i for i in range(len(P.DUO_STUB)) if P.DUO_STUB[i] != 0xCC}
     duo |= {P.SCORE_JG_AT + 2, P.SCORE_JG_AT + 3, P.SCORE_JG_AT + 4, P.SCORE_JG_AT + 5}  # the retargeted disp32
     duo |= {P.SCORE_STUB_AT + i for i in range(len(P.SCORE_STUB)) if P.SCORE_STUB[i] != 0xCC}
@@ -132,7 +139,9 @@ def blob_checks():
             # the rival's kit and the dropped items
             0x30A460, 0x267090, 0x268FA0, 0x27A810, 0x1336CA0, 0x50C510, 0x303D00, 0x3034E0,
             # the Chokening's user (fix 8)
-            0x1119150, 0x2494D0, 0x302980, 0x69C2A0}
+            0x1119150, 0x2494D0, 0x302980, 0x69C2A0,
+            # team sizes (fix 9): SetTeamNum, the scoreboard sort, the bot spawner, teammates' status
+            0x24E7E0, 0x243C80, 0x2320F0, 0x262D20, 0x2634C0, 0x28EE40, 0x28F9C0}
     assert want <= rvas, sorted(hex(x) for x in want - rvas)
     # The rival asks the player's pawn for the kit with the Showdown perk's bits.
     import make_showdown
@@ -221,6 +230,41 @@ def check_rounds_alone(path):
         pass
 
 
+def check_team_hook(path):
+    """Fix 9 on a stand-in with the real layout: the refresh keeps its mov and
+    calls sd_teams, the bot spawner's call leads to sd_spawn_bots; an older
+    build (fix 4's stub called from the hook) is upgraded to the same bytes;
+    without the module the hook calls the stub again."""
+    data = bytearray(open(path, "rb").read())
+    stock_bytes(data)
+    open(path, "wb").write(data)
+    assert P.patch(path) is True
+    new = open(path, "rb").read()
+    sect = P.IMAGE_BASE + ROUNDS.SECTION_RVA
+    hook = new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8]
+    assert hook[:4] == P.DUO_HOOK[:4]
+    assert 0x140203B3D + 5 + struct.unpack_from("<i", hook, 4)[0] == sect + ROUNDS.SD_TEAMS
+    bots = new[0x23290D:0x23290D + 5]
+    assert bots[:1] == b"\xe8" and 0x14023330D + 5 + struct.unpack_from("<i", bots, 1)[0] == sect + ROUNDS.SD_SPAWN_BOTS
+    assert P.patch(path) is False, "running it again changes nothing"
+    old = bytearray(new)
+    old[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] = P.DUO_HOOK_NEW            # an older build: fix 4's stub
+    old[0x23290D:0x23290D + 5] = bytes.fromhex("e8deedffff")       # and the stock bot spawner call
+    old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF                          # and an older module
+    open(path, "wb").write(old)
+    assert P.patch(path) is True and open(path, "rb").read() == new, "an older build is upgraded"
+    assert P.patch(path, rounds=False) is True
+    assert open(path, "rb").read()[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] == P.DUO_HOOK_NEW, "no module: the stub"
+    bad = bytearray(new)
+    bad[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] = bytes.fromhex("488bc8e800000000")   # a call elsewhere
+    open(path, "wb").write(bad)
+    try:
+        P.patch(path)
+        raise AssertionError("a foreign refresh call was accepted")
+    except ValueError:
+        pass
+
+
 def real_checks(path):
     """The patched real exe still parses, the new section maps the module,
     and the vtable slot keeps its base relocation."""
@@ -262,8 +306,13 @@ try:
     rounds_stand_in(rs)
     check_rounds_alone(rs)
     os.remove(rs)
+    rounds_stand_in(rs)
+    check_team_hook(rs)
+    os.remove(rs)
     print("ok    native module: new section; vtable slot 282, RandomIntegerInRange, the spawn-with, rating and gas "
           "calls lead to the module; idempotent, replaces an older module, refuses other exes")
+    print("ok    team sizes: the refresh calls sd_teams (mov kept), the bot spawner sd_spawn_bots; an older "
+          "build's stub hook is upgraded; without the module the stub again; a foreign call is refused")
 
     if len(sys.argv) > 1:
         real = os.path.join(tmp, "Real.exe")
