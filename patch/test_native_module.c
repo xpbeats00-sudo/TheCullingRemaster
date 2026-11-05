@@ -700,6 +700,53 @@ static void test_team_hud(void)
     sd_should_end(sgm);
     CHECK(!*last_message("TMS|"));
     printf("ok    Quads HUD: two teammates beyond the panel; no HUD, no message\n");
+
+    /* The team summary, once a match: who is on your team, by TeamNumber. */
+    showdown_setup(6, 2, "?TeamSize=3");
+    nmessages = 0;
+    refresh(sgs);
+    sd_should_end(sgm);
+    CHECK(!strcmp(last_message("Your team"), "Your team of 3: Bot|1, Bot|2"));
+    sd_should_end(sgm);
+    CHECK(nmessages == 3);                                               /* TMS twice, the summary once */
+    showdown_setup(8, 2, "?TeamSize=4");
+    nmessages = 0;
+    refresh(sgs);
+    sd_should_end(sgm);
+    CHECK(!strcmp(last_message("Your team"), "Your team of 4: Bot|1, Bot|2, Bot|3"));
+    showdown_setup(4, 2, 0);                                             /* Duo: the stub's pair */
+    nmessages = 0;
+    refresh(sgs);
+    sd_should_end(sgm);
+    CHECK(!strcmp(last_message("Your team"), "Your team of 2: Bot|1"));
+    CHECK(!*last_message("TMS|"));
+    /* Trios whose teams stayed pairs (the in-game failure this tells apart). */
+    showdown_setup(6, 2, "?TeamSize=3");
+    nmessages = 0;
+    {
+        int k;
+        for (k = 0; k < 6; k++) F(fps[k], 0x490, i32) = k / 2 + 1;
+    }
+    sd_should_end(sgm);
+    CHECK(!strcmp(last_message("Your team"), "Your team of 3: Bot|1"));
+    /* Too early, then no team at all by 10 s. */
+    showdown_setup(6, 2, "?TeamSize=3");
+    nmessages = 0;
+    F(sgs, 0x4e8, i32) = 2;
+    sd_should_end(sgm);
+    CHECK(!*last_message("Your team"));
+    F(sgs, 0x4e8, i32) = 5;
+    sd_should_end(sgm);
+    CHECK(!*last_message("Your team"));                                  /* no team yet: wait */
+    F(sgs, 0x4e8, i32) = 10;
+    sd_should_end(sgm);
+    CHECK(!strcmp(last_message("Your team"), "Your team of 3: no team"));
+    /* Solo and Showdown never. */
+    showdown_setup(2, 3, 0);
+    nmessages = 0;
+    sd_should_end(sgm);
+    CHECK(!*last_message("Your team"));
+    printf("ok    team summary once a match: \"Your team of N: names\" (Duo, Trios, Quads; pairs, no team)\n");
 }
 
 /* ---------------------------------------------------------------- Chokening */

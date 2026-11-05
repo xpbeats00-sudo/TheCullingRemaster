@@ -2431,6 +2431,7 @@ function RemasterShowExtraMates()
 
 function RemasterTeamStatus(message)
 {
+	console.log("Remaster teammates: " + message);		// in-game check of the report (game log)
 	var f = message.split("|");
 	var n = parseInt(f[1], 10) || 0;
 	var alive = 0, i;

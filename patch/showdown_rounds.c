@@ -653,6 +653,56 @@ static void report_mates(u8 *gm, u8 *world)
     send(pc, at);
 }
 
+/* Once a match, a few seconds in, a team match (Duo, Trios, Quads) says who is
+   on your team as an ordinary game message: "Your team of <N>: <names>" -
+   N the team size the module read from the URL, the names every contestant
+   with your TeamNumber, in PlayerArray order (alive or not). It is also the
+   in-game check of each link: no message means the module's HUD messages
+   don't arrive (or you have no team); "of 2" in Trios means ?TeamSize= wasn't
+   read; "of 3" with one name means the teams stayed pairs. */
+#define ANNOUNCE_AFTER   3          /* seconds InProgress */
+#define ANNOUNCE_LATEST  10         /* ... and at the latest, even with no team */
+static struct { u8 *gm; i32 done; } A;
+
+static void put_str(i32 *at, const char *s) { while (*s) put(at, (u16)*s++); }
+
+static void announce_team(u8 *gm, u8 *world, i32 size)
+{
+    u8 *list = world + W_CONTROLLERS, *gs = FIELD(gm, GM_GAMESTATE, u8 *), *pc = 0, *me, **players;
+    i32 i, j, n, at = 0, num = FIELD(list, 8, i32), team, elapsed, names = 0;
+    if (A.gm != gm) { A.gm = gm; A.done = 0; }
+    if (A.done || !gs) return;
+    elapsed = FIELD(gs, GS_ELAPSED, i32);
+    if (elapsed < ANNOUNCE_AFTER) return;
+    for (i = 0; i < num && !pc; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC)) pc = c;
+    }
+    if (!pc) return;
+    me = FIELD(pc, C_PLAYERSTATE, u8 *);
+    team = is_a(me, R_CLS_PS) ? FIELD(me, PS_TEAM, i32) : 0;
+    if (team <= 0 && elapsed < ANNOUNCE_LATEST) return;
+    A.done = 1;
+    put_str(&at, "Your team of ");
+    put_int(&at, size);
+    put_str(&at, ":");
+    players = FIELD(gs, GS_PLAYERS, u8 **);
+    n = FIELD(gs, GS_NUM_PLAYERS, i32);
+    for (i = 0; team > 0 && i < n && names < MAX_TEAM; i++) {
+        u8 *ps = players[i];
+        FString *name;
+        if (!ps || ps == me || FIELD(ps, PS_TEAM, i32) != team) continue;
+        put_str(&at, names ? ", " : " ");
+        name = (FString *)(ps + PS_NAME);
+        for (j = 0; name->data && j < name->num && j < NAME_CHARS && name->data[j]; j++)
+            put(&at, name->data[j]);
+        names++;
+    }
+    if (!names) put_str(&at, team > 0 ? " no teammates" : " no team");
+    put(&at, 0);
+    send(pc, at);
+}
+
 /* ---------------------------------------------------------------- Duo: a team's win */
 
 /* The stock check (VA 0x140244d30) knows teams only when the world's net mode
@@ -823,7 +873,11 @@ char sd_should_end(u8 *gm)
     weather_tick(gm);
     if (C.n) sweep();
     if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) {
-        if (team_size(gm, CLASSIC_TEAMS) > DUO && (world = world_of(gm)) != 0) report_mates(gm, world);
+        if ((world = world_of(gm)) != 0) {
+            teams = team_size(gm, CLASSIC_TEAMS);
+            if (teams > DUO) report_mates(gm, world);
+            announce_team(gm, world, teams);
+        }
         return duo_should_end(gm);
     }
     if (!gm || FIELD(gm, GM_TYPE, u8) != LIGHTNING) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);

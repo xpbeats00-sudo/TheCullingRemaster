@@ -46,6 +46,22 @@ PARTIAL.
     current bytes; `test_patch_exe.py` asserts the hook site and stub, and
     `test_native_module.py` runs the stub-then-`sd_teams` path for Duo URLs.
     New pin: PATCHED_SHA256 `574bec67b8cda1ce8d26c1675d17d4d907fb25efb0fad56f12ae5955361738d8`, then `04024dcee5f1d979c219033331e7173225b0a5443430905fb8fad7830cb57e97` with the weather crash and night-cloud fixes (weather.c).
+  - **In-game, 574bec67: Duo PASS, Trios FAIL** (one teammate panel). Static
+    review again found no defect (World +0xf0 AuthorityGameMode, GameMode
+    +0x400 OptionsString, PC +0x490 MyHUD, World +0x178/+0x198 lists, the
+    PlayerState bits, HUD +0x658 all re-derived from stock code; CoopRanked's
+    native parent is AShooterGame_FreeForAll, so slot 282 runs; no Blueprint
+    calls SetTeamNum). Both failures fit "the module's own team assignment
+    doesn't take effect" (Trios then stays in the stub's pairs, so there is
+    no second teammate to report), but the cause isn't visible statically.
+    So the module now says once per team match, ~3 s in, as an ordinary game
+    message: **"Your team of N: names"**. Reading it in game:
+    no message = the module's HUD messages don't arrive (or no team by 10 s:
+    "of N: no team"); "of 2" in Trios = `?TeamSize=` wasn't read from the
+    URL; "of 3: one name" = the teams stayed pairs; "of 3: two names" with
+    one panel = the `TMS|` report or the panel fails (hud.js now logs every
+    report: "Remaster teammates: TMS|..." in the game log). Pin
+    `af04c6e874bd6a23299b4f0202765372b99501642ff07ab7d3999d0458cb5c23`.
 - 24 contestants divide by 2, 3 and 4. Teams are by PlayerArray index; you
   join first, so you are on team 1 with the next N - 1 contestants.
 
