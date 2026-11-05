@@ -289,7 +289,9 @@ async function waitUp(port) {
       assert.strictEqual(profiles[two.userID].stats.kills, 1);
       assert.strictEqual(profiles[one.userID].stats.kills, 2);
     });
-    await test("a party queuing Duo takes the leader and one member", async () => {
+    // Was: Duo took the leader and one member, silently leaving the third
+    // behind (who then queued alone). A party is one unit now: refused.
+    await test("a party of three queuing Duo is refused, nobody is pulled in", async () => {
       let n = 60;
       const player = async (name) => {
         const ip = "198.51.100." + (n++);
@@ -318,12 +320,11 @@ async function waitUp(port) {
       }
       let pulled = 0;
       for (const m of [M1, M2]) m.s.on("join-mm-group", () => pulled++);
-      const lobby = next(L.s, "remaster-lobby");
+      const fail = next(L.s, "join-mm-fail");
       L.s.emit("join-mm", { queueName: "ffa_jungle_coop2" });
-      const l = await lobby;
+      assert.strictEqual((await fail).reason, "party-too-large");
       await sleep(300);
-      assert.strictEqual(pulled, 1, "one member pulled in");
-      assert.ok(l.players.length <= 2);
+      assert.strictEqual(pulled, 0, "no member pulled in");
       for (const p of [L, M1, M2]) p.s.close();
     });
     console.log("all %d audit tests passed", passed);

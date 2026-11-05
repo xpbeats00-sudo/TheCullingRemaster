@@ -1380,8 +1380,10 @@ function BindClientwebEvents(deferred) {
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
   });
-  socketConnection.on("join-mm-group", function () {
+  socketConnection.on("join-mm-group", function (msg) {
       console.log("Group leader just queued us!");
+      // Remaster: the leader's queue, so this menu shows the party's mode.
+      if (msg && typeof msg.queueName == "string") Matchmaking.LastQueue = msg.queueName;
       Matchmaking.LeaveRequested = false;
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
@@ -1393,10 +1395,12 @@ function BindClientwebEvents(deferred) {
       Matchmaking.SetMatchmaking(false);
       StoppedMatchmaking();
   });
-  socketConnection.on("leave-mm-group", function () {
-      console.log("Group leader has removed us from matchmaking!");
+  socketConnection.on("leave-mm-group", function (msg) {
+      console.log("Party left matchmaking: " + (msg && msg.reason ? msg.reason : "leader cancelled"));
       Matchmaking.SetMatchmaking(false);
       StoppedMatchmaking();
+      // Remaster: why the party's search stopped (a member cancelled or disconnected).
+      if (msg && msg.message && window.RemasterLobby && window.RemasterLobby.notice) window.RemasterLobby.notice(msg.message);
   });
   socketConnection.on("leave-mm-fail", function (msg) {
       console.log("Failed to leave matchmaking.  Error: " + msg.reason);
@@ -1406,7 +1410,8 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("join-mm-fail", function (msg) {
       console.error("Server says join matchmaking failed: " + msg.reason);
-      ShowError("Matchmaking failed: " + msg.reason);
+      // Remaster: the server says why in words (party not ready, mode not playable yet...).
+      ShowError(msg && msg.message ? msg.message : "Matchmaking failed: " + msg.reason);
       Matchmaking.SetMatchmaking(false);
       StoppedMatchmaking();
   });
@@ -1780,6 +1785,10 @@ function BindClientwebEvents(deferred) {
   // Remaster: who is in the matchmaking lobby (MatchLobby.js).
   socketConnection.on("remaster-lobby", function (msg) {
     if (window.RemasterLobby && Matchmaking.IsMatchmaking) window.RemasterLobby.show(msg);
+  });
+  // Remaster: a party change the player should know about (a member offline too long left it).
+  socketConnection.on("remaster-party-notice", function (msg) {
+    if (msg && msg.message && window.RemasterLobby && window.RemasterLobby.notice) window.RemasterLobby.notice(msg.message);
   });
   // Remaster: the Showdown series - the next round, or the final score (Showdown.js).
   socketConnection.on("remaster-showdown", function (msg) {
