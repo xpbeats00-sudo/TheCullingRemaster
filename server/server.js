@@ -34,11 +34,17 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 // (0 = Jungle / "The Island", 1 = Prison).
 // The two offline matches the game can start (DefaultGame.ini OfflineMap /
 // OfflineMap2): the lobby's map vote picks one.
-const MAPS = { jungle: 0, prison: 1 };
+// With CULLING_NIGHT_MAPS=1 the vote also offers the night maps (2 Jungle
+// Night, 3 Prison Night; patch/make_weather.py), which open by URL with their
+// weather (server/weather.js).
+const weather = require('./weather');
+const WEATHER = weather.settings();
+const MAPS = weather.maps(WEATHER);
 // Contestants the game places on each map with patch_exe.py's 24 cap: Jungle
 // has 24 player starts. Prison has 16, and whether more than 16 spawn there
-// hasn't been measured, so it is scored as 16 (never more than it has).
-const FIELD_BY_MAP = { jungle: 24, prison: 16 };
+// hasn't been measured, so it is scored as 16 (never more than it has). The
+// night maps are copies of the day ones.
+const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // Showdown (patch/make_showdown.py): you against one rival in the Jungle centre
 // arena. No lobby or map vote; the menu starts it from "showdown:<format>".
 // Rounds: first to 4 (ShowdownSeries), all in one match with the patched exe
@@ -1164,7 +1170,10 @@ function lobbyCard(userID) {
 // playlist, the map as the player's first vote.
 function lobbyQueue(raw) {
   const r = playlists.resolve(raw);
-  return { mode: r.playlist.id, map: r.map };
+  let map = r.map;
+  // A night map (CULLING_NIGHT_MAPS=1, server/weather.js) is asked for by name.
+  if (map && /night/i.test(r.queue) && MAPS[map + '-night'] !== undefined) map += '-night';
+  return { mode: r.playlist.id, map };
 }
 
 // The team modes: the team size, and the prefix of the match the menu opens
@@ -1259,7 +1268,8 @@ function watchPartyOffline(userID) {
 // request that can't be met is refused, with the reason, before anyone moves.
 function startLocalMatch(socket, raw) {
   const userID = socket.userID;
-  const { queue: q, playlist, map } = playlists.resolve(raw);
+  const { queue: q, playlist } = playlists.resolve(raw);
+  const { map } = lobbyQueue(raw);      // the first vote (a night map by name when offered)
   const mode = playlist.id;
   const p = friends.party(userID);
   const size = p ? p.members.length : 1;
@@ -1407,10 +1417,16 @@ function launchMatch(socket, queue, map, shared = {}) {
     partyId: shared.partyId || null
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode });
+  // Night maps and weather: the map's URL with the match's weather preset and
+  // seed ("map:<solo|duo>:<index>[?TeamSize=N]?Weather=..."); otherwise the
+  // stock answers (offline:, duo:, trio:, quad:<map>).
+  const sky = showdown ? null : weather.weatherFor(WEATHER, map);
+  const answer = showdown ? 'showdown:' + SHOWDOWN.format
+    : weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, team, sky);
   log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
-    'match', matchId, shared.partyId ? 'party ' + shared.partyId : '');
+    'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (team ? team.start : 'offline:') + mapIndex,
+    gameServer: answer,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex'),
     // The shared record. Each player's match still runs on their own PC with

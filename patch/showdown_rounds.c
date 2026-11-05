@@ -805,6 +805,8 @@ u8 *sd_gas_instigator(u8 *wound)
     return by;
 }
 
+#include "weather.c"            /* weather over a match (weather_tick) */
+
 char sd_should_end(u8 *gm)
 {
     u8 *world;
@@ -812,6 +814,7 @@ char sd_should_end(u8 *gm)
     i32 teams;
     u16 x;
     B = base();
+    weather_tick(gm);
     if (C.n) sweep();
     if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) {
         if (team_size(gm, CLASSIC_TEAMS) > DUO && (world = world_of(gm)) != 0) report_mates(gm, world);
