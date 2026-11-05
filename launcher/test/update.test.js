@@ -405,6 +405,43 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(events.find(([ev]) => ev === "download")[1].files, 1, "the log counts downloaded files");
     });
 
+    await test("orphaned downloads are deleted: by planning against the release, and after a commit", async () => {
+      const r = path.join(tmp, "orphans");
+      const st = (p) => path.join(r, ".remaster", "staging", ...p.split("/"));
+      const orphan = () => {
+        fs.mkdirSync(path.dirname(st("Victory/old/x.pak")), { recursive: true });
+        fs.writeFileSync(st("Victory/gone.bin.part"), Buffer.alloc(5000, 1));       // a paused download of an older release
+        fs.writeFileSync(st("Victory/gone.bin.part.json"), "{}");
+        fs.writeFileSync(st("Victory/old/x.pak"), Buffer.alloc(3000, 2));
+      };
+      release("orph", "1", { "Victory/a.txt": Buffer.from("aaa"), "Victory/keep.part": Buffer.from("a file really named .part") });
+      fs.mkdirSync(path.dirname(st("Victory/old/x.pak")), { recursive: true });
+      orphan();
+      assert.ok(sync.stagedBytes(r) >= 8000);
+      await sync.plan(await get("orph"), r);
+      assert.strictEqual(sync.stagedBytes(r), 0, "nothing the release needs: nothing reads as a paused download");
+      assert.ok(!fs.existsSync(st("Victory/gone.bin.part")) && !fs.existsSync(st("Victory/old/x.pak")));
+      fs.mkdirSync(path.dirname(st("Victory/old/x.pak")), { recursive: true });
+      orphan();
+      // Downloads of files the release does have are kept for the resume...
+      fs.writeFileSync(st("Victory/a.txt.part"), "a");
+      const m = await get("orph");
+      await sync.plan(m, r);
+      assert.ok(fs.existsSync(st("Victory/a.txt.part")), "a wanted partial download stays");
+      // ...and after the commit nothing is left in staging.
+      orphan();
+      await sync.apply(m, await sync.plan(m, r), r, () => {}, { retryDelayMs: 5 });
+      assert.strictEqual(sync.installedVersion(r), "1");
+      assert.ok(read(r, "Victory/keep.part").equals(Buffer.from("a file really named .part")));
+      assert.ok(!fs.existsSync(path.join(r, ".remaster", "staging")), "staging emptied after the commit");
+      assert.strictEqual(sync.stagedBytes(r), 0);
+      // A leftover download of a file that is now in place goes at the next check.
+      fs.mkdirSync(path.dirname(st("Victory/a.txt")), { recursive: true });
+      fs.writeFileSync(st("Victory/a.txt.part"), "aa");
+      assert.deepStrictEqual(await sync.plan(m, r), []);
+      assert.strictEqual(sync.stagedBytes(r), 0);
+    });
+
     await test("a corrupted state file is rebuilt by rehashing, nothing is downloaded again", async () => {
       const data = { "Victory/x.pak": Buffer.alloc(70000, 3), "Victory/y.ini": Buffer.from("y") };
       release("corrupt-state", "1", data);

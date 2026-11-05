@@ -314,6 +314,11 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
       // The first launchers downloaded next to the target: a leftover .part
       // beside a verified file is theirs.
       if (statOrNull(target + ".part")) fs.rmSync(target + ".part", { force: true });
+      // A download of this file left in staging is no longer needed.
+      if (state.staged[f.path] || statOrNull(stagedPath(gameRoot, f.path)) || statOrNull(stagedPath(gameRoot, f.path) + ".part")) {
+        dropStaged(gameRoot, f.path);
+        delete state.staged[f.path];
+      }
     } else {
       delete state.files[f.path];
       if (stat) report.changed++; else report.missing++;
@@ -330,10 +335,39 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
     }
     onProgress(++n, manifest.files.length);
   }
+  // Downloads of files this release doesn't have at all (a paused download of
+  // an older release) are dropped: they would only use disk space, and read
+  // as a paused download while the launcher is offline.
+  const wanted = new Set(manifest.files.map((f) => f.path));
+  pruneStaging(gameRoot, wanted);
+  for (const p of Object.keys(state.staged)) if (!wanted.has(p)) delete state.staged[p];
   // A fresh install's folder isn't created just by looking at it.
   if (fs.existsSync(gameRoot)) saveState(gameRoot, state);
   Object.defineProperty(todo, "report", { value: report, enumerable: false });
   return todo;
+}
+
+// A staged file and its partial download (.part, .part.json).
+function dropStaged(gameRoot, rel) {
+  const staged = stagedPath(gameRoot, rel);
+  for (const f of [staged, staged + ".part", staged + ".part.json"]) fs.rmSync(f, { force: true });
+}
+
+// Deletes staged and partial files whose path isn't in `wanted`.
+function pruneStaging(gameRoot, wanted) {
+  const root = path.join(stateDir(gameRoot), "staging");
+  if (!fs.existsSync(root)) return;
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = rel ? rel + "/" + e.name : e.name;
+      if (e.isDirectory()) { walk(path.join(dir, e.name), r); continue; }
+      if (!wanted.has(r) && !wanted.has(r.replace(/\.part(\.json)?$/, ""))) fs.rmSync(path.join(dir, e.name), { force: true });
+    }
+  };
+  walk(root, "");
+  removeEmptyDirs(root);
 }
 
 // Bytes of planned files already on disk: staged ones in full, partial
@@ -582,7 +616,9 @@ function finishCommit(gameRoot, state, journal, opts = {}) {
     pruneReplaced(gameRoot, journal, opts.replacedMax);
   }
   fs.rmSync(path.join(dir, JOURNAL_FILE), { force: true });
-  removeEmptyDirs(path.join(dir, "staging"));
+  // Every planned file is in place now: whatever is left in staging (partial
+  // downloads of files this release doesn't need) is of no use any more.
+  fs.rmSync(path.join(dir, "staging"), { recursive: true, force: true });
 }
 
 const safeReaddir = (dir) => { try { return fs.readdirSync(dir); } catch { return []; } };
