@@ -444,7 +444,10 @@ app.post('/api/matchqueue', (req, res) => {
     if (s && socketIp(s) === requestIp(req)) userID = claimed;
   }
   if (!userID) return res.status(401).json({ error: 'not-logged-in' });
-  const queue = queueName(body.queuename);
+  // Victory.exe posts "queueName" (form-encoded, camelCase); "queuename" is
+  // the older field name. Reading only the lowercase one turned every queue
+  // the game sent (Duo, Ranked, Showdown) into Solo.
+  const queue = queueName(body.queueName !== undefined ? body.queueName : body.queuename);
   log('matchqueue', userID, queue);
   res.json({ status: 'ok', queueName: queue });
   const socket = socketsByUser.get(userID);
