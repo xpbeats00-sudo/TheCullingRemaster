@@ -97,6 +97,8 @@ Load tests, all local (i7-14650HX, Node 24); the VPS hasn't been measured:
 
 Details: SERVER_PERFORMANCE_AUDIT.md.
 
-## Bot AI (draft PR #10)
-- **Asset values:** the stock values were confirmed before patching, and a test pak contains all 7 new values plus the 2 ini budgets.
-- **Behaviour in a real match:** not run.
+## Bot AI difficulty tiers (`patch/make_bot_ai.py`, replaces draft PR #10)
+- **`python patch/test_bot_ai.py <Paks>`:** PASS. 5 tiers, 121 patched packages, 222 values. Each package keeps its size, re-saves byte for byte, and keeps its stock name/import/export tables. Only the intended bytes differ, and every value reads back. The tiers are ordered, and `patch/src` holds one complete tier.
+- **Mutation check:** one stray byte, or a misordered tier, makes the test fail.
+- **Pak:** `make_pak.py` on `patch/src`; the AI entries read back identical.
+- **Behaviour in a real match:** not run (checklist in BOT_AI_FULL_OVERHAUL.md, section 8).
