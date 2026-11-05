@@ -3063,15 +3063,37 @@ engine.on("ShowHideSprintIcon", function(display){
 // XP display.
 var LOCAL_SERVER_URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
 var bLocalMatchResultSent = false;
+// A failed post (no answer, or the server erroring) is tried again after
+// these delays; a refusal (4xx: no match to pay, already paid) is not.
+var LOCAL_RESULT_RETRY_MS = [2000, 5000, 10000];
 
-function ReportLocalMatchResult(_deathData, bIsVictory)
+// One small line at the bottom of the end-of-match screens: how the result is doing.
+function ShowResultStatus(text, state)
 {
-	if (bLocalMatchResultSent) {
-		return;
+	var line = document.getElementById("remaster-result-status");
+	if (!line) {
+		line = document.createElement("div");
+		line.id = "remaster-result-status";
+		line.style.cssText = "position:absolute; bottom:3vh; left:50%; transform:translateX(-50%); z-index:1000;" +
+			" padding:0.6vh 1.4vw; border-radius:2vh; background:rgba(8,8,12,0.8); color:white;" +
+			" font-family:Sucrose-Bold; font-size:0.85vw; letter-spacing:0.08vw; white-space:nowrap; pointer-events:none;";
+		document.body.appendChild(line);
 	}
-	bLocalMatchResultSent = true;
+	clearTimeout(line.hideTimer);
+	line.textContent = text;
+	line.style.color = state == "bad" ? "rgba(255,120,110,1)" : state == "ok" ? "rgba(120,220,140,1)" : "white";
+	line.style.display = "";
+	if (state == "ok") {
+		line.hideTimer = setTimeout(function () { line.style.display = "none"; }, 8000);
+	}
+}
 
-	var result = {
+// The body the server's /api/matchresult reads. nickname is the player's
+// in-game name (their account username): the server uses it to find the
+// right match when several players share one address.
+function LocalMatchResultBody(_deathData, bIsVictory)
+{
+	return {
 		nickname: matchData.playerName,
 		victory: bIsVictory,
 		timeAlive: _deathData.TimeAlive,
@@ -3084,15 +3106,32 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 		// scores placements out of the contestants the map really has.
 		cap: 24
 	};
-	console.log("ReportLocalMatchResult: " + JSON.stringify(result));
+}
 
+function ReportLocalMatchResult(_deathData, bIsVictory)
+{
+	if (bLocalMatchResultSent) {
+		return;
+	}
+	bLocalMatchResultSent = true;
+
+	var result = LocalMatchResultBody(_deathData, bIsVictory);
+	console.log("ReportLocalMatchResult: " + JSON.stringify(result));
+	ShowResultStatus("Saving result...");
+	PostLocalMatchResult(result, _deathData, 0);
+}
+
+function PostLocalMatchResult(result, _deathData, attempt)
+{
 	$.ajax({
 		type: "POST",
 		url: LOCAL_SERVER_URL + "/matchresult",
 		contentType: "application/json",
 		data: JSON.stringify(result),
+		timeout: 10000,
 		success: function (body) {
 			var reply = typeof body == "string" ? JSON.parse(body) : body;
+			ShowResultStatus("Result saved", "ok");
 			var shownDeathData = $.extend({}, _deathData, { MatchStartXP: reply.startXP });
 			NotifyReceivedStatsUpdate(JSON.stringify({ data: reply.stats }), shownDeathData, true);
 			if (reply.ranked) {
@@ -3113,7 +3152,20 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 			});
 		},
 		error: function (jqXHR) {
-			console.log("ReportLocalMatchResult failed: " + jqXHR.status);
+			var status = jqXHR ? jqXHR.status : 0;
+			console.log("ReportLocalMatchResult failed (attempt " + (attempt + 1) + "): " + status);
+			if (status >= 400 && status < 500) {
+				// The server answered and won't take it (no open match for this
+				// player, or this match is already paid): trying again won't help.
+				ShowResultStatus("This match's result wasn't saved", "bad");
+				return;
+			}
+			if (attempt < LOCAL_RESULT_RETRY_MS.length) {
+				ShowResultStatus("Saving result...");
+				setTimeout(function () { PostLocalMatchResult(result, _deathData, attempt + 1); }, LOCAL_RESULT_RETRY_MS[attempt]);
+				return;
+			}
+			ShowResultStatus("Couldn't reach the server", "bad");
 			bLocalMatchResultSent = false;
 		}
 	});
