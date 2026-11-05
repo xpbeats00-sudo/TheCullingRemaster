@@ -14,6 +14,209 @@
 //   card, level and rank with the stats kept private.
 // The server pushes "remaster-friends" whenever anything here changes, so the
 // panel never polls. Self-contained: builds its own markup and styles.
+
+// ------------------------------------------------------------ overlay stack
+// The Remaster panels (friends, player card, leaderboard) sit over the stock
+// screens, and the stock screens get every engine key (gamepad, and the
+// keyboard keys the game binds) through ScreenHolder's OnButtonPressed. While
+// a panel is open the top one takes those keys instead: Back closes it,
+// Up/Down/Left/Right move a focus ring over its buttons and rows, Select clicks
+// the focused one, LT/RT page (the leaderboard's tabs), and nothing reaches the
+// screen underneath. A stock dialog (#ModalScreen) over the panels keeps the
+// keys. Escape and Enter can arrive twice for one press (as a keydown and as
+// the engine's Back/Select): whichever comes first acts, the other is dropped,
+// so Escape closes exactly one panel.
+//   RemasterOverlay.open(root, { close, items, page, submit, initial })
+//   RemasterOverlay.close(root), .top(), .isOpen(), .refresh(root)
+(function () {
+  if (window.RemasterOverlay) return;
+  var BTN = { select: 0, back: 1, lt: 6, rt: 7, up: 12, down: 13, left: 14, right: 15 };   // FrontEndConsts.js
+  var SAME_PRESS_MS = 300;
+  var stack = [];                          // { root, close, items, page, submit, focus }
+  var acted = { kind: "", by: "", t: 0 };   // the last Back/Select acted on, and by which path
+  var lastKey = { code: 0, t: 0 };          // the last keydown
+  var styled = false;
+
+  function now() { return new Date().getTime(); }
+
+  function style() {
+    if (styled) return;
+    styled = true;
+    var s = document.createElement("style");
+    s.textContent = [
+      // The stock footer (z 999) and player card (z 100) stay clickable over
+      // any panel otherwise: their Back would pop the screen under the panel.
+      "body.remaster-overlay-open #controls-footer, body.remaster-overlay-open #player-card { pointer-events: none !important; }",
+      ".ro-focus { box-shadow: 0 0 0 0.16vw rgba(255, 255, 255, 0.95) !important; }"
+    ].join("\n");
+    document.head.appendChild(s);
+  }
+
+  function find(root) {
+    for (var i = stack.length - 1; i >= 0; i--) if (stack[i].root === root) return i;
+    return -1;
+  }
+
+  function bodyClass() {
+    var c = document.body.className.replace(/\bremaster-overlay-open\b/g, "").replace(/^\s+|\s+$/g, "");
+    document.body.className = stack.length ? (c ? c + " " : "") + "remaster-overlay-open" : c;
+  }
+
+  function top() { return stack.length ? stack[stack.length - 1] : null; }
+
+  function modalOpen() { return typeof GetActiveModal == "function" && !!GetActiveModal(); }
+
+  // The panel's focusable parts that are showing, in order.
+  function list(entry) {
+    var all = entry.items ? entry.items() : [], out = [];
+    for (var i = 0; i < all.length; i++) if (all[i].offsetWidth || all[i].offsetHeight) out.push(all[i]);
+    return out;
+  }
+
+  function unmark(entry) {
+    var m = entry.root.querySelectorAll(".ro-focus");
+    for (var i = 0; i < m.length; i++) m[i].className = m[i].className.replace(/\s*\bro-focus\b/g, "");
+  }
+
+  function mark(entry, scroll) {
+    unmark(entry);
+    var items = list(entry);
+    if (entry.focus < 0 || !items.length) return null;
+    if (entry.focus >= items.length) entry.focus = items.length - 1;
+    var e = items[entry.focus];
+    e.className += " ro-focus";
+    if (scroll) {
+      if (e.scrollIntoViewIfNeeded) e.scrollIntoViewIfNeeded(false);
+      else if (e.scrollIntoView) e.scrollIntoView(false);
+    }
+    return e;
+  }
+
+  function gamepad() { return typeof FooterData != "undefined" && !!FooterData.bHasGamepad; }
+
+  function open(root, opts) {
+    style();
+    opts = opts || {};
+    var i = find(root), focus = -1;
+    if (i >= 0) { focus = stack[i].focus; stack.splice(i, 1); }
+    else if (gamepad()) focus = opts.initial || 0;
+    var entry = { root: root, close: opts.close, items: opts.items, page: opts.page, submit: opts.submit, focus: focus };
+    stack.push(entry);
+    // Over #player-card (z 100, earlier in the page) and any other open panel
+    // (later in the page wins at the same z), under #ModalScreen (z 101).
+    root.style.zIndex = 100;
+    if (root.parentNode !== document.body || document.body.lastChild !== root) document.body.appendChild(root);
+    bodyClass();
+    mark(entry, false);
+  }
+
+  function close(root) {
+    var i = find(root);
+    if (i < 0) return;
+    unmark(stack[i]);
+    stack.splice(i, 1);
+    bodyClass();
+  }
+
+  function refresh(root) {
+    var i = find(root);
+    if (i >= 0) mark(stack[i], false);
+  }
+
+  function click(e) {
+    var ev = document.createEvent("MouseEvents");
+    ev.initMouseEvent("click", true, true, window, 1, 0, 0, 0, 0, false, false, false, false, 0, null);
+    e.dispatchEvent(ev);
+  }
+
+  function isInput(e) { return e && (e.tagName == "INPUT" || e.tagName == "TEXTAREA"); }
+
+  function move(entry, d) {
+    var items = list(entry);
+    if (!items.length) return;
+    entry.focus = entry.focus < 0 ? (d > 0 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, entry.focus + d));
+    var e = mark(entry, true);
+    var a = document.activeElement;
+    if (isInput(a) && a !== e) a.blur();
+    if (isInput(e)) e.focus();
+  }
+
+  function activate(entry) {
+    var items = list(entry);
+    var e = entry.focus >= 0 ? items[entry.focus] : null;
+    if (!e) return move(entry, 1);
+    if (isInput(e)) { if (entry.submit) entry.submit(e); return; }
+    click(e);
+  }
+
+  // One press of Back or Select may come by both paths: act once.
+  function once(kind, by) {
+    var t = now();
+    if (acted.kind === kind && acted.by !== by && t - acted.t < SAME_PRESS_MS) return false;
+    acted = { kind: kind, by: by, t: t };
+    return true;
+  }
+
+  function back(entry) {
+    var c = entry.close;
+    if (c) c(); else close(entry.root);
+  }
+
+  // Engine keys (ScreenHolder's OnButtonPressed). true: the panel took it.
+  function handle(button) {
+    var entry = top();
+    if (button === BTN.back && !entry && acted.kind === "back" && acted.by === "key" && now() - acted.t < SAME_PRESS_MS) {
+      return true;                     // the Escape keydown already closed the last panel
+    }
+    if (!entry || modalOpen()) return false;
+    var a = document.activeElement;
+    var typing = isInput(a) && now() - lastKey.t < SAME_PRESS_MS;
+    if (button === BTN.back) {
+      if (once("back", "engine")) back(entry);
+    } else if (button === BTN.select) {
+      if (once("select", "engine")) activate(entry);
+    } else if (button === BTN.up || button === BTN.down || button === BTN.left || button === BTN.right) {
+      // Letters typed into a text field may be bound to movement too.
+      if (typing && (lastKey.code < 37 || lastKey.code > 40)) return true;
+      if (isInput(a) && (button === BTN.left || button === BTN.right)) return true;   // moves the caret
+      move(entry, button === BTN.up || button === BTN.left ? -1 : 1);
+    } else if (button === BTN.lt || button === BTN.rt) {
+      if (entry.page) { entry.page(button === BTN.lt ? -1 : 1); mark(entry, false); }
+    }
+    return true;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    lastKey = { code: e.keyCode, t: now() };
+    if (e.keyCode !== 27 && e.keyCode !== 13) return;
+    var entry = top();
+    if (e.keyCode === 27) {
+      if (!once("back", "key")) { e.stopPropagation(); return; }
+      if (!entry || modalOpen()) { acted.kind = ""; return; }
+      e.stopPropagation();
+      e.preventDefault();
+      back(entry);
+      return;
+    }
+    // Enter: a text field handles its own; otherwise click the focused part.
+    if (!entry || modalOpen()) return;
+    if (!once("select", "key")) { e.stopPropagation(); return; }
+    if (isInput(e.target)) return;
+    if (entry.focus >= 0) { e.stopPropagation(); activate(entry); }
+  }, true);
+
+  if (typeof OnButtonPressed == "function") {
+    var stockPressed = OnButtonPressed;
+    window.OnButtonPressed = function (button) {
+      if (handle(button)) return;
+      return stockPressed.apply(this, arguments);
+    };
+  }
+
+  window.RemasterOverlay = { open: open, close: close, top: top, refresh: refresh, handle: handle,
+    isOpen: function () { return stack.length > 0; } };
+})();
+
 (function () {
   var TIERS = ["Scrapper", "Contender", "Blooded", "Hunter", "Executioner", "Reaper", "Warlord", "Apex", "Legend"];
   var ERRORS = {
@@ -34,8 +237,8 @@
   };
   var CSS = [
     "#remaster-friends, #remaster-card { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
-    "#remaster-friends { z-index: 50; }",
-    "#remaster-card { z-index: 60; }",
+    // z-index 100 (RemasterOverlay sets it when shown): over the stock player card.
+    "#remaster-friends, #remaster-card { z-index: 100; }",
     "#remaster-friends.hidden, #remaster-card.hidden, #remaster-party-toast.hidden { display: none; }",
     ".rf-panel { position: relative; display: flex; flex-direction: column; width: 36vw; height: 84vh; padding: 2.4vh 1.6vw; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     ".rf-close { position: absolute; right: 1.2vw; top: 1.6vh; width: 2.2vw; height: 2.2vw; line-height: 2.2vw; text-align: center; border-radius: 50%; font: 1.1vw Sucrose-Bold, Arial, sans-serif; background: rgba(255, 255, 255, 0.1); cursor: pointer; }",
@@ -302,6 +505,7 @@
       list.appendChild(r);
     });
     box.scrollTop = top;
+    if (window.RemasterOverlay) RemasterOverlay.refresh(panel);
   }
 
   function buildPanel() {
@@ -320,28 +524,50 @@
       emit("friend-request", { username: name });
     }
     button(p.querySelector(".rf-add"), "Add friend", "big", add);
+    panel.addFriend = add;
     input.addEventListener("keydown", function (e) {
-      e.stopPropagation();          // typing here isn't a menu shortcut
+      e.stopPropagation();          // typing here isn't a menu shortcut (Escape: RemasterOverlay)
       if (e.keyCode === 13) add();
-      if (e.keyCode === 27) close();
     });
     p.querySelector(".rf-close").addEventListener("click", close);
     panel.addEventListener("click", function (e) { if (e.target === panel) close(); });
     return panel;
   }
 
+  // What the gamepad focus ring moves over: the add field, the lists (rows
+  // and their buttons, in order), then the close button.
+  function panelItems() {
+    var out = [], parts = [".rf-add input", ".rf-add .rf-btn"], i, n;
+    for (i = 0; i < parts.length; i++) { n = panel.querySelector(parts[i]); if (n) out.push(n); }
+    n = panel.querySelectorAll(".rf-scroll .rf-row.clickable, .rf-scroll .rf-btn");
+    for (i = 0; i < n.length; i++) out.push(n[i]);
+    out.push(panel.querySelector(".rf-close"));
+    return out;
+  }
+
   function open() {
     buildPanel().className = "";
     removing = null;
+    hideInvite();                   // the panel lists the invite too
     say(message.text, message.ok);
     renderPanel();
+    // With a gamepad, start on a waiting party invite's Join, else the add field.
+    var start = 0;
+    if (data && data.invites && data.invites.length) {
+      var items = panelItems(), join = panel.querySelector(".rf-scroll .rf-btn");
+      for (var i = 0; i < items.length; i++) if (items[i] === join) start = i;
+    }
+    if (window.RemasterOverlay) RemasterOverlay.open(panel, { close: close, items: panelItems, initial: start,
+      submit: function () { panel.addFriend(); } });
     emit("friends-get");
-    try { panel.querySelector("input").focus(); } catch (e) { /* no focus */ }
+    var gamepad = typeof FooterData != "undefined" && FooterData.bHasGamepad;
+    if (!gamepad || !start) { try { panel.querySelector("input").focus(); } catch (e) { /* no focus */ } }
   }
 
   function close() {
     if (panel) panel.className = "hidden";
     removing = null;
+    if (window.RemasterOverlay) RemasterOverlay.close(panel);
   }
 
   // The main menu's FRIENDS item: how many requests and invites wait.
@@ -392,15 +618,20 @@
     style();
     cardRoot = overlay("remaster-card");
     cardRoot.addEventListener("click", function (e) { if (e.target === cardRoot) closeCard(); });
-    document.addEventListener("keydown", function (e) {
-      if (e.keyCode !== 27) return;
-      if (cardRoot && cardRoot.className !== "hidden") closeCard();
-      else if (panel && panel.className !== "hidden") close();
-    });
+    // Escape and the gamepad's Back close it: RemasterOverlay.
     return cardRoot;
   }
 
-  function closeCard() { if (cardRoot) cardRoot.className = "hidden"; }
+  function closeCard() {
+    if (cardRoot) cardRoot.className = "hidden";
+    if (window.RemasterOverlay) RemasterOverlay.close(cardRoot);
+  }
+
+  function cardItems() {
+    var out = [], n = cardRoot.querySelectorAll(".rc-buttons .rf-btn");
+    for (var i = 0; i < n.length; i++) out.push(n[i]);
+    return out;
+  }
 
   // c: the server's card (found) or what the lobby row knew (name, level, rank).
   function renderCard(c, full) {
@@ -483,6 +714,7 @@
     body.appendChild(buttons);
     root.appendChild(p);
     root.className = "";
+    if (window.RemasterOverlay) RemasterOverlay.open(root, { close: closeCard, items: cardItems });
   }
 
   // Opens a player's card. who: { username, level, rank, cardID } as a list

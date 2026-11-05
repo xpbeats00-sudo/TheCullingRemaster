@@ -19,7 +19,7 @@
   };
   var ORDER = ["ranked", "wins", "kills", "kd", "showdown", "time"];
   var CSS = [
-    "#remaster-leaderboard { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
+    "#remaster-leaderboard { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 100; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
     "#remaster-leaderboard.hidden { display: none; }",
     ".rl-panel { position: relative; display: flex; flex-direction: column; width: 46vw; height: 86vh; padding: 2.4vh 1.6vw 2vh; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     ".rl-close { position: absolute; right: 1.2vw; top: 1.6vh; width: 2.2vw; height: 2.2vw; text-align: center; border-radius: 50%; font: 1.1vw Sucrose-Bold, Arial, sans-serif; line-height: 2.2vw; background: rgba(255, 255, 255, 0.1); cursor: pointer; }",
@@ -161,6 +161,11 @@
   }
 
   function render() {
+    draw();
+    if (panel && window.RemasterOverlay) RemasterOverlay.refresh(panel);   // the focus ring on the new rows
+  }
+
+  function draw() {
     if (!panel || panel.className === "hidden") return;
     var tabs = panel.querySelectorAll(".rl-tab");
     for (var i = 0; i < tabs.length; i++) tabs[i].className = "rl-tab" + (tabs[i].getAttribute("data-board") === board ? " on" : "");
@@ -218,14 +223,25 @@
     document.body.appendChild(panel);
     p.querySelector(".rl-close").addEventListener("click", close);
     panel.addEventListener("click", function (e) { if (e.target === panel) close(); });
-    // Escape closes a player card first (Friends.js), then this panel.
-    document.addEventListener("keydown", function (e) {
-      if (e.keyCode !== 27 || !panel || panel.className === "hidden") return;
-      var card = document.getElementById("remaster-card");
-      if (card && card.className !== "hidden") return;
-      close();
-    }, true);
+    // Escape and the gamepad's Back close a player card first, then this
+    // panel: RemasterOverlay (Friends.js).
     return panel;
+  }
+
+  // What the gamepad focus ring moves over: the tabs, the rows, your row, close.
+  function items() {
+    var out = [], n = panel.querySelectorAll(".rl-tab, .rl-scroll .rl-row, .rl-yours .rl-row");
+    for (var i = 0; i < n.length; i++) out.push(n[i]);
+    out.push(panel.querySelector(".rl-close"));
+    return out;
+  }
+
+  // LT/RT: the previous or next board.
+  function page(d) {
+    var i = ORDER.indexOf(board) + d;
+    if (i < 0 || i >= ORDER.length) return;
+    board = ORDER[i];
+    render();
   }
 
   function ask() {
@@ -238,6 +254,8 @@
 
   function open() {
     buildPanel().className = "";
+    if (window.RemasterOverlay) RemasterOverlay.open(panel, { close: close, items: items, page: page,
+      initial: ORDER.indexOf(board) });
     render();
     ask();
   }
@@ -245,6 +263,7 @@
   function close() {
     if (panel) panel.className = "hidden";
     clearTimeout(retry);
+    if (window.RemasterOverlay) RemasterOverlay.close(panel);
   }
 
   function on(msg) {
