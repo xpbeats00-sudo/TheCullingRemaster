@@ -591,12 +591,15 @@ u8 *sd_gas_instigator(u8 *wound)
     return by;
 }
 
+#include "weather.c"            /* weather over a match (weather_tick) */
+
 char sd_should_end(u8 *gm)
 {
     u8 *world;
     Count n;
     u16 x;
     B = base();
+    weather_tick(gm);
     if (C.n) sweep();
     if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) return duo_should_end(gm);
     if (!gm || FIELD(gm, GM_TYPE, u8) != LIGHTNING) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);

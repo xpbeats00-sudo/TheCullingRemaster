@@ -21,6 +21,26 @@ var REMASTER_DUO_URLS = [
   "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
 ];
 var REMASTER_SHOWDOWN_URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C";
+// Remaster: night maps and weather (patch/make_weather.py, patch/weather.c). The
+// server answers "map:<solo|duo>:<map>?Weather=<preset>?WeatherSeed=<n>" for a
+// night map (2 Jungle Night, 3 Prison Night) or a match with weather; the map's
+// URL with the mode's game and those options opens with StartTraining(url).
+// Copies of make_weather.MAP_PATHS and MODE_GAMES; test_weather.py checks them.
+var REMASTER_MAP_PATHS = [
+  "Jungle_P",
+  "Jungle2_P",
+  "/Game/Maps/Jungle/Jungle_Night_P",
+  "/Game/Maps/Jungle2/Jungle2_Night_P"
+];
+var REMASTER_MODE_GAMES = {
+  solo: "/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C",
+  duo: "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
+};
+function RemasterMapUrl(answer) {
+  var m = /^map:(solo|duo):([0-3])((\?[A-Za-z]+=[A-Za-z0-9]+){0,4})$/.exec(answer);
+  if (!m) return null;
+  return REMASTER_MAP_PATHS[parseInt(m[2], 10)] + "?bEnableBots=true?game=" + REMASTER_MODE_GAMES[m[1]] + m[3];
+}
 
 var socketConnection = null;
 var bSentInvite = false;
@@ -1450,6 +1470,20 @@ function BindClientwebEvents(deferred) {
           Matchmaking.SetMatchmaking(false);
           engine.call("PostSoundEvent", "Stop_MenuMusic");
           engine.call("StartTraining", REMASTER_DUO_URLS[duoMap == 1 ? 1 : 0]);
+          return;
+      }
+      // Night maps and weather: the map's URL (RemasterMapUrl), opened like Duo.
+      if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("map:") == 0) {
+          var mapUrl = RemasterMapUrl(msg.gameServer);
+          console.log("match-ready:: " + msg.gameServer);
+          Matchmaking.MatchmakingState = "JOINING";
+          Matchmaking.SetMatchmaking(false);
+          if (!mapUrl) {
+              ShowError("Failed to join match.  Unknown map.");
+              return;
+          }
+          engine.call("PostSoundEvent", "Stop_MenuMusic");
+          engine.call("StartTraining", mapUrl);
           return;
       }
       // Showdown (make_showdown.py): you against one bot in the Jungle arena,

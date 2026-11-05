@@ -20,7 +20,15 @@
 // in the patch tree), so it can also be previewed outside the game.
 (function () {
   var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo", showdown: "Showdown" };
-  var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
+  // The night maps (patch/make_weather.py) show only when the server offers
+  // them (CULLING_NIGHT_MAPS=1): the vote lists the maps the server counts votes for.
+  var MAPS = {
+    jungle: { name: "Jungle", image: "images/Jungle_Map.png" },
+    prison: { name: "Prison", image: "images/Prison_Map.png" },
+    "jungle-night": { name: "Jungle Night", image: "images/Jungle_Map.png", night: true },
+    "prison-night": { name: "Prison Night", image: "images/Prison_Map.png", night: true }
+  };
+  var NIGHT_TINT = "linear-gradient(rgba(6, 12, 40, 0.62), rgba(6, 12, 40, 0.62)), ";
   var ROWS = 10;                    // player rows that fit at any resolution
   // The bots' names: the same list the game draws from in the match
   // (patch_assets.py BOT_NAMES, VictoryGameMode's BotNames).
@@ -275,7 +283,7 @@
     Object.keys(MAPS).forEach(function (id) {
       if (!(id in votes)) return;
       var card = el("div", "rl-map" + (locked ? " locked" + (last.map === id ? " won" : " lost") : (mine === id ? " mine" : "")));
-      card.style.backgroundImage = 'url("' + MAPS[id].image + '")';
+      card.style.backgroundImage = (MAPS[id].night ? NIGHT_TINT : "") + 'url("' + MAPS[id].image + '")';
       card.appendChild(el("span", "rl-map-tag", locked ? (last.map === id ? "Selected" : "") : (mine === id ? "Your vote" : "")));
       card.appendChild(el("span", "rl-map-name", MAPS[id].name));
       card.appendChild(el("span", "rl-map-votes", votes[id] + (votes[id] === 1 ? " vote" : " votes")));

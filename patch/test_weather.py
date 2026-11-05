@@ -38,6 +38,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import make_pak  # noqa: E402
+import make_rain as mr  # noqa: E402
 import make_weather as mw  # noqa: E402
 from build_catalog import pak_entries, read_entry  # noqa: E402
 from build_menu_arenas import iter_tags  # noqa: E402
@@ -91,6 +92,12 @@ class Paks:
         for ext in (".uasset", ".umap"):
             if base + ext in self.where:
                 return base + ext
+        # Package names are case-insensitive (an import may say "materials/spark").
+        if not hasattr(self, "lower"):
+            self.lower = {k.lower(): k for k in self.where}
+        for ext in (".uasset", ".umap"):
+            if (base + ext).lower() in self.lower:
+                return self.lower[(base + ext).lower()]
         return None
 
     def read(self, rel):
@@ -303,6 +310,109 @@ def check_pak(path, built):
         check(read_entry(f, off, usize, m, b) == data, "%s: %s reads back different" % (path, rel))
 
 
+# ---------------------------------------------------------------- rain
+RAIN_CHANGED = {"ParticleSystem", "ParticleLODLevel", "ParticleModuleRequired", "ParticleModuleSpawn",
+                "ParticleModuleLifetime", "ParticleModuleLocationPrimitiveSphere", "ParticleModuleVelocity",
+                "ParticleModuleAccelerationConstant", "ParticleModuleSizeScaleBySpeed", "ParticleModuleColor",
+                "ParticleModuleTypeDataGpu"}
+
+
+def check_rain(rel, data, stock, level, paks):
+    """The rain copy: saves back, the stock's imports, only the GPU emitter's
+    modules and the system changed, and the level's values read back."""
+    up, sp = check_roundtrip(rel, data), UPackage(stock)
+    check(up.imports == sp.imports, rel + ": imports changed")
+    check(len(up.exports) == len(sp.exports), rel + ": export count changed")
+    for i, (x, y) in enumerate(zip(up.exports, sp.exports), 1):
+        cls = mw.export_class(up, i)
+        if cls == "ParticleSystem":
+            check(x["fields"][:4] == y["fields"][:4] and up.name_str(x["fields"][4], x["fields"][5])
+                  == mr.object_name(level), rel + ": the system is not named " + mr.object_name(level))
+        else:
+            check(x["fields"][:6] == y["fields"][:6], "%s: export %d header changed" % (rel, i))
+        if x["data"] != y["data"]:
+            check(cls in RAIN_CHANGED, "%s: export %d (%s) changed" % (rel, i, cls))
+            check(tag_end(up, x["data"]) is not None, "%s: export %d tags" % (rel, i))
+            if cls != "ParticleSystem":
+                check(len(x["data"]) == len(y["data"]), "%s: export %d changed size" % (rel, i))
+    check_imports(rel, data, stock, paks, {})
+    p = mr.LEVELS[level]
+    emitter = mr.export(up, mr.EMITTER)
+    lod, req, spawn, gpu, modules = mr.lod_modules(up, emitter)
+
+    def val(index, path, fmt):
+        return mr.get(up, bytearray(up.exports[index - 1]["data"]), path, fmt)
+    system = [i for i in range(1, len(up.exports) + 1) if mw.export_class(up, i) == "ParticleSystem"][0]
+    check(val(system, ("Emitters",), "i") == (emitter,), rel + ": not only the GPU emitter")
+    check(val(system, ("bUseFixedRelativeBoundingBox",), "B") == (1,), rel + ": bounds")
+    box = val(system, ("FixedRelativeBoundingBox",), "<6f")
+    check(box[0] < 0 < box[3] and box[2] < 0 < box[5], rel + ": bounds box")
+    check(val(lod, ("bEnabled",), "B") == (1,), rel + ": LOD off")
+    check(val(req, ("EmitterLoops",), "<i") == (0,), rel + ": not looping")
+    check(close(val(spawn, ("Rate", "Table", "Values"), "f"), (p["rate"],)), rel + ": rate")
+    sd = bytes(up.exports[spawn - 1]["data"])
+    _, _, voff, size = mr.find(up, bytearray(sd), ("BurstList",))
+    blob = sd[voff:voff + size]
+    for name in ("Count", "CountLow"):
+        k = blob.find(up.fname(name))
+        while k >= 0:
+            check(struct.unpack_from("<i", blob, k + 25)[0] == 0, rel + ": burst " + name)
+            k = blob.find(up.fname(name), k + 1)
+    life = val(mr.module_of(up, modules, "ParticleModuleLifetime"), ("Lifetime", "Table", "Values"), "f")
+    check(close(life, p["life"]), rel + ": lifetime")
+    vel = val(mr.module_of(up, modules, "ParticleModuleVelocity"), ("StartVelocity", "Table", "Values"), "f")
+    check(close(vel, p["vmin"] + p["vmax"]) and vel[2] < 0 and vel[5] < 0, rel + ": falls")
+    sphere = mr.module_of(up, modules, "ParticleModuleLocationPrimitiveSphere")
+    check(close(val(sphere, ("StartRadius", "Table", "Values"), "f"), (p["radius"],)), rel + ": radius")
+    check(val(sphere, ("SurfaceOnly",), "B") == (0,) and val(sphere, ("Velocity",), "B") == (0,)
+          and val(sphere, ("Negative_X",), "B") == (1,), rel + ": sphere flags")
+    for path, want in ((("EmitterInfo", "ConstantAcceleration"), mr.ACCELERATION),
+                       (("ResourceData", "ConstantAcceleration"), mr.ACCELERATION),
+                       (("EmitterInfo", "MaxLifetime"), (p["life"][1],)),
+                       (("ResourceData", "SizeBySpeed"), (0.05, p["stretch"], 1.0, mr.MAX_STRETCH))):
+        check(close(val(gpu, path, "<%df" % len(want)), want), rel + ": GPU " + "/".join(path))
+    check(val(gpu, ("EmitterInfo", "MaxParticleCount"), "<i")[0] >= p["rate"] * p["life"][1],
+          rel + ": GPU particle budget")
+    c = val(gpu, ("ResourceData", "ColorBias"), "<4f")
+    check(0 < c[0] < 1 and c[3] == 0.0, rel + ": GPU colour")
+    return p["rate"]
+
+
+# ---------------------------------------------------------------- menu, server, native header
+def check_wiring(paks_dir, tmp):
+    import json
+    import make_duo
+    ui = os.path.join(mw.SRC, "Victory", "Content", "uiresources", "FrontEnd", "js")
+    js = open(os.path.join(ui, "ClientWeb.js"), encoding="utf-8").read()
+    m = re.search(r"var REMASTER_MAP_PATHS = (\[.*?\]);", js, re.S)
+    check(m and json.loads(m.group(1)) == mw.MAP_PATHS, "ClientWeb.js REMASTER_MAP_PATHS != make_weather.MAP_PATHS")
+    m = re.search(r"var REMASTER_MODE_GAMES = (\{.*?\});", js, re.S)
+    games = json.loads(re.sub(r"(\w+):", r'"\1":', m.group(1))) if m else None
+    check(games == mw.MODE_GAMES, "ClientWeb.js REMASTER_MODE_GAMES != make_weather.MODE_GAMES")
+    check('engine.call("StartTraining", mapUrl)' in js, "map: answers aren't opened with StartTraining(url)")
+    for i in (0, 1):
+        check(mw.MAP_PATHS[i] + "?bEnableBots=true?game=" + mw.MODE_GAMES["duo"] == make_duo.URLS[i], "Duo URL %d" % i)
+    for name, v in mw.VARIANTS.items():
+        check(mw.MAP_URLS[name] == mw.game_path(v[2]) + "?bEnableBots=true?game=" + mw.MODE_GAMES["solo"], name)
+    srv = open(os.path.join(HERE, "..", "server", "weather.js"), encoding="utf-8").read()
+    m = re.search(r'NIGHT_MAPS = \{ "jungle-night": (\d), "prison-night": (\d) \}', srv)
+    check(m and (int(m.group(1)), int(m.group(2))) == (2, 3) and len(mw.MAP_PATHS) == 4,
+          "server/weather.js night map indices")
+    presets = re.search(r"PRESETS = \[(.*?)\]", srv).group(1).replace('"', "").replace(" ", "").split(",")
+    check(presets == list(mw.WEATHER_PRESETS), "server/weather.js presets != make_weather.WEATHER_PRESETS")
+    lobby = open(os.path.join(ui, "MatchLobby.js"), encoding="utf-8").read()
+    check('"jungle-night": {' in lobby and '"prison-night": {' in lobby, "MatchLobby.js night map cards")
+    src = open(os.path.join(HERE, "weather.c"), encoding="utf-8").read()
+    for st in mw.WEATHER_STATES:
+        row = re.search(r"\{([^{}]*)\},\s+/\* %s \*/" % re.escape(st[0]), src)
+        check(row, "weather.c has no %s row" % st[0])
+        nums = [float(x.strip().rstrip("f")) for x in row.group(1).split(",")]
+        check(close(nums, st[1:]), "weather.c %s row %s != make_weather %s" % (st[0], nums, st[1:]))
+    header = mw.make_header(paks_dir, tmp)
+    check(header == open(mw.NATIVE_HEADER, encoding="utf-8").read(), "weather_maps.h is out of date (run make_weather.py)")
+    return len(mw.NATIVE_MAPS)
+
+
 def main(argv):
     args = list(argv)
     pak = override_pak = None
@@ -355,6 +465,16 @@ def main(argv):
         check("?game=" + mw.GAME_MODE in url, name + ": URL game mode")
         ok("%s: URL %s" % (name, url))
 
+    rain = mr.build(paks_dir, tmp)
+    stock_rain = paks.read(mr.SOURCE)
+    for rel in rain:
+        level = rel.rsplit("_", 1)[1].split(".")[0]
+        built[rel] = open(os.path.join(tmp, rel), "rb").read()
+        rate = check_rain(rel, built[rel], stock_rain, level, paks)
+        ok("rain %s: saves back, stock imports, only the GPU emitter retuned (%.0f drops/s)" % (level, rate))
+    n = check_wiring(paks_dir, tmp)
+    ok("menu URLs, server map indices and presets, weather.c table and weather_maps.h (%d levels) agree" % n)
+
     # --fog scales visibility
     tmp2 = tempfile.mkdtemp(prefix="weather_fog_")
     mw.build(paks_dir, tmp2, fog_scale=2.0)
@@ -368,13 +488,15 @@ def main(argv):
         ok("pak %s holds the %d packages" % (pak, len(built)))
     if override_pak:
         tmp3 = tempfile.mkdtemp(prefix="weather_override_")
-        for name, v in mw.VARIANTS.items():
-            dst = os.path.join(tmp3, v[1])
+        files = {v[1]: built[v[3]] for v in mw.VARIANTS.values()}
+        files.update({rel: built[rel] for rel in rain})
+        for rel, blob in files.items():
+            dst = os.path.join(tmp3, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            open(dst, "wb").write(built[v[3]])
+            open(dst, "wb").write(blob)
         make_pak.main(tmp3, override_pak)
-        check_pak(override_pak, {v[1]: built[v[3]] for v in mw.VARIANTS.values()})
-        ok("override pak %s puts the night Lighting levels on the stock paths" % override_pak)
+        check_pak(override_pak, files)
+        ok("override pak %s: the night Lighting levels on the stock paths, and the rain" % override_pak)
     print("%d checks passed" % passed)
 
 

@@ -140,6 +140,174 @@ def game_path(rel):
 
 
 MAP_URLS = {name: game_path(v[2]) + "?bEnableBots=true?game=" + GAME_MODE for name, v in VARIANTS.items()}
+# The menu's map list for "map:<mode>:<index>" answers (server/weather.js):
+# 0 Jungle, 1 Prison, 2 Jungle Night, 3 Prison Night. ClientWeb.js holds copies
+# (REMASTER_MAP_PATHS, REMASTER_MODE_GAMES); test_weather.py checks them.
+MAP_PATHS = ["Jungle_P", "Jungle2_P"] + [game_path(v[2]) for v in VARIANTS.values()]
+MODE_GAMES = {"solo": GAME_MODE,
+              "duo": "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"}
+
+# ---------------------------------------------------------------- weather over a match (native)
+# The native module's schedule (weather.c), mirrored here for the tests and
+# the docs. Keep both in step: test_weather_native.py runs the C code and
+# compares it with weather_state() below.
+#            name        cloud speed stars moon  sky   vis(m) rain lightning(1/1000 s) seconds
+WEATHER_STATES = [
+    ("clear",      0.05, 3.0, 0.70, 1.00, 1.00, 120.0, 0, 0, 120, 240),
+    ("cloudy",     0.30, 5.0, 0.40, 0.85, 0.95, 90.0, 0, 0, 100, 220),
+    ("overcast",   0.60, 8.0, 0.08, 0.55, 0.80, 65.0, 0, 0, 90, 200),
+    ("rain",       0.65, 10.0, 0.05, 0.45, 0.75, 50.0, 1, 0, 90, 200),
+    ("heavy rain", 0.72, 13.0, 0.03, 0.35, 0.65, 35.0, 2, 10, 80, 180),
+    ("storm",      0.80, 18.0, 0.00, 0.25, 0.55, 28.0, 3, 60, 70, 150),
+    ("fog",        0.40, 4.0, 0.20, 0.60, 0.85, 15.0, 0, 0, 90, 180),
+]
+CLEAR, CLOUDY, OVERCAST, RAIN, HEAVY, STORM, FOG = range(7)
+WEATHER_NEXT = {
+    CLEAR: [(CLOUDY, 1)],
+    CLOUDY: [(CLEAR, 1), (OVERCAST, 1), (FOG, 1)],
+    OVERCAST: [(CLOUDY, 1), (RAIN, 2), (FOG, 1)],
+    RAIN: [(OVERCAST, 1), (HEAVY, 2)],
+    HEAVY: [(RAIN, 2), (STORM, 1)],
+    STORM: [(HEAVY, 1)],
+    FOG: [(CLOUDY, 1), (OVERCAST, 1)],
+}
+# ?Weather=<preset>: the start state, and the states whose weight is tripled.
+WEATHER_PRESETS = {
+    "clear": (CLEAR, {CLEAR, CLOUDY}),
+    "cloudy": (CLOUDY, {CLOUDY, OVERCAST}),
+    "rainy": (RAIN, {RAIN, HEAVY, OVERCAST}),
+    "storm": (STORM, {HEAVY, STORM}),
+    "foggy": (FOG, {FOG, OVERCAST}),
+}
+WEATHER_BLEND = 45
+
+
+def _xorshift(x):
+    x ^= (x << 13) & 0xFFFFFFFF
+    x ^= x >> 17
+    x ^= (x << 5) & 0xFFFFFFFF
+    return x & 0xFFFFFFFF
+
+
+def weather_state(seed, preset, cycle, t):
+    """(current state, previous state, seconds since the change, blend 0..1)
+    at second t, exactly as weather.c computes it."""
+    rng = seed or 0x9E3779B9
+    names = list(WEATHER_PRESETS)
+    start_state, theme = WEATHER_PRESETS[names[preset]] if isinstance(preset, int) else WEATHER_PRESETS[preset]
+    start, cur, prev, guard = 0, start_state, start_state, 0
+    while True:
+        lo, hi = WEATHER_STATES[cur][9], WEATHER_STATES[cur][10]
+        rng = _xorshift(rng)
+        dur = lo + rng % (hi - lo + 1)
+        if not cycle or t < start + dur:
+            break
+        guard += 1
+        if guard > 10000:
+            break
+        options = [(n, w * (3 if n in theme else 1)) for n, w in WEATHER_NEXT[cur]]
+        rng = _xorshift(rng)
+        r = rng % sum(w for _, w in options)
+        nxt = cur
+        for n, w in options:
+            if r < w:
+                nxt = n
+                break
+            r -= w
+        prev, cur, start = cur, nxt, start + dur
+    since = t - start
+    blend = 1.0 if prev == cur or since >= WEATHER_BLEND else since / WEATHER_BLEND
+    return cur, prev, since, blend
+
+
+def weather_flash(seed, state, t):
+    x = (seed ^ ((t * 0x9E3779B1) & 0xFFFFFFFF)) & 0xFFFFFFFF or 0x9E3779B9
+    if not WEATHER_STATES[state][8]:
+        return False
+    x = _xorshift(x)
+    x = _xorshift(x)
+    return x % 1000 < WEATHER_STATES[state][8]
+
+
+# The levels the native module drives: (Lighting level, night?, sun base,
+# sky light base, ground z for the fog). The night variants come first.
+NATIVE_MAPS = [
+    ("Victory/Content/Maps/Jungle/Lighting_Night.umap", True, 0.3, 0.25, 0.0),
+    ("Victory/Content/Maps/Jungle2/Lighting_Night.umap", True, 0.25, 0.25, 2165.0),
+    ("Victory/Content/Maps/Jungle/Lighting.umap", False, 2.0, 1.0, 0.0),
+    ("Victory/Content/Maps/Jungle2/Lighting.umap", True, 0.25, 0.25, 2165.0),
+]
+RAIN_LEVELS = ("Light", "Heavy", "Storm")
+NATIVE_HEADER = os.path.join(HERE, "weather_maps.h")
+
+
+def object_path(up, index):
+    """UE path name of export #index: Package.Top:Sub.Sub..."""
+    chain = []
+    while index > 0:
+        f = up.exports[index - 1]["fields"]
+        chain.append(up.name_str(f[4], f[5]))
+        index = f[3]
+    chain.reverse()
+    return chain[0] + (":" + ".".join(chain[1:]) if len(chain) > 1 else "")
+
+
+def export_class(up, index):
+    c = up.exports[index - 1]["fields"][0]
+    return up.names[struct.unpack_from("<i", up.imports[-c - 1], 20)[0]][0] if c < 0 else "?"
+
+
+def native_targets(rel, data):
+    """Full paths of the fog, sun, sky light and sky material in a Lighting level."""
+    up = UPackage(data)
+    pkg = Package(data)
+    sky = sky_actor_index(pkg)
+    mid = struct.unpack_from("<i", data, export_props(pkg, sky)["Sky material"][1])[0]
+    prefix = game_path(rel) + "."
+    return {
+        "fog": prefix + object_path(up, first_of(pkg, "ExponentialHeightFogComponent")),
+        "sun": prefix + object_path(up, first_of(pkg, "DirectionalLightComponent")),
+        "sky_light": prefix + object_path(up, first_of(pkg, "SkyLightComponent")),
+        "sky_material": prefix + object_path(up, mid),
+    }
+
+
+def fog_constant(data, ground_z):
+    """density = k / visibility_m on level ground at ground_z (inverse of fog_visibility)."""
+    pkg = Package(data)
+    fog = first_of(pkg, "ExponentialHeightFogComponent")
+    fp = export_props(pkg, fog)
+    fog_z = struct.unpack_from("<3f", data, fp["RelativeLocation"][1])[2]
+    falloff = struct.unpack_from("<f", data, fp["FogHeightFalloff"][1])[0] if "FogHeightFalloff" in fp else 0.2
+    return 10.0 / 2.0 ** (falloff / 1000.0 * (fog_z - ground_z))
+
+
+def native_header(levels):
+    """weather_maps.h from {rel: package bytes} of every NATIVE_MAPS level.
+    Strings are inline arrays: the module's data must hold no absolute
+    pointers (the blob gets no base relocations)."""
+    def w(s):
+        assert '"' not in s and "\\" not in s
+        return 'L"%s"' % s
+    rows = [(native_targets(rel, levels[rel]), fog_constant(levels[rel], ground), sun, sky, night)
+            for rel, night, sun, sky, ground in NATIVE_MAPS]
+    width = max(len(v) + 1 for t, *_ in rows for v in t.values())
+    out = ["/* Generated by make_weather.py from the Lighting levels: do not edit. */",
+           "#define WX_PATH %d" % width,
+           "typedef struct { u16 fog[WX_PATH], sun[WX_PATH], sky_light[WX_PATH], sky_material[WX_PATH];",
+           "                 float density_k, sun_base, sky_base, stars_base; i32 night; } WxMap;",
+           "#define WX_NMAPS %d" % len(NATIVE_MAPS),
+           "static const WxMap WX_MAPS[WX_NMAPS] = {"]
+    for t, k, sun, sky, night in rows:
+        out.append("    {%s,\n     %s,\n     %s,\n     %s,\n     %.6ff, %.3ff, %.3ff, %.3ff, %d}," % (
+            w(t["fog"]), w(t["sun"]), w(t["sky_light"]), w(t["sky_material"]),
+            k, sun, sky, 1.0 if night else 0.0, 1 if night else 0))
+    out.append("};")
+    out.append("static const u16 WX_RAIN_PATHS[3][64] = {")
+    for level in RAIN_LEVELS:
+        out.append('    L"/Game/Remaster/Weather/P_Rain_%s.P_Rain_%s",' % (level, level))
+    out.append("};")
+    return "\n".join(out) + "\n"
 
 
 # ---------------------------------------------------------------- fog
@@ -378,6 +546,17 @@ def build(paks_dir, out_root=SRC, fog_scale=1.0, override_stock=False):
     return written
 
 
+def make_header(paks_dir, out_root=SRC):
+    """weather_maps.h text: the night levels as built under out_root, the stock ones from the paks."""
+    stock = {rel for rel, *_ in NATIVE_MAPS if not os.path.exists(os.path.join(out_root, rel)) or
+             rel in {v[1] for v in VARIANTS.values()}}
+    levels = find_in_paks(paks_dir, stock)
+    for rel, *_ in NATIVE_MAPS:
+        if rel not in levels:
+            levels[rel] = open(os.path.join(out_root, rel), "rb").read()
+    return native_header(levels)
+
+
 def main(argv):
     args = list(argv)
     fog, out, override = 1.0, SRC, False
@@ -390,6 +569,10 @@ def main(argv):
     if len(args) != 1:
         sys.exit(__doc__)
     build(args[0], out, fog, override)
+    if not override:
+        with open(NATIVE_HEADER, "w", newline="\n") as f:
+            f.write(make_header(args[0], out))
+        print("wrote %s" % NATIVE_HEADER)
 
 
 if __name__ == "__main__":

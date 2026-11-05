@@ -34,11 +34,17 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 // (0 = Jungle / "The Island", 1 = Prison).
 // The two offline matches the game can start (DefaultGame.ini OfflineMap /
 // OfflineMap2): the lobby's map vote picks one.
-const MAPS = { jungle: 0, prison: 1 };
+// With CULLING_NIGHT_MAPS=1 the vote also offers the night maps (2 Jungle
+// Night, 3 Prison Night; patch/make_weather.py), which open by URL with their
+// weather (server/weather.js).
+const weather = require('./weather');
+const WEATHER = weather.settings();
+const MAPS = weather.maps(WEATHER);
 // Contestants the game places on each map with patch_exe.py's 24 cap: Jungle
 // has 24 player starts. Prison has 16, and whether more than 16 spawn there
-// hasn't been measured, so it is scored as 16 (never more than it has).
-const FIELD_BY_MAP = { jungle: 24, prison: 16 };
+// hasn't been measured, so it is scored as 16 (never more than it has). The
+// night maps are copies of the day ones.
+const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // Showdown (patch/make_showdown.py): you against one rival in the Jungle centre
 // arena. No lobby or map vote; the menu starts it from "showdown:<format>".
 // Rounds: first to 4 (ShowdownSeries), all in one match with the patched exe
@@ -1156,7 +1162,8 @@ function lobbyCard(userID) {
 // player's first vote.
 function lobbyQueue(raw) {
   const q = queueName(raw);
-  const map = /prison/.test(q) ? 'prison' : /jungle/.test(q) ? 'jungle' : null;
+  let map = /prison/.test(q) ? 'prison' : /jungle/.test(q) ? 'jungle' : null;
+  if (map && /night/.test(q) && MAPS[map + '-night'] !== undefined) map += '-night';
   const mode = q.startsWith('ranked') ? 'ranked_ffa' : /coop2/.test(q) ? 'coop2' : q.startsWith('lightning') ? 'lightning'
     : /^(ffa|quick_play)/.test(q) ? 'ffa' : q;
   return { mode, map };
@@ -1227,9 +1234,14 @@ function launchMatch(socket, queue, map) {
     ranked: rankedId
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode: lobbyQueue(queue).mode });
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
+  // Night maps and weather: the map's URL with the match's weather preset and
+  // seed ("map:<solo|duo>:<index>?Weather=..."); otherwise the stock answers.
+  const sky = showdown ? null : weather.weatherFor(WEATHER, map);
+  const answer = showdown ? 'showdown:' + SHOWDOWN.format : weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, duo, sky);
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex,
+    sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (duo ? 'duo:' : 'offline:') + mapIndex,
+    gameServer: answer,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
