@@ -1,42 +1,29 @@
 """Duo with a teammate: you and an AI teammate against pairs.
 
-The stock Duo queue started the same match as Solo. The game's pairs mode,
-VictoryGameMode_CoopRanked (a child of VictoryGameMode: pair-balanced spawns,
-team type ClassicTeams; unused by the Remaster), pairs contestants, and the
-normal mode's bot count and names carry over.
+The game's pairs mode, VictoryGameMode_CoopRanked (a child of VictoryGameMode:
+pair-balanced spawns, team type ClassicTeams; unused by the Remaster), pairs
+contestants, and the normal mode's bot count and names carry over.
 
-Match URLs come from DefaultGame.ini, and the game can only start a few of
-them: StartOfflineMatch(0|1) is Solo, StartTraining("Practice") is Showdown,
-so Duo takes the two Survival slots (StartTraining("SurvivalBasic") Jungle,
-"SurvivalAdvanced" Prison) and the SURVIVAL menu item goes
-(make_branding.py). make_loading_bar.py writes the URLs; the server answers a
-Duo queue with "duo:<map>" and ClientWeb.js picks the slot.
+How it starts: the server answers a Duo queue with "duo:<map>" and ClientWeb.js
+calls the menu's StartTraining(URLS[map]). StartTraining only knows four slot
+names; the patched exe (patch_exe.py) opens any other argument as the URL,
+through the same "open <url>?bExitOnRoundComplete=true" helper the Solo path
+uses (VA 0x1401e4630). (ConnectToServer, which also runs "open", was tried
+first: it puts the game in its join-a-server state and the match bounces back
+to the menu.)
+
+Duo has its own URL this way and needs no DefaultGame.ini slot: the six slots
+the menu can reach (OfflineMap/OfflineMap2 for Solo, TrainingMapBasic,
+TrainingMapAdvanced, SurvivalBasic, SurvivalAdvanced for the SURVIVAL screen's
+Tutorial, Training Range and Survival) keep their stock maps.
+
+ClientWeb.js holds a copy of URLS (it can't import this file);
+test_match_urls.py checks they match.
 """
 
 MODE = "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
-# DefaultGame.ini key -> URL
+# Map index (0 Jungle, 1 Prison, as in "duo:<map>") -> the URL StartTraining opens (patched exe).
 URLS = {
-    "SurvivalBasic": "Jungle_P?bEnableBots=true?game=" + MODE,
-    "SurvivalAdvanced": "Jungle2_P?bEnableBots=true?game=" + MODE,
+    0: "Jungle_P?bEnableBots=true?game=" + MODE,
+    1: "Jungle2_P?bEnableBots=true?game=" + MODE,
 }
-
-
-def set_urls(text):
-    """DefaultGame.ini text with the Duo URLs in the Survival keys."""
-    lines = text.splitlines(keepends=True)
-    for key, url in URLS.items():
-        for k, line in enumerate(lines):
-            if line.split("=")[0].strip() == key:
-                lines[k] = '%s = "%s"%s' % (key, url, line[len(line.rstrip("\r\n")):])
-                break
-        else:
-            raise KeyError(key)
-    return "".join(lines)
-
-
-if __name__ == "__main__":
-    import os
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "Victory", "Config", "DefaultGame.ini")
-    text = open(path, newline="").read()
-    open(path, "w", newline="").write(set_urls(text))
-    print("duo URLs ->", path)

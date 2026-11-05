@@ -232,7 +232,7 @@ def rebrand_html(src_html):
     html = add_ranked(html)
     html = add_play_screen(html)
     html = add_airdrop_unlocks(html)
-    html = hide_survival(html)
+    html = show_survival(html)
     html = add_friends(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
@@ -359,17 +359,21 @@ SURVIVAL_ITEM = """          <li tabindex="0" rv-unless="Matchmaking.IsMatchmaki
 """
 
 
-def hide_survival(html):
-    """The main menu's SURVIVAL item (the Training screen: Tutorial, Practice,
-    Survival) goes: Duo uses the Survival match slots and Showdown the
-    Practice one (make_duo.py, make_showdown.py). Safe to run again."""
-    if "<!-- SURVIVAL: Duo and Showdown use its match slots" in html:
-        return html
+SURVIVAL_HIDDEN = "          <!-- SURVIVAL: Duo and Showdown use its match slots (make_duo.py)"
+
+
+def show_survival(html):
+    """The main menu's SURVIVAL item (Survival, Training Range, Offline Match,
+    Basic Tutorial) is shown: Duo and Showdown open their own URLs
+    (make_duo.py), so its match slots are free. Undoes the hiding an older
+    build left in a generated page; safe to run again."""
     nl = "\r\n" if "\r\n" in html else "\n"
     item = SURVIVAL_ITEM.replace("\n", nl)
+    hidden = SURVIVAL_HIDDEN + nl + item + "          -->" + nl
+    if hidden in html:
+        html = html.replace(hidden, item)
     assert html.count(item) == 1, "SURVIVAL menu item"
-    return html.replace(item, "          <!-- SURVIVAL: Duo and Showdown use its match slots (make_duo.py)" + nl
-                        + item + "          -->" + nl)
+    return html
 
 
 FRIENDS_ITEM = """          <li tabindex="0" id="remaster-friends-item">
@@ -400,9 +404,11 @@ def add_friends(html):
 
 
 def apply_menu_changes(path):
-    """--menu-only: the friends menu edits applied to an already generated
-    FrontEnd.html in place (no logos, fonts or movies). Safe to repeat."""
+    """--menu-only: the friends menu and the SURVIVAL item applied to an
+    already generated FrontEnd.html in place (no logos, fonts or movies).
+    Safe to repeat."""
     html = open(path, "rb").read().decode("utf-8")
+    html = show_survival(html)
     html = add_friends(html)
     open(path, "wb").write(html.encode("utf-8"))
     print(path, "updated")

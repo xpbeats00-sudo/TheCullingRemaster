@@ -27,9 +27,10 @@ build, so this assembles it from what the game already has:
   Airdrop" at match start and Jungle's level script a "Grab your Airdrop."
   help toast; with no airdrop they mislead, so they say what to do instead
   (same length: they are string constants in compiled script).
-- Start: the menu's StartTraining("Practice") travels to the URL in
-  DefaultGame.ini's TrainingMapAdvanced (make_loading_bar.py writes it); the
-  stock Practice map isn't reachable from the Remaster menu.
+- Start: the server answers "showdown:1v1" and ClientWeb.js calls the
+  menu's StartTraining(URL): the patched exe opens a URL given in place of a
+  slot name like a Solo match (patch_exe.py). No DefaultGame.ini slot is
+  used, so the SURVIVAL screen's Training Range keeps its stock Practice map.
 
 usage: python make_showdown.py <Paks dir>
 """

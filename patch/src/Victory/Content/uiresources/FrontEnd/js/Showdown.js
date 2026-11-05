@@ -3,7 +3,7 @@
 //
 // - The SHOWDOWN tile queues "showdown" (the stock Play screen only queues the
 //   Solo and Duo tiles). The server answers "showdown:1v1" and ClientWeb.js
-//   starts the round (StartTraining("Practice"), whose URL is the arena match).
+//   opens the arena match (StartTraining with REMASTER_SHOWDOWN_URL).
 // - Back in the menu after a round, the server sends "remaster-showdown":
 //   "next" shows the score and starts the next round after a countdown (Leave
 //   ends the series); "over" shows the final score once.
