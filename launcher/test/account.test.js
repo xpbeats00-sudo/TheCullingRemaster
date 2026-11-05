@@ -73,10 +73,10 @@ function install(root) {
     });
 
     await test("creating an account sends the claim and returns the sign-in", async () => {
-      const a = await client.register(api, { username: " New  Player ", email: "New@Example.com", password: "long enough", claimUserID: "steam:76561199752700292" });
+      const a = await client.register(api, { username: " New  Player ", email: "New@Example.com", password: "long enough", claimUserID: "steam:76561190000000777" });
       assert.deepStrictEqual(a, { username: "New Player", userID: "steam:76561201234567890", token: "t-new", claimed: true });
       const req = seen[seen.length - 1];
-      assert.deepStrictEqual(req.body, { username: "New Player", email: "new@example.com", password: "long enough", claimUserID: "steam:76561199752700292" });
+      assert.deepStrictEqual(req.body, { username: "New Player", email: "new@example.com", password: "long enough", claimUserID: "steam:76561190000000777" });
     });
 
     await test("bad forms are refused before anything is sent", async () => {
@@ -134,13 +134,13 @@ function install(root) {
     await test("the game is pointed at the account's Steam ID; an older ID is kept once", () => {
       const root = path.join(tmp, "game");
       const dir = install(root);
-      fs.writeFileSync(path.join(dir, "force_steamid.txt"), "76561199752700292");
-      assert.strictEqual(playername.readSteamId(root), "steam:76561199752700292");
+      fs.writeFileSync(path.join(dir, "force_steamid.txt"), "76561190000000777");
+      assert.strictEqual(playername.readSteamId(root), "steam:76561190000000777");
       playername.writeSteamId(root, "steam:76561201234567890");
       assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt"), "utf8"), "76561201234567890");
-      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561199752700292");
+      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561190000000777");
       playername.writeSteamId(root, "steam:76561198000000101");
-      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561199752700292", "the first one is kept");
+      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561190000000777", "the first one is kept");
       assert.throws(() => playername.writeSteamId(root, "steam:123"), /not a Steam ID/);
     });
 
@@ -151,8 +151,8 @@ function install(root) {
       const settings = path.join(appData, "Goldberg SteamEmu Saves", "settings");
       fs.mkdirSync(settings, { recursive: true });
       assert.strictEqual(playername.readSteamId(root, appData), null);
-      fs.writeFileSync(path.join(settings, "user_steam_id.txt"), "76561199752700292\r\n");
-      assert.strictEqual(playername.readSteamId(root, appData), "steam:76561199752700292");
+      fs.writeFileSync(path.join(settings, "user_steam_id.txt"), "76561190000000777\r\n");
+      assert.strictEqual(playername.readSteamId(root, appData), "steam:76561190000000777");
     });
 
     await test("an install that uses real Steam can't take an account", () => {
