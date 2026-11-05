@@ -13,6 +13,8 @@ function startServer(port, env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "culling-test-"));
   fs.copyFileSync(path.join(__dirname, "..", "data", "catalog.json"), path.join(dir, "catalog.json"));
   if (env.profiles) fs.writeFileSync(path.join(dir, "profiles.json"), JSON.stringify(env.profiles));
+  // Other data files to start with ({ "accounts.json": {...} }).
+  for (const [name, content] of Object.entries(env.files || {})) fs.writeFileSync(path.join(dir, name), JSON.stringify(content));
   const proc = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
     // CULLING_SAVE_DELAY_MS=0: write profiles on every change, so tests can read
     // profiles.json right after a request (the service coalesces to 1 s).

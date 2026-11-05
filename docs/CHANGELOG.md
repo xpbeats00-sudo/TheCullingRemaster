@@ -2,6 +2,9 @@
 
 ## Game (next release)
 
+**Leaderboard**
+- A LEADERBOARD item on the main menu opens the global leaderboard: the top 50 players on Ranked (this season's rating and tier), Wins, Kills, K/D (10 matches or more), Showdown series won and Time played, by account username. Your own row is highlighted, with your position even outside the top 50; a row opens that player's card. Needs the server update (`remaster-leaderboard-get`). See docs/LEADERBOARD.md.
+
 **Airdrops unlock by level**
 - The six locked airdrops unlock as players level up, at a level worked out from the tiers of what each one gives (each weapon or armor counts its tier, other items count 1): Demon Hunter, Hawks Eye and Viking at 6, Cyclops at 8, The Imp at 9, Polecat at 10. The menu shows the level beside the lock and on the preview.
 - They were locked for everyone before: their files differ in case from their assets, so the item catalog never had them. Archer was missing the same way.

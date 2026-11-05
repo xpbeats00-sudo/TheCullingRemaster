@@ -57,6 +57,7 @@ const { createMetrics, metricsAllowed } = require('./metrics');
 const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
 const { Friends } = require('./friends');
+const { Leaderboard } = require('./leaderboard');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -224,7 +225,22 @@ const profileStore = new CoalescedJsonFile(PROFILE_FILE, () => JSON.stringify(pr
 });
 function saveProfiles() {
   profileStore.markDirty();
+  leaderboard.changed();
 }
+
+// The global leaderboard (leaderboard.js): account players only, by username,
+// recomputed at most every CULLING_LEADERBOARD_MIN_AGE_MS after a change.
+const leaderboard = new Leaderboard({
+  players: function* () {
+    for (const [userID, key] of accounts.byUserID) {
+      const a = accounts.get(key);
+      const p = peekProfile(userID);
+      if (a && p) yield { userID, username: a.username, profile: p };
+    }
+  },
+  ranked, maxLevel: SEASON.maxLevel,
+  minAgeMs: parseInt(process.env.CULLING_LEADERBOARD_MIN_AGE_MS || '30000', 10)
+});
 
 function newProfile(userID) {
   return {
@@ -294,6 +310,8 @@ const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
 });
 // Friend requests, removals and party invites per player: one a second, bursts of 20.
 const allowFriendAction = rateLimiter(1, 20);
+// Leaderboard requests per player: one every 2 seconds, bursts of 5.
+const allowLeaderboard = rateLimiter(0.5, 5);
 const allowHttp = rateLimiter(20, 60);
 const allowSocket = rateLimiter(30, 90);
 // New profiles per address: a burst of 10, then one a minute.
@@ -652,6 +670,7 @@ app.post('/api/account/register', asyncRoute(async (req, res) => {
     do userID = acc.randomSteamID(); while (hasProfile(userID) || accounts.ownsUserID(userID));
   }
   accounts.create({ username, email, userID, password: hash });
+  leaderboard.changed();
   getProfile(userID);
   const token = accounts.issueToken(key);
   log('account created', JSON.stringify(username), userID, claimed ? '(claimed an existing profile)' : '');
@@ -863,10 +882,11 @@ function gauges() {
     sessionTokens: sessions.size,
     openMatchTickets: tickets.open.size,
     matchLobbies: lobbies.stats(),
+    leaderboard: leaderboard.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
     rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
       registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
-      loginUser: allowLoginUser.size() },
+      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size() },
     saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null,
       accounts: accounts.store ? accounts.store.stats : null },
     stopping
@@ -1479,6 +1499,12 @@ io.on('connection', (socket) => {
     const id = msg.username === undefined ? me : target(msg);
     socket.emit('remaster-player-card', id ? Object.assign({ found: true }, playerCard(id, me))
       : { found: false, username: typeof msg.username === 'string' ? msg.username.slice(0, 40) : null });
+  });
+
+  // The global leaderboard (Leaderboard.js): every board, with your own rows.
+  on('remaster-leaderboard-get', () => {
+    if (!allowLeaderboard(socket.userID)) return socket.emit('remaster-leaderboard', { error: 'slow-down' });
+    socket.emit('remaster-leaderboard', leaderboard.view(usernameOf(socket.userID) ? socket.userID : null));
   });
 
   // Private ("custom") lobbies also go straight to a local bot match.

@@ -1778,6 +1778,10 @@ function BindClientwebEvents(deferred) {
   socketConnection.on("auth-response", function () {
     if (window.RemasterFriends) window.RemasterFriends.connected();
   });
+  // Remaster: the global leaderboard (Leaderboard.js).
+  socketConnection.on("remaster-leaderboard", function (msg) {
+    if (window.RemasterLeaderboard) window.RemasterLeaderboard.on(msg);
+  });
   socketConnection.on("notify-left-queue", function () {
     Matchmaking.SetMatchmaking(false);
   });

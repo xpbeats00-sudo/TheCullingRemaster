@@ -234,6 +234,7 @@ def rebrand_html(src_html):
     html = add_airdrop_unlocks(html)
     html = show_survival(html)
     html = add_friends(html)
+    html = add_leaderboard(html)
     open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
     print("FrontEnd.html rebranded")
 
@@ -403,13 +404,40 @@ def add_friends(html):
     return html
 
 
+LEADERBOARD_ITEM = """          <li tabindex="0" id="remaster-leaderboard-item">
+            <div class="vertical-list-menu-item">
+              LEADERBOARD
+            </div>
+          </li>
+"""
+LEADERBOARD_SCRIPT = '<script src="js/Leaderboard.js"></script>'
+
+
+def add_leaderboard(html):
+    """The global leaderboard (js/Leaderboard.js): a LEADERBOARD item on the
+    main menu after FRIENDS, and the script after Friends.js (it opens player
+    cards from it). The stock LEADERBOARDS item (data-push-screen="Leaderboard",
+    only your own match history) stays hidden: CustomMatchSettings.js removes
+    it. Safe to run on a page that already has it."""
+    nl = "\r\n" if "\r\n" in html else "\n"
+    if 'id="remaster-leaderboard-item"' not in html:
+        friends = FRIENDS_ITEM.replace("\n", nl)
+        assert html.count(friends) == 1, "FRIENDS menu item"
+        html = html.replace(friends, friends + LEADERBOARD_ITEM.replace("\n", nl))
+    if LEADERBOARD_SCRIPT not in html:
+        assert html.count(FRIENDS_SCRIPT) == 1, FRIENDS_SCRIPT
+        html = html.replace(FRIENDS_SCRIPT, FRIENDS_SCRIPT + nl + "  " + LEADERBOARD_SCRIPT)
+    return html
+
+
 def apply_menu_changes(path):
-    """--menu-only: the friends menu and the SURVIVAL item applied to an
-    already generated FrontEnd.html in place (no logos, fonts or movies).
-    Safe to repeat."""
+    """--menu-only: the friends menu, the leaderboard and the SURVIVAL item
+    applied to an already generated FrontEnd.html in place (no logos, fonts or
+    movies). Safe to repeat."""
     html = open(path, "rb").read().decode("utf-8")
     html = show_survival(html)
     html = add_friends(html)
+    html = add_leaderboard(html)
     open(path, "wb").write(html.encode("utf-8"))
     print(path, "updated")
 
