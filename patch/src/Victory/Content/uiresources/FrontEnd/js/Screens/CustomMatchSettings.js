@@ -194,45 +194,29 @@
 /*
  * Custom match settings (game mode mods).
  *
- * The stock game ships the <custom-match-settings-menu> HTML screen and the
- * native CustomMatchController binder, but the JS file that drove them was
- * never shipped — this file is the script tag that was left dangling, so we
- * get to supply the missing implementation.
+ * The stock game ships the <custom-match-settings-menu> HTML screen, but the
+ * JS file that drove it was never shipped (this file is the script tag that
+ * was left dangling) and the native CustomMatchController's Increment* engine
+ * calls are empty stubs in the shipped exe, so this screen keeps the values
+ * itself.
  *
- * The 17 settings are the stock EGameModeMod enum values 0..16 (see
- * docs/resolved/CustomMatchSettingsLoading.md). They leave the client over
- * the websocket as a JSON object keyed by the friendly frontend names
- * (lobby-set-mods), always as the full 17-entry set; the matchmaking server
- * stores them on the lobby, bakes them into the game-server launch URL in the
- * stock "?mods=index=value|..." grammar, and AShooterGameMode::InitGame
- * applies them. Because the defaults below are the verified stock
- * VictoryGameMode CDO values, an untouched screen reproduces stock behavior
- * exactly.
+ * The 17 settings are the stock EGameModeMod values 0..16, all read by the
+ * game's Blueprints (patch/custom_match.py has where). They leave the client
+ * over the websocket as a JSON object keyed by the names below
+ * (lobby-set-mods), always as the full set; the server keeps them on the
+ * lobby, answers START with "custom:<map>:<mods>" in the stock
+ * "?mods=index=value|..." grammar, and ClientWeb.js opens the map with that
+ * option, which AShooterGameMode::InitGame applies. The stock values are the
+ * VictoryGameMode CDO's, so an untouched screen plays like Solo.
  */
 (function () {
-  // Defaults are the stock values from the VictoryGameMode CDO GameModeMods
-  // array (verified from the cooked blueprint). They only pre-fill the UI:
-  // SendCustomMatchMods sends changed keys only, so a lobby that never touches
-  // this screen keeps the stock blueprint behavior.
-  var GAME_MODE_MOD_DEFINITIONS = [
-    { key: "NumGreenCrateSpawn", index: 0, defaultValue: 12, min: 0, max: 200 },
-    { key: "NumBlueCrateSpawn", index: 1, defaultValue: 24, min: 0, max: 200 },
-    { key: "NumRedCrateSpawn", index: 2, defaultValue: 3, min: 0, max: 200 },
-    { key: "NumRedBarrelSpawn", index: 3, defaultValue: 15, min: 0, max: 200 },
-    { key: "NumGasPylonSpawn", index: 4, defaultValue: 22, min: 0, max: 200 },
-    { key: "NumFuncBarrelSpawn", index: 5, defaultValue: 15, min: 0, max: 200 },
-    { key: "NumToiletGoodiesSpawn", index: 6, defaultValue: 5, min: 0, max: 200 },
-    { key: "NumSmallBuildingItemSpawn", index: 7, defaultValue: 2, min: 0, max: 200 },
-    { key: "NumMediumBuildingItemSpawn", index: 8, defaultValue: 4, min: 0, max: 200 },
-    { key: "NumLargeBuildingItemSpawn", index: 9, defaultValue: 8, min: 0, max: 200 },
-    { key: "NumExtraLargeBuildingItemSpawn", index: 10, defaultValue: 12, min: 0, max: 200 },
-    { key: "ChancesExtraGreenCrateSpawn", index: 11, defaultValue: 50, min: 0, max: 100 },
-    { key: "ChancesLockerPreOpened", index: 12, defaultValue: 50, min: 0, max: 100 },
-    { key: "HealthGivenFromHealthStation", index: 13, defaultValue: 4, min: 0, max: 100 },
-    { key: "FuncCostForHealth", index: 14, defaultValue: 1, min: 0, max: 1000 },
-    { key: "FreqHealthGivenInSeconds", index: 15, defaultValue: 1, min: 0, max: 600 },
-    { key: "RecyclerUseTime", index: 16, defaultValue: 5, min: 0, max: 600 }
-  ];
+  // [key, stock value, min, max] per EGameModeMod index: ClientWeb.js's
+  // REMASTER_CUSTOM_MODS (patch/test_custom_match.py checks it).
+  var GAME_MODE_MOD_DEFINITIONS = [];
+  var table = typeof REMASTER_CUSTOM_MODS != "undefined" ? REMASTER_CUSTOM_MODS : [];
+  for (var t = 0; t < table.length; t++) {
+    GAME_MODE_MOD_DEFINITIONS.push({ key: table[t][0], index: t, defaultValue: table[t][1], min: table[t][2], max: table[t][3] });
+  }
 
   var GAME_MODE_MOD_BY_KEY = {};
   for (var i = 0; i < GAME_MODE_MOD_DEFINITIONS.length; i++) {
@@ -240,8 +224,7 @@
   }
 
   // The vanilla HTML binds the pickers to a CustomMatchController object with
-  // exactly these property names — we provide it (mirroring the native
-  // JSCustomMatchController binder on AVictoryFrontEndHUD+0x958).
+  // exactly these property names; this one stands in for it.
   var CustomMatchController = {};
   (function initController() {
     for (var i = 0; i < GAME_MODE_MOD_DEFINITIONS.length; i++) {
@@ -249,6 +232,23 @@
       CustomMatchController[definition.key] = definition.defaultValue;
     }
   })();
+
+  // The settings the server holds for this lobby (LobbyData.Mods, from
+  // lobby-update / lobby-set-mods-ack), where they are valid: the screen shows
+  // what START will play, also after coming back to the lobby.
+  function AdoptLobbyMods() {
+    var mods = typeof LobbyData != "undefined" && LobbyData.IsInLobby ? LobbyData.Mods : null;
+    if (!mods || typeof mods != "object") {
+      return;
+    }
+    for (var i = 0; i < GAME_MODE_MOD_DEFINITIONS.length; i++) {
+      var definition = GAME_MODE_MOD_DEFINITIONS[i];
+      var value = mods[definition.key];
+      if (typeof value == "number" && Math.floor(value) === value && value >= definition.min && value <= definition.max) {
+        CustomMatchController[definition.key] = value;
+      }
+    }
+  }
 
   function CustomSettings() {
     BaseMenuScreen.call(this);
@@ -267,11 +267,10 @@
   };
 
   CustomSettings.prototype.OnShow = function () {
+    AdoptLobbyMods();
     this.SetNewActiveMenu(this.ActiveMenu);
     this.RefreshSettingsValues();
     BaseMenuScreen.prototype.OnShow.call(this);
-    // Adopt the UI state on the server (full-set send covers re-joins; see
-    // the NOTE on SendCustomMatchMods for the display-side limitation).
     SendCustomMatchMods();
   };
 
@@ -339,14 +338,9 @@
     BaseMenuScreen.prototype.OnMouseClicked.call(this, elem);
   };
 
-  // Sends the FULL 17-setting set. Defaults are the verified stock CDO values,
-  // so an untouched screen reproduces stock behavior exactly, and the server
-  // always stores exactly what the owner's UI shows — a rejoin cannot leave an
-  // invisible stale set behind. The admin-only StartingActivityValue (index
-  // 17) is deliberately outside this table and can never be sent from here.
-  // NOTE: the client still does not read lobby-update mods (deferred); after a
-  // rejoin the UI shows the table defaults while the server keeps the stored
-  // set, which the owner may overwrite by opening the screen.
+  // Sends the FULL set, so the server always holds exactly what the screen
+  // shows. EGameModeMod 17 (StartingActivityValue) is not in the table and is
+  // never sent.
   function SendCustomMatchMods() {
     if (typeof LobbyData == "undefined" || !LobbyData.IsInLobby ||
         typeof PlayerProfileData == "undefined" ||
@@ -378,4 +372,60 @@
 
   $.extend(CustomSettings.prototype, VerticalMenuMixin);
   Screens['CustomSettings'] = CustomSettings;
+})();
+
+/*
+ * The CUSTOM lobby in the Remaster: a custom match is played on your PC (there
+ * is no multiplayer hosting), so nobody can join it.
+ *
+ * - The Play screen's "Create or Join a game?" choice: Join says so instead of
+ *   opening the code keypad (the server refuses lobby-join with the same text,
+ *   for invites).
+ * - Leaving the CUSTOM screen leaves the lobby, unless its match is starting
+ *   (the stock Leave button is commented out of the page and the queue widget
+ *   that left it is hidden), so the menu doesn't stay "in lobby".
+ */
+(function () {
+  var JOIN_REFUSED = "Custom matches are played on your PC; invite friends to a party instead.";
+
+  function ShowJoinRefused() {
+    PushModal('Modal', {
+      options: ["Ok"],
+      title: "JOIN A CUSTOM MATCH",
+      description: JOIN_REFUSED,
+      bSupportsBackButton: true,
+      needInput: false,
+      callback: function () {}
+    });
+  }
+
+  if (typeof PushModal == "function" && !PushModal.RemasterCustomJoin) {
+    var stockPushModal = PushModal;
+    PushModal = function (screen, args) {
+      if (screen == 'Modal' && args && args.title == "Create or Join a game?" && typeof args.callback == "function") {
+        var stockCallback = args.callback;
+        args.callback = function (option) {
+          if (option == "Join") {
+            ShowJoinRefused();
+            return;
+          }
+          return stockCallback.apply(this, arguments);
+        };
+      }
+      return stockPushModal.apply(this, arguments);
+    };
+    PushModal.RemasterCustomJoin = true;
+  }
+
+  if (typeof CustomScreen == "function" && CustomScreen.prototype && !CustomScreen.prototype.RemasterLeaveOnClose) {
+    var stockOnClosed = CustomScreen.prototype.OnClosed;
+    CustomScreen.prototype.OnClosed = function () {
+      var result = stockOnClosed.apply(this, arguments);
+      if (typeof LobbyData != "undefined" && LobbyData.IsInLobby && !LobbyData.MatchIsStarting && typeof LeaveLobby == "function") {
+        LeaveLobby();
+      }
+      return result;
+    };
+    CustomScreen.prototype.RemasterLeaveOnClose = true;
+  }
 })();
