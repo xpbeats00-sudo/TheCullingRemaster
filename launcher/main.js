@@ -366,7 +366,7 @@ function registerIpc() {
     // Progress already on this server under this PC's Steam ID moves to the new account.
     const claimUserID = playername.readSteamId(settings.gamePath, app.getPath("appData"));
     const a = await accountApi.register(server.api, { username: f.username, email: f.email, password: f.password, claimUserID });
-    accounts.set(server.id, a);
+    await accounts.set(server.id, a);
     log("account", { created: a.username, claimed: a.claimed });
     return Object.assign(state(), { claimed: a.claimed });
   });
@@ -375,7 +375,7 @@ function registerIpc() {
     const f = form && typeof form === "object" ? form : {};
     const server = currentServer();
     const a = await accountApi.login(server.api, { username: f.username, password: f.password });
-    accounts.set(server.id, a);
+    await accounts.set(server.id, a);
     log("account", { signedIn: a.username });
     return state();
   });
@@ -383,7 +383,7 @@ function registerIpc() {
   handle("account-logout", async () => {
     const server = currentServer();
     const a = accounts.get(server.id);
-    accounts.remove(server.id);
+    await accounts.remove(server.id);
     if (a) { try { await accountApi.logout(server.api, a.token); } catch (e) { log("account", { logout: e.message }); } }
     return state();
   });
@@ -410,7 +410,7 @@ function registerIpc() {
   });
 
   // Support information, copied for pasting into a message.
-  handle("diagnostics", () => {
+  handle("diagnostics", async () => {
     const s = state();
     const text = [
       `The Culling Remaster launcher ${s.build ? s.build.label : s.appVersion}`,
@@ -424,7 +424,8 @@ function registerIpc() {
       "",
       ...log.recent().slice(-60)
     ].join("\n");
-    clipboard.writeText(text);
+    // Asynchronous since Electron 44 (the W3C Clipboard API shape).
+    await clipboard.writeText(text);
     return true;
   });
 
@@ -529,7 +530,10 @@ function registerIpc() {
     try {
       grant = await accountApi.play(server.api, signedIn.token);
     } catch (e) {
-      if (e.code === "signed-out") { accounts.remove(server.id); send("state-changed"); }
+      if (e.code === "signed-out") {
+        accounts.remove(server.id).catch((err) => log("account", { error: err.message }));
+        send("state-changed");
+      }
       throw e;
     }
     try {
@@ -595,13 +599,14 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => { if (win) { if (!win.isVisible()) win.show(); if (win.isMinimized()) win.restore(); win.focus(); } });
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     // Chromium's network stack: the system proxy and the Windows certificate store.
     sync.useFetch((url, init) => net.fetch(url, init));
     log = createLog(app.getPath("logs"));
     settings = config.load(SETTINGS());
-    accounts = account.createStore(path.join(app.getPath("userData"), "account.dat"), safeStorage);
+    // The saved sign-ins are read (decrypted) before the window asks for them.
+    accounts = await account.createStore(path.join(app.getPath("userData"), "account.dat"), safeStorage);
     accountApi = account.createClient((url, init) => net.fetch(url, init));
     log("start", { version: app.getVersion(), gamePath: settings.gamePath });
     registerIpc();
