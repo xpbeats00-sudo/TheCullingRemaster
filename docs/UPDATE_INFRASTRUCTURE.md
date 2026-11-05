@@ -66,18 +66,18 @@ python C:\Culling\patch\build_release.py 1.4.0 --game C:\Culling\TheCulling --ca
 3. **Staging:** a temp folder with only the stock `pakchunk*-WindowsClient.pak` (hard links) and the stock `FrontEnd.html`. The generators also skip `*_P.pak` patch paks on their own (`build_catalog.stock_paks`).
 4. **Generators**, in this order:
    - `build_catalog.py` (only with `--catalog`);
-   - `make_airdrop_unlocks.py`, `patch_assets.py`, `make_loading_bar.py` (DefaultGame.ini only);
+   - `make_airdrop_unlocks.py`, `make_airdrop_prices.py`, `patch_assets.py`, `make_bot_ai.py` (Experienced), `make_weapon_balance.py` (its table is empty: stock stats), `make_loading_bar.py` (DefaultGame.ini only);
    - `make_branding.py --skip-intro`, then `make_branding.py --menu-only`;
    - `make_night_sky.py`, `make_night_cube.py`, `make_moon.py`, `make_meteors.py`, `make_sky_fx.py`, `build_menu_arenas.py`;
    - `make_showdown_tile.py` (skipped with `--skip-showdown-tile`: its source screenshot isn't in the repo or the branding folder);
-   - `make_camos.py`, `make_vfx_camos.py`, `make_eye_skins.py`, `make_calling_cards.py`, `make_ranked.py`, `make_card_image_map.py`, `make_showdown.py`, `extract_func_anims.py`.
+   - `make_camos.py`, `make_vfx_camos.py`, `make_eye_skins.py`, `make_calling_cards.py`, `make_ranked.py`, `make_card_image_map.py`, `make_showdown.py`, `make_rain.py`, `make_weather.py` (the night maps ship; the server offers them only with `CULLING_NIGHT_MAPS=1`; it also rewrites `patch\weather_maps.h`, and a change there changes the native module: rebuild it with `build_showdown_rounds.py` and recompute `PATCHED_SHA256`), `extract_func_anims.py`.
 5. **Release consistency gate** (`patch/test_release_consistency.py --paks <stage>`). It checks:
    - item IDs are unique;
    - `patch\registry\{camos,vfx_camos,eye_skins,calling_cards,ranked}.bin` are present and list exactly the catalog items of their source;
    - every catalog item's asset is in the stock paks or `patch\src`;
    - there is no test content (`make_pak.test_content`: `*XPAnim*`, `*XPTest*`, `Camo_XP_Anim_*`, files mentioning them or `TEST BUILD`, and plain `*_XP_*` camo skins with a GeoSkin/BC/BC2 tag; the `*_XP_VFX_*` and Necro Mist camos are released content);
    - `DefaultGame.ini`, `FrontEnd.html` and `hud.html` equal what their generators make.
-6. **Tests:** every `patch\test_*.py`, every `deploy\*.test.js` and the launcher's `npm test`.
+6. **Tests:** every `patch\test_*.py` and `patch\test_*.js` (the native module's, `test_native_module.py` and `test_weather_native.py`, need the Visual Studio C++ tools, which the preflight checks), `build_showdown_rounds.py --check`, every `deploy\*.test.js` and the launcher's `npm test`. `patch\lint_es5.py --diff <ref>` checks that the new lines of the hand-written UI scripts are ES5 (run it on a change; the stock scripts use `const`).
 7. **`patch/make_release.py https://xplab.shop:8443 1.4.0 --full C:\Culling\TheCulling`.** It refuses, and builds nothing, when:
    - the version isn't newer than the live one. The live version comes from `https://xplab.shop:8443/remaster/manifest.json`, or from `C:\Culling\releases\LATEST` when offline;
    - `C:\Culling\releases\1.4.0` already exists (`--overwrite` rebuilds an unpublished one);
