@@ -35,6 +35,9 @@ var httpStatus = {
 var Matchmaking = {
   IsMatchmaking: false,
   IsStartingMatchmaking: false,
+  // Remaster: the player asked to leave this search or pregame lobby; a
+  // match-ready that still arrives for it is ignored. Cleared on the next queue.
+  LeaveRequested: false,
   ShowQueueTimeScheduled : false,
   ShowQueueTime : false,
   UseLegacyMatchmaking : false,
@@ -999,6 +1002,7 @@ function LeaveMatchmaking() {
         };
 
         if (IsOnline()) {
+            Matchmaking.LeaveRequested = true;
             socketConnection.emit("leave-mm", params);
         }
         else {
@@ -1378,9 +1382,11 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("join-mm-group", function () {
       console.log("Group leader just queued us!");
+      Matchmaking.LeaveRequested = false;
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
+      if (window.RemasterLobby && window.RemasterLobby.joining) window.RemasterLobby.joining(Matchmaking.LastQueue);
   });
   socketConnection.on("leave-mm-ack", function () {
       console.log("Server confirms we left the matchmaking queue.");
@@ -1394,6 +1400,8 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("leave-mm-fail", function (msg) {
       console.log("Failed to leave matchmaking.  Error: " + msg.reason);
+      Matchmaking.LeaveRequested = false;     // still in it: its match goes ahead
+      if (window.RemasterLobby && window.RemasterLobby.refresh) window.RemasterLobby.refresh();
       ShowError("Failed to leave matchmaking: " + msg.reason);
   });
   socketConnection.on("join-mm-fail", function (msg) {
@@ -1414,6 +1422,14 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("match-ready", function (msg) {
       if (window.RemasterLobby) window.RemasterLobby.hide();
+      // Remaster: the player left the search or the pregame lobby (Leave
+      // lobby, Cancel search, Y) and this match was already on its way.
+      if (Matchmaking.LeaveRequested && !LobbyData.IsInLobby) {
+          console.log("match-ready:: ignored, the player asked to leave");
+          Matchmaking.SetMatchmaking(false);
+          StoppedMatchmaking();
+          return;
+      }
       // Local server: "offline:<map>" means play a local match against bots.
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("offline:") == 0) {
           var offlineMap = parseInt(msg.gameServer.substring(8), 10) || 0;
@@ -1777,6 +1793,12 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("auth-response", function () {
     if (window.RemasterFriends) window.RemasterFriends.connected();
+    if (window.RemasterRanked) window.RemasterRanked.refresh();   // RankedUI.js: no polling
+  });
+  // Remaster: after a match result the server sends the player's balance:
+  // the rating may have moved too.
+  socketConnection.on("player-response", function () {
+    if (window.RemasterRanked) window.RemasterRanked.refresh();
   });
   // Remaster: the global leaderboard (Leaderboard.js).
   socketConnection.on("remaster-leaderboard", function (msg) {
@@ -2410,8 +2432,11 @@ function DoQueueMatchmaking(GameType, ticket, userid)
 
         //We're matchmaking once we try to queue - this way we can show
         //a queuing message if the actual server ack is running slow
+        Matchmaking.LeaveRequested = false;
         Matchmaking.SetMatchmaking(true);
         Matchmaking.MatchmakingState = "QUEUING";
+        // Remaster: the lobby pill shows "Joining" until the server's lobby arrives (MatchLobby.js).
+        if (window.RemasterLobby && window.RemasterLobby.joining) window.RemasterLobby.joining(GameType);
         var authType = GetAuthType();
 
         if(authType == "steam")//in this case we want the provider on the front of the id, by default steam doesnt do it
@@ -2479,7 +2504,14 @@ function OnSocketConnectionClosed()
     // don't care--probably it's already closed
   }
 
+  // Remaster: the search ends with the connection. The lobby pill
+  // (MatchLobby.js) goes with it, and says why.
+  var bWasInRemasterLobby = window.RemasterLobby && window.RemasterLobby.isShown && window.RemasterLobby.isShown();
   Matchmaking.SetMatchmaking(false);
+  StoppedMatchmaking();
+  if (bWasInRemasterLobby && window.RemasterLobby.notice) {
+    window.RemasterLobby.notice("Connection lost — search cancelled");
+  }
 
   LobbyData.SetIsInLobby(false);
   LobbyData.MatchIsStarting = false;
@@ -2493,6 +2525,8 @@ function OnSocketConnectionClosed()
   Friends.InGroup = false;
   Friends.IAmTheLeader = false;
   delete ClientwebData.AuthToken;
+  // Remaster: an open friends panel says it is offline (Friends.js).
+  if (window.RemasterFriends && window.RemasterFriends.disconnected) window.RemasterFriends.disconnected();
   if (RECONNECT_AUTOMATICALLY) {
     setTimeout(ConnectWebsocketIfNeeded, 30000);
   }

@@ -774,10 +774,12 @@ engine.on("SetTeamMemberStatus", function(health, maxHealth, stam, maxStam){
 
 engine.on("OnTeamMemberAdded", function(playername){
 	OnTeamMemberAdded(playername);
+	RemasterTeammateAdded();		// Duo: your death's result waits for the team's (below)
 });
 
 engine.on("OnTeamMemberDied", function(){
 	OnTeamMemberDied();
+	RemasterTeammateDied();		// not OnPlayerDied, which also calls OnTeamMemberDied()
 });
 
 engine.on("ShowLocationUpdate", function(location){
@@ -1754,7 +1756,7 @@ function SwitchPausePane(option)
 			CreatePauseMenuModal("Quit",
 													"Return to Main Menu?",
 													[
-														{ text: "Quit", doesDismiss: true, callback: function(){ engine.call("QuitToMainMenu"); } },
+														{ text: "Quit", doesDismiss: true, callback: function(){ RemasterBeforeLeavingMatch(); engine.call("QuitToMainMenu"); } },
 														{ text: "Cancel", doesDismiss: true }
 													]);
 			return;
@@ -1769,6 +1771,7 @@ function PauseMenuQuit(option)
 	if(option == 0){
 		PauseMenuPanes[4].classList.add("hidden");
 	} else {
+		RemasterBeforeLeavingMatch();
 		engine.call("JSE_QuitToMainMenu");
 	}
 }
@@ -2699,6 +2702,7 @@ function ShowMatchOutcomeAgain()
 function OnReturnToMenuClicked()
 {
 	console.log("Quit to Main Menu");
+	RemasterBeforeLeavingMatch();
 	engine.call('QuitToMainMenu');
 }
 
@@ -3063,15 +3067,37 @@ engine.on("ShowHideSprintIcon", function(display){
 // XP display.
 var LOCAL_SERVER_URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
 var bLocalMatchResultSent = false;
+// A failed post (no answer, or the server erroring) is tried again after
+// these delays; a refusal (4xx: no match to pay, already paid) is not.
+var LOCAL_RESULT_RETRY_MS = [2000, 5000, 10000];
 
-function ReportLocalMatchResult(_deathData, bIsVictory)
+// One small line at the bottom of the end-of-match screens: how the result is doing.
+function ShowResultStatus(text, state)
 {
-	if (bLocalMatchResultSent) {
-		return;
+	var line = document.getElementById("remaster-result-status");
+	if (!line) {
+		line = document.createElement("div");
+		line.id = "remaster-result-status";
+		line.style.cssText = "position:absolute; bottom:3vh; left:50%; transform:translateX(-50%); z-index:1000;" +
+			" padding:0.6vh 1.4vw; border-radius:2vh; background:rgba(8,8,12,0.8); color:white;" +
+			" font-family:Sucrose-Bold; font-size:0.85vw; letter-spacing:0.08vw; white-space:nowrap; pointer-events:none;";
+		document.body.appendChild(line);
 	}
-	bLocalMatchResultSent = true;
+	clearTimeout(line.hideTimer);
+	line.textContent = text;
+	line.style.color = state == "bad" ? "rgba(255,120,110,1)" : state == "ok" ? "rgba(120,220,140,1)" : "white";
+	line.style.display = "";
+	if (state == "ok") {
+		line.hideTimer = setTimeout(function () { line.style.display = "none"; }, 8000);
+	}
+}
 
-	var result = {
+// The body the server's /api/matchresult reads. nickname is the player's
+// in-game name (their account username): the server uses it to find the
+// right match when several players share one address.
+function LocalMatchResultBody(_deathData, bIsVictory)
+{
+	return {
 		nickname: matchData.playerName,
 		victory: bIsVictory,
 		timeAlive: _deathData.TimeAlive,
@@ -3084,15 +3110,32 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 		// scores placements out of the contestants the map really has.
 		cap: 24
 	};
-	console.log("ReportLocalMatchResult: " + JSON.stringify(result));
+}
 
+function ReportLocalMatchResult(_deathData, bIsVictory)
+{
+	if (bLocalMatchResultSent) {
+		return;
+	}
+	bLocalMatchResultSent = true;
+
+	var result = LocalMatchResultBody(_deathData, bIsVictory);
+	console.log("ReportLocalMatchResult: " + JSON.stringify(result));
+	ShowResultStatus("Saving result...");
+	PostLocalMatchResult(result, _deathData, 0);
+}
+
+function PostLocalMatchResult(result, _deathData, attempt)
+{
 	$.ajax({
 		type: "POST",
 		url: LOCAL_SERVER_URL + "/matchresult",
 		contentType: "application/json",
 		data: JSON.stringify(result),
+		timeout: 10000,
 		success: function (body) {
 			var reply = typeof body == "string" ? JSON.parse(body) : body;
+			ShowResultStatus("Result saved", "ok");
 			var shownDeathData = $.extend({}, _deathData, { MatchStartXP: reply.startXP });
 			NotifyReceivedStatsUpdate(JSON.stringify({ data: reply.stats }), shownDeathData, true);
 			if (reply.ranked) {
@@ -3113,7 +3156,20 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 			});
 		},
 		error: function (jqXHR) {
-			console.log("ReportLocalMatchResult failed: " + jqXHR.status);
+			var status = jqXHR ? jqXHR.status : 0;
+			console.log("ReportLocalMatchResult failed (attempt " + (attempt + 1) + "): " + status);
+			if (status >= 400 && status < 500) {
+				// The server answered and won't take it (no open match for this
+				// player, or this match is already paid): trying again won't help.
+				ShowResultStatus("This match's result wasn't saved", "bad");
+				return;
+			}
+			if (attempt < LOCAL_RESULT_RETRY_MS.length) {
+				ShowResultStatus("Saving result...");
+				setTimeout(function () { PostLocalMatchResult(result, _deathData, attempt + 1); }, LOCAL_RESULT_RETRY_MS[attempt]);
+				return;
+			}
+			ShowResultStatus("Couldn't reach the server", "bad");
 			bLocalMatchResultSent = false;
 		}
 	});
@@ -3136,9 +3192,128 @@ function ShowRankedResult(ranked) {
 		'  ' + status + '</div></div></div>');
 }
 
+//////////////////////////////
+//	Duo: the team's result	//
+//////////////////////////////
+// A match is paid once, so in Duo the result of your own death would also be
+// the team's: a win your teammate then fights out would be lost. Once a
+// teammate has joined (OnTeamMemberAdded), your death's result waits:
+//   - your team wins (SetVictoryData): posted as a victory, with your stats;
+//   - your teammate dies too (OnTeamMemberDied): posted as the death;
+//   - you leave the match (Quit / Return to Main Menu) or the HUD unloads:
+//     posted at once, synchronously, as the death - never later than the
+//     menu coming back (the server closes a match left open by then);
+//   - otherwise after 60 s, or, while your teammate is still alive, every
+//     60 s again up to 20 minutes.
+var remasterTeam = { bInTeam: false, bMateAlive: false };
+var pendingTeamResult = null;               // { data, since, timer }
+var TEAM_RESULT_WAIT_MS = 60000;
+var TEAM_RESULT_MAX_WAIT_MS = 20 * 60000;
+
+function RemasterTeammateAdded()
+{
+	remasterTeam.bInTeam = true;
+	remasterTeam.bMateAlive = true;
+}
+
+function RemasterTeammateDied()
+{
+	remasterTeam.bMateAlive = false;
+	if (pendingTeamResult) {
+		PostPendingTeamResult(false);        // both of you are out: the team lost
+	}
+}
+
+function ArmTeamResultTimer(ms)
+{
+	clearTimeout(pendingTeamResult.timer);
+	pendingTeamResult.timer = setTimeout(function () {
+		if (!pendingTeamResult) {
+			return;
+		}
+		if (remasterTeam.bMateAlive && new Date().getTime() - pendingTeamResult.since < TEAM_RESULT_MAX_WAIT_MS) {
+			ArmTeamResultTimer(TEAM_RESULT_WAIT_MS);
+			return;
+		}
+		PostPendingTeamResult(false);
+	}, ms);
+}
+
+// The waiting death result, now: bSync when the HUD is going away (a
+// synchronous request finishes before the page does).
+function PostPendingTeamResult(bSync)
+{
+	if (!pendingTeamResult) {
+		return;
+	}
+	var data = pendingTeamResult.data;
+	clearTimeout(pendingTeamResult.timer);
+	pendingTeamResult = null;
+	if (bSync) {
+		SendLocalMatchResultNow(data, false);
+	}
+	else {
+		ReportLocalMatchResult(data, false);
+	}
+}
+
+function SendLocalMatchResultNow(_deathData, bIsVictory)
+{
+	if (bLocalMatchResultSent) {
+		return;
+	}
+	bLocalMatchResultSent = true;
+	var result = LocalMatchResultBody(_deathData, bIsVictory);
+	console.log("SendLocalMatchResultNow: " + JSON.stringify(result));
+	try {
+		var xhr = new XMLHttpRequest();
+		xhr.open("POST", LOCAL_SERVER_URL + "/matchresult", false);
+		xhr.setRequestHeader("Content-Type", "application/json");
+		xhr.send(JSON.stringify(result));
+		console.log("SendLocalMatchResultNow: " + xhr.status);
+	} catch (e) {
+		console.log("SendLocalMatchResultNow failed: " + e);
+	}
+}
+
+// Leaving the match (the pause menu's Quit, the end of match's Return to
+// Main Menu): a result still waiting goes first.
+function RemasterBeforeLeavingMatch()
+{
+	PostPendingTeamResult(true);
+}
+
+window.addEventListener("beforeunload", RemasterBeforeLeavingMatch);
+window.addEventListener("unload", RemasterBeforeLeavingMatch);
+
+function OnLocalMatchResult(_deathData, bIsVictory)
+{
+	if (bLocalMatchResultSent) {
+		return;
+	}
+	if (pendingTeamResult) {
+		if (!bIsVictory) {
+			return;                          // still waiting on the team
+		}
+		// Your team won after your death: a victory, with your own stats.
+		var data = pendingTeamResult.data;
+		clearTimeout(pendingTeamResult.timer);
+		pendingTeamResult = null;
+		ReportLocalMatchResult($.extend({}, data, { Rank: 1 }), true);
+		return;
+	}
+	if (!bIsVictory && remasterTeam.bInTeam && remasterTeam.bMateAlive) {
+		pendingTeamResult = { data: $.extend({}, _deathData), since: new Date().getTime(), timer: null };
+		ArmTeamResultTimer(TEAM_RESULT_WAIT_MS);
+		ShowResultStatus("Your result is saved when your team's match ends");
+		return;
+	}
+	ReportLocalMatchResult(_deathData, bIsVictory);
+}
+
 var stockSetDeathData = SetDeathData;
 SetDeathData = function (_deathData, bIsVictory)
 {
 	stockSetDeathData(_deathData, bIsVictory);
-	ReportLocalMatchResult(_deathData, bIsVictory);
+	OnLocalMatchResult(_deathData, bIsVictory);
 };
