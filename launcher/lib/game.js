@@ -8,7 +8,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawn, execFileSync } = require("child_process");
+const { spawn, execFile, execFileSync } = require("child_process");
 
 const WIN64 = ["Victory", "Binaries", "Win64"];
 const GAME_EXE = "Victory.exe";
@@ -161,14 +161,19 @@ function launch(root, logDir) {
 }
 
 // Whether The Culling is running (its files are locked while it does).
-function isRunning() {
-  if (process.platform !== "win32") return false;
-  try {
-    const out = execFileSync("tasklist", ["/FI", "IMAGENAME eq " + GAME_EXE, "/NH"], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-    return out.toLowerCase().includes(GAME_EXE.toLowerCase());
-  } catch {
-    return false;
-  }
+// Resolves true or false; asks tasklist without blocking the launcher, which
+// polls this while the game runs. A failed check counts as not running.
+function isRunning({ execFileImpl = execFile, platform = process.platform } = {}) {
+  if (platform !== "win32") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      execFileImpl("tasklist", ["/FI", "IMAGENAME eq " + GAME_EXE, "/NH"], { encoding: "utf8", windowsHide: true, timeout: 15000 }, (err, out) => {
+        resolve(!err && String(out || "").toLowerCase().includes(GAME_EXE.toLowerCase()));
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 // A game folder inside `dir` (the launcher's own install folder, which its

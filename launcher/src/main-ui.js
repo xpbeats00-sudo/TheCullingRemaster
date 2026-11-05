@@ -316,16 +316,10 @@
   function renderPlay() {
     const btn = $("#play");
     btn.classList.remove("working", "secondary");
-    btn.disabled = false;
-    let label = "Play";
-    if (syncing) { label = pausing ? "Pausing" : "Pause"; btn.classList.add("working"); btn.disabled = pausing; }
-    else if (resumeInfo() && state.online) { label = "Resume"; btn.classList.add("working"); }
-    else if (notInstalled() && state.online) { label = "Install"; btn.classList.add("working"); }
-    else if (notInstalled()) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
-    else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
-    else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
-    else if (accountNeeded()) { label = "Sign in"; btn.classList.add("secondary"); }
-    $("#play-label").textContent = label;
+    const v = UiLogic.playView(state, { syncing, pausing, resume: !!resumeInfo(), notInstalled: notInstalled(), accountNeeded: accountNeeded() });
+    if (v.look) btn.classList.add(v.look);
+    btn.disabled = v.disabled;
+    $("#play-label").textContent = v.label;
   }
 
   // ---------------------------------------------------------------- account
@@ -561,6 +555,7 @@
 
   async function play() {
     if (syncing) return pauseSync();
+    if (state.gameRunning) return;
     if (notInstalled()) return runSync();
     if (!state.game.ok) { openDrawer("settings"); return chooseFolder(); }
     if (state.pending && state.pending.files) return runSync();

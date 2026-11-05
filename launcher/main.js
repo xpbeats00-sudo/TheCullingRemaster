@@ -128,6 +128,9 @@ async function boot() {
   } catch (e) {
     bootResult.error = e.message;
   }
+  // A game started before the launcher (or by a launcher that was closed):
+  // PLAY shows it running instead of starting a second copy.
+  game.isRunning().then((up) => { if (up && !gameWatch.running) watchGame({ alreadyRunning: true }); }, () => {});
   log("boot", { online: bootResult.online, release: manifest && manifest.version, installed: sync.installedVersion(settings.gamePath), todo: todo ? todo.length : null });
   progress(1, !bootResult.online ? "Offline" : !installed ? "Ready to install" : todo && todo.length ? "Update available" : "Ready");
 }
@@ -213,6 +216,8 @@ function state() {
     // The account signed in on the selected server: its username is the in-game name.
     account: (() => { const a = accounts.get(currentServer().id); return a ? { username: a.username } : null; })(),
     launcherUpdate,
+    // The game is starting or running: PLAY shows "Running".
+    gameRunning: gameWatch.running,
     busy
   };
 }
@@ -328,7 +333,7 @@ function registerIpc() {
   // Restores the version before the last update (its files are kept until the next one).
   handle("rollback", async () => {
     if (busy) throw new Error("Wait for Game Sync to finish");
-    if (game.isRunning()) throw new Error("Close The Culling first");
+    if (await game.isRunning()) throw new Error("Close The Culling first");
     const v = sync.rollback(settings.gamePath);
     log("rollback", { to: v });
     await refreshPlan();
@@ -366,7 +371,7 @@ function registerIpc() {
     if (busy) throw new Error("Game Sync is already running");
     const check = game.check(settings.gamePath);
     if (!(check.ok || check.installable)) throw new Error(check.reason + ": choose another folder in Settings");
-    if (game.isRunning()) throw new Error("Close The Culling first: its files can't be updated while it runs");
+    if (await game.isRunning()) throw new Error("Close The Culling first: its files can't be updated while it runs");
     busy = true;
     syncAbort = new AbortController();
     const repair = !!(opts && opts.repair);
@@ -418,6 +423,8 @@ function registerIpc() {
     const server = currentServer();
     const signedIn = accounts.get(server.id);
     const why = status.playBlocker({
+      // Started from here and not gone yet, or started some other way.
+      running: gameWatch.running || await game.isRunning(),
       busy,
       check,
       installed: check.ok && !!sync.installedVersion(settings.gamePath),
@@ -459,28 +466,28 @@ function registerIpc() {
   });
 }
 
-// Discord presence while the game runs (lib/discord.js). The game takes a
+// The game while it runs: PLAY shows "Running" and can't start a second
+// copy, and Discord shows the presence (lib/discord.js). The game takes a
 // while to start after its launcher; it counts as closed once it was seen and
-// is gone, or never appeared within GAME_START_MS. Returns false when there is
-// no Discord application to show.
+// is gone, or never appeared within GAME_START_MS (lib/status.js).
 const GAME_POLL_MS = 10000, GAME_START_MS = 3 * 60 * 1000;
-let presence = null, gameWatch = null;
-function watchGame() {
+let presence = null;
+const gameWatch = status.createGameWatch({
+  isRunning: () => game.isRunning(),
+  pollMs: GAME_POLL_MS,
+  startMs: GAME_START_MS,
+  onChange: () => send("state-changed"),
+  onExit: () => {
+    if (presence) presence.stop();
+    if (settings.closeOnLaunch && win && !win.isVisible()) setTimeout(() => app.quit(), 500);
+  }
+});
+// Returns false when there is no Discord application to show.
+function watchGame(opts) {
+  gameWatch.start(opts);
   if (!discord.APP_ID) return false;
   if (!presence) presence = discord.createPresence({ links: settings.links, log });
   presence.start();
-  if (gameWatch) clearInterval(gameWatch);
-  const launched = Date.now();
-  let seen = false;
-  gameWatch = setInterval(() => {
-    const running = game.isRunning();
-    if (running) { seen = true; return; }
-    if (!seen && Date.now() - launched < GAME_START_MS) return;
-    clearInterval(gameWatch);
-    gameWatch = null;
-    presence.stop();
-    if (settings.closeOnLaunch && win && !win.isVisible()) setTimeout(() => app.quit(), 500);
-  }, GAME_POLL_MS);
   return true;
 }
 

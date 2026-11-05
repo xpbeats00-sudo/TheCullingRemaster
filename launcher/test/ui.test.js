@@ -45,4 +45,18 @@ test("the window controls are wired before the launcher's state is asked for", (
   assert.ok(start.indexOf("[data-window]") >= 0 && start.indexOf("[data-window]") < start.indexOf("api.state()"));
 });
 
+// A launcher state: installed, up to date, online, signed in.
+function st(over = {}) {
+  return Object.assign({ online: true, installed: "1.0.0", release: "1.0.0", game: { ok: true, funcLauncher: true, clientDll: true },
+    pending: { files: 0, bytes: 0, partial: 0, releaseBytes: 100 }, settings: { serverId: "a" }, servers: [{ id: "a" }],
+    accountSupported: true, account: { username: "x" }, gameRunning: false }, over);
+}
+const idle = { syncing: false, pausing: false, resume: false, notInstalled: false, accountNeeded: false };
+
+test("PLAY shows Running, disabled, while the game runs", () => {
+  assert.deepStrictEqual(ui.playView(st(), idle), { label: "Play", look: "", disabled: false });
+  assert.deepStrictEqual(ui.playView(st({ gameRunning: true }), idle), { label: "Running", look: "secondary", disabled: true });
+  assert.strictEqual(ui.playView(st({ gameRunning: true }), Object.assign({}, idle, { syncing: true })).label, "Pause", "a sync in progress still shows Pause");
+});
+
 console.log("all %d ui tests passed", passed);

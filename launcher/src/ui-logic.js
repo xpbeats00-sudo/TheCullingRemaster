@@ -50,5 +50,22 @@
     return list.find((s) => s.id === state.settings.serverId) || list[0] || null;
   }
 
-  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer };
+  // The PLAY button: { label, look ("working", "secondary" or ""), disabled }.
+  // f: syncing, pausing, resume (a paused download to continue),
+  // notInstalled, accountNeeded.
+  function playView(state, f) {
+    const v = (label, look = "", disabled = false) => ({ label, look, disabled });
+    if (f.syncing) return v(f.pausing ? "Pausing" : "Pause", "working", !!f.pausing);
+    // The game started from here (or found running): no second copy.
+    if (state.gameRunning) return v("Running", "secondary", true);
+    if (f.resume && state.online) return v("Resume", "working");
+    if (f.notInstalled && state.online) return v("Install", "working");
+    if (f.notInstalled) return v("Offline", "secondary", true);
+    if (!state.game.ok) return v("Set game folder", "secondary");
+    if (state.pending && state.pending.files) return v("Update", "working");
+    if (f.accountNeeded) return v("Sign in", "secondary");
+    return v("Play");
+  }
+
+  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, playView };
 });
