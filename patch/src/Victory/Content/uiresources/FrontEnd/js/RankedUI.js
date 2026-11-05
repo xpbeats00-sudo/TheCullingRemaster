@@ -60,10 +60,15 @@
       'Leaving a ranked match counts as last place.</p>');
   }
 
+  var asked = 0;
+
   function refresh() {
     // Ranked is per player: send the login token the menus already hold.
     var token = typeof ClientwebData != "undefined" && ClientwebData.AuthToken;
     if (!token) return;
+    var t = new Date().getTime();
+    if (t - asked < 2000) return;        // several triggers at once (sign-in, a screen showing)
+    asked = t;
     $.ajax({ url: URL, dataType: "json", headers: { Authorization: "Bearer " + token } }).done(function (s) {
       last = s;
       badge(s);
@@ -71,12 +76,16 @@
     });
   }
 
+  // Asked when it can have changed, not on a timer: when the menu signs in
+  // (ClientWeb.js, on auth-response: also the first time after a match, when
+  // the menu loads again), when the Ranked screen shows, and when the server
+  // sends the player's balance after a match result (player-response).
   var stockOnShow = RankedScreen.prototype.OnShow;
   RankedScreen.prototype.OnShow = function () {
     if (stockOnShow) stockOnShow.apply(this, arguments);
     refresh();
   };
 
+  window.RemasterRanked = { refresh: refresh };
   $(refresh);
-  setInterval(refresh, 15000);
 })();

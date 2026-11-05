@@ -1793,6 +1793,12 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("auth-response", function () {
     if (window.RemasterFriends) window.RemasterFriends.connected();
+    if (window.RemasterRanked) window.RemasterRanked.refresh();   // RankedUI.js: no polling
+  });
+  // Remaster: after a match result the server sends the player's balance:
+  // the rating may have moved too.
+  socketConnection.on("player-response", function () {
+    if (window.RemasterRanked) window.RemasterRanked.refresh();
   });
   // Remaster: the global leaderboard (Leaderboard.js).
   socketConnection.on("remaster-leaderboard", function (msg) {
