@@ -12,15 +12,20 @@
 The client DLL isn't shipped: the launcher points the player's own Func client
 at the server (launcher/lib/clientdll.js).
 
-With --full <game dir> the release is the whole game: every file of that
-install is hard-linked in (no second copy of the gigabytes), except what is
-personal to this PC or made by the launcher itself (FULL_EXCLUDE), with the
-Remaster patch above in place of the install's own, and Victory.exe
-patched for up to 24 contestants (patch_exe.py).
+A release is the whole game by default: every file of the install given with
+--full <absolute game dir> is hard-linked in (no second copy of the
+gigabytes), except what is personal to this PC or made by the launcher itself
+(FULL_EXCLUDE), with the Remaster patch above in place of the install's own,
+and Victory.exe patched for up to 24 contestants (patch_exe.py). The game dir
+is checked first (absolute, exists, has Victory.exe and pakchunk0) and the
+release must come out with at least MIN_FULL_FILES files: launchers delete
+every file a new release no longer lists, so a release built from a wrong
+folder would uninstall the game from every PC. --pak-only (only the patch pak
+and the setup) has to be asked for, and publishing it over a full release is
+refused unless removals are allowed (deploy/stage_objects.js).
 
-usage: python make_release.py <server base url> <version> [--full <game dir>] [--out <dir>] [--no-setup]
-  python make_release.py https://xplab.shop:8443 1.0.0
-  python make_release.py https://xplab.shop:8443 1.1.0 --full ../TheCulling
+usage: python make_release.py <server base url> <version> (--full <game dir> | --pak-only) [--out <dir>] [--no-setup]
+  python make_release.py https://xplab.shop:8443 1.4.0 --full C:/Culling/TheCulling
 """
 import argparse
 import json
@@ -51,42 +56,75 @@ FULL_EXCLUDE = {
     "InstallScript.vdf",
 }
 GAME_EXE = "Victory/Binaries/Win64/Victory.exe"
+# A full release's game dir must have these, and the release at least
+# MIN_FULL_FILES files (the stock install has about 3,560).
+REQUIRED = (GAME_EXE, "Victory/Content/Paks/pakchunk0-WindowsClient.pak")
+MIN_FULL_FILES = 3000
 SETTINGS_README = (
     "The Culling Remaster: the launcher writes your player name here\r\n"
     "(force_account_name.txt) before every game. Change it in the launcher.\r\n")
 
 
-def link_game(game, release):
-    """Hard-link the install's files into release/, minus FULL_EXCLUDE."""
-    count = 0
+class ReleaseError(Exception):
+    pass
+
+
+def check_game_dir(game):
+    """Refuses a game dir a full release can't be built from (see the top)."""
+    if not game or not os.path.isabs(game):
+        raise ReleaseError("--full needs the game install's absolute path (got %r)" % game)
+    if not os.path.isdir(game):
+        raise ReleaseError("--full: no folder at %s" % game)
+    missing = [rel for rel in REQUIRED if not os.path.isfile(os.path.join(game, *rel.split("/")))]
+    if missing:
+        raise ReleaseError("--full: %s is not a game install (missing %s)" % (game, ", ".join(missing)))
+
+
+def game_files(game):
+    """The install's files a full release ships (relative, "/"), minus FULL_EXCLUDE."""
+    out = []
     for folder, _, files in os.walk(game):
         for name in files:
-            src = os.path.join(folder, name)
-            rel = os.path.relpath(src, game).replace(os.sep, "/")
+            rel = os.path.relpath(os.path.join(folder, name), game).replace(os.sep, "/")
             if rel in FULL_EXCLUDE or rel.startswith(".remaster/") or rel.endswith(".part"):
                 continue
-            dst = os.path.join(release, *rel.split("/"))
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            if rel == GAME_EXE:
-                # Patched (more contestants), so a copy: a link would patch the install.
-                shutil.copy2(src, dst)
-                patch_exe.patch(dst)
-                count += 1
-                continue
-            try:
-                os.link(src, dst)
-            except OSError:
-                shutil.copy2(src, dst)
-            count += 1
+            out.append(rel)
+    return sorted(out)
+
+
+def link_game(game, release, files):
+    """Hard-link the install's files into release/."""
+    for rel in files:
+        src = os.path.join(game, *rel.split("/"))
+        dst = os.path.join(release, *rel.split("/"))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if rel == GAME_EXE:
+            # Patched (more contestants), so a copy: a link would patch the install.
+            shutil.copy2(src, dst)
+            patch_exe.patch(dst)
+            continue
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
     readme = os.path.join(release, *STEAM_SETTINGS.split("/"), "README.txt")
     os.makedirs(os.path.dirname(readme), exist_ok=True)
     with open(readme, "w", newline="") as f:
         f.write(SETTINGS_README)
-    return count
+    return len(files)
 
 
-def main(base, version, out=None, game=None, setup=True):
+def main(base, version, out=None, game=None, setup=True, pak_only=False):
     base = base.rstrip("/")
+    if pak_only == bool(game):
+        raise ReleaseError("give --full <absolute game dir> (a full release) or --pak-only, not both or neither")
+    files = None
+    if game:
+        check_game_dir(game)
+        files = game_files(game)
+        if len(files) < MIN_FULL_FILES:
+            raise ReleaseError("--full: %s has only %d files to ship (a full release has at least %d): nothing built"
+                               % (game, len(files), MIN_FULL_FILES))
     out = out or os.path.join(ROOT, "releases", version)
     release = os.path.join(out, "release")
     publish = os.path.join(out, "publish")
@@ -94,7 +132,10 @@ def main(base, version, out=None, game=None, setup=True):
         if os.path.exists(d):
             shutil.rmtree(d)
     if game:
-        print("full release: %d game files linked from %s" % (link_game(os.path.abspath(game), release), game))
+        print("full release: %d game files linked from %s" % (link_game(game, release, files), game))
+    else:
+        print("pak-only release: publishing it over a full release removes the game from every launcher "
+              "(the publish refuses it without -AllowRemovals)")
     paks = os.path.join(release, "Victory", "Content", "Paks")
     os.makedirs(paks, exist_ok=True)
     try:
@@ -131,8 +172,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Build a launcher release")
     ap.add_argument("server")
     ap.add_argument("version")
-    ap.add_argument("--full", metavar="GAME_DIR", help="ship the whole game from this install")
+    ap.add_argument("--full", metavar="GAME_DIR", help="ship the whole game from this install (absolute path)")
+    ap.add_argument("--pak-only", action="store_true", help="ship only the patch pak (and setup), not the game")
     ap.add_argument("--out", help="output folder (default releases/<version>)")
     ap.add_argument("--no-setup", action="store_true", help="don't offer the built launcher setup as a launcher update")
     a = ap.parse_args()
-    main(a.server, a.version, a.out, a.full, not a.no_setup)
+    try:
+        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only)
+    except ReleaseError as e:
+        sys.exit("make_release: " + str(e))
