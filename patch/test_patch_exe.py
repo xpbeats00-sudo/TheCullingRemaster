@@ -18,7 +18,7 @@ P = patch_exe
 
 
 def stand_in(path):
-    data = bytearray(P.CAP_AT + 16)
+    data = bytearray(max(P.CAP_AT + 16, P.SCORE_JG_AT + len(P.SCORE_JG), P.SCORE_STUB_AT + len(P.SCORE_STUB)))
     data[P.CAP_AT:P.CAP_AT + 5] = bytes.fromhex("b810000000")
     data[P.SHA_GATE_AT:P.SHA_GATE_AT + 7] = P.SHA_GATE
     data[P.SHA_GATE_AT + 7:P.SHA_GATE_AT + 13] = P.SHA_JUMP
@@ -27,6 +27,8 @@ def stand_in(path):
     data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
     data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] = P.DUO_HOOK
     data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
+    data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] = P.SCORE_JG
+    data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] = P.SCORE_PAD
     open(path, "wb").write(data)
 
 
@@ -41,9 +43,13 @@ def check(path, rounds=False):
     assert data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 5] == P.TRAIN_STUB
     assert data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] == P.DUO_HOOK_NEW
     assert data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] == P.DUO_STUB
+    assert data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] == P.SCORE_JG_NEW
+    assert data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] == P.SCORE_STUB
     changed = [i for i in range(len(stock)) if stock[i] != data[i]]
     duo = set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
     duo |= {P.DUO_STUB_AT + i for i in range(len(P.DUO_STUB)) if P.DUO_STUB[i] != 0xCC}
+    duo |= {P.SCORE_JG_AT + 2, P.SCORE_JG_AT + 3, P.SCORE_JG_AT + 4, P.SCORE_JG_AT + 5}  # the retargeted disp32
+    duo |= {P.SCORE_STUB_AT + i for i in range(len(P.SCORE_STUB)) if P.SCORE_STUB[i] != 0xCC}
     expected = set(range(gate, gate + 6)) | {P.TRAIN_JUMP_AT + 1} | set(range(P.TRAIN_STUB_AT, P.TRAIN_STUB_AT + 5)) | duo
     if rounds:
         check_rounds(stock, data)
@@ -89,7 +95,9 @@ def other_fixes():
     return (set(range(gate, gate + 6)) | {P.TRAIN_JUMP_AT + 1, P.CAP_AT + 1}
             | set(range(P.TRAIN_STUB_AT, P.TRAIN_STUB_AT + 5))
             | set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
-            | set(range(P.DUO_STUB_AT, P.DUO_STUB_AT + len(P.DUO_STUB))))
+            | set(range(P.DUO_STUB_AT, P.DUO_STUB_AT + len(P.DUO_STUB)))
+            | set(range(P.SCORE_JG_AT, P.SCORE_JG_AT + len(P.SCORE_JG)))
+            | set(range(P.SCORE_STUB_AT, P.SCORE_STUB_AT + len(P.SCORE_STUB))))
 
 
 def blob_checks():

@@ -67,6 +67,25 @@
    the new value is relocated like the old one; the blob itself has no
    absolute addresses.
 
+6. Scoreboards with more than 16 contestants. The scoreboard builder
+   (AVictoryGameState::BuildSortedScoreboard, VA 0x140243c80) sorts/groups the
+   per-contestant RoundScoreboardData (TArray at GameState +0x498, count +0x4a0)
+   into the heap TArray m_SortedScoreboardData (+0x590) that both the in-world
+   TEAM/KILLS/STATUS board and the end-of-match SCOREBOARD read. It builds that
+   through fixed 16-element arrays on its own stack, so it bails out
+   ("cmp edi, 0x10; jg" at VA 0x140243d4d, edi = +0x4a0) and produces nothing
+   once there are more than 16 contestants - the Remaster runs 24, so both
+   boards are empty in Duo and Solo (Showdown's 2 fighters are under the limit,
+   which is why its scoreboard works). Raising the limit would overflow those
+   stack arrays. Instead the "jg" is retargeted to a stub in the int3 padding
+   at VA 0x14005b712 that does no grouping: it empties +0x590 (0x1402414a0) and
+   appends a copy of every +0x498 entry (grow 0x14126f120, 0xb0-byte deep copy
+   0x14023abc0 - the same append the builder's own flat path uses), which the
+   board JS groups by team and sorts itself. The stub returns through the
+   builder's normal teardown at VA 0x14024447d. The <= 16 path is untouched, so
+   small matches keep the native sorting; this only runs when there are more
+   than 16 contestants.
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it.
 
@@ -109,6 +128,22 @@ DUO_STUB = bytes.fromhex(
     "418b9c242004000031f639de7d1c498b4cf5004885c9740e89f2d1eaffc241b0"
     "01e8973b1f00ffc6ebe04c89e1e82b901e004c89e74883c428415d415c5e5bc3")
 DUO_PAD = b"\xcc" * len(DUO_STUB)
+
+# 6. Scoreboards with more than 16 contestants (see the module docstring).
+SCORE_JG_AT = 0x24334D              # file offset of "jg 0x14024447d" (VA 0x140243d4d; edi = +0x4a0 count)
+SCORE_JG = bytes.fromhex("0f8f2a070000")
+SCORE_JG_NEW = bytes.fromhex("0f8fbf79e1ff")   # jg 0x14005b712 (the stub)
+SCORE_STUB_AT = 0x5AD12             # int3 padding at VA 0x14005b712 (238 bytes free)
+# push rbx; sub rsp,0x28; reset +0x590 (0x1402414a0, count +0x4a0); for each
+# +0x498[i]: grow +0x590 (0x14126f120), deep-copy (0x14023abc0); clear +0x58c;
+# jmp the builder's teardown at 0x14024447d (which sets al = 1 and returns).
+SCORE_STUB = bytes.fromhex(
+    "534883ec28498d8c2490050000418b9424a0040000e8745d1e0031db413b9c24"
+    "a00400007d59418bbc24980500008d47014189842498050000413b84249c0500"
+    "007e0f89fa498d8c2490050000e8bc3921014869cfb000000049038c24900500"
+    "004889d84869c0b000000049038424980400004889c2e833f41d00ffc3eb9d41"
+    "c684248c050000004883c4285be9d98c1e00")
+SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 
 
 def _cap(data, path, contestants):
@@ -159,6 +194,19 @@ def _duoteam(data, path):
                          % (path, hook.hex(), stub[:8].hex()))
     data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)] = DUO_STUB
     data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = DUO_HOOK_NEW
+    return True
+
+
+def _duoscore(data, path):
+    jg = bytes(data[SCORE_JG_AT:SCORE_JG_AT + len(SCORE_JG)])
+    stub = bytes(data[SCORE_STUB_AT:SCORE_STUB_AT + len(SCORE_STUB)])
+    if jg == SCORE_JG_NEW and stub == SCORE_STUB:
+        return False
+    if jg != SCORE_JG or stub != SCORE_PAD:
+        raise ValueError("%s is not the Victory.exe this patch is for (scoreboard %s / %s)"
+                         % (path, jg.hex(), stub[:8].hex()))
+    data[SCORE_STUB_AT:SCORE_STUB_AT + len(SCORE_STUB)] = SCORE_STUB
+    data[SCORE_JG_AT:SCORE_JG_AT + len(SCORE_JG)] = SCORE_JG_NEW
     return True
 
 
@@ -254,6 +302,7 @@ def patch(path, contestants=MAX, rounds=True):
     changed = _sha1(data, path) or changed
     changed = _slots(data, path) or changed
     changed = _duoteam(data, path) or changed
+    changed = _duoscore(data, path) or changed
     if rounds:
         changed = _rounds(data, path) or changed
     if changed:
@@ -265,5 +314,5 @@ def patch(path, contestants=MAX, rounds=True):
 if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
-    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds%s"
-          % (sys.argv[1], n, "" if changed else " (already)"))
+    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds, "
+          "big scoreboards%s" % (sys.argv[1], n, "" if changed else " (already)"))
