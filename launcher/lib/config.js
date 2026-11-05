@@ -6,6 +6,10 @@ const path = require("path");
 
 const DEFAULTS = {
   gamePath: "",
+  // The folder the launcher last saw a finished install in: if it vanishes
+  // (an unplugged drive, a deleted folder), it reads as missing, not as a
+  // place to install into.
+  installedPath: "",
   // Release manifest (Game Sync / Update) and the fallback server list.
   manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",
   servers: [{ id: "xplab", name: "The Culling Remaster", region: "USA",

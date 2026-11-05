@@ -93,5 +93,15 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.deepStrictEqual(status.windowSize(null), { width: 1280, height: 760, minWidth: 1100, minHeight: 660 }, "no screen info: the designed size");
   });
 
+  await test("start-up labels: a vanished folder isn't 'Ready to install'", async () => {
+    const missing = { ok: false, installable: false, missing: true, reason: "gone" };
+    assert.strictEqual(status.bootLabel({ online: true, check: missing, todo: null }), "Game folder not found");
+    assert.strictEqual(status.bootLabel({ online: false, check: missing, todo: null }), "Game folder not found");
+    assert.strictEqual(status.bootLabel({ online: true, check: { ok: false, installable: true }, todo: [{}] }), "Ready to install");
+    assert.strictEqual(status.bootLabel({ online: false, check: ok, todo: null }), "Offline");
+    assert.strictEqual(status.bootLabel({ online: true, check: ok, todo: [] }), "Ready");
+    assert.strictEqual(status.bootLabel({ online: true, check: { ok: false, installable: false }, todo: null }), "Choose a game folder");
+  });
+
   console.log("all %d status tests passed", passed);
 })().catch((e) => { console.error("FAIL", e.stack || e.message); process.exitCode = 1; });

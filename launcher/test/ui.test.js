@@ -59,4 +59,16 @@ test("PLAY shows Running, disabled, while the game runs", () => {
   assert.strictEqual(ui.playView(st({ gameRunning: true }), Object.assign({}, idle, { syncing: true })).label, "Pause", "a sync in progress still shows Pause");
 });
 
+const B = (n) => n + " B";
+const sIdle = { syncing: false, pausing: false, resume: null, notInstalled: false, bytes: B };
+
+test("the status line: a vanished game folder says so", () => {
+  assert.deepStrictEqual(ui.statusView(st(), sIdle), { title: "Game Up to Date", sub: "Version 1.0.0", look: "" });
+  const gone = st({ installed: null, game: { ok: false, installable: false, missing: true, reason: "gone" } });
+  assert.deepStrictEqual(ui.statusView(gone, sIdle), { title: "Game folder not found", sub: "Reconnect the drive or choose it in Settings", look: "bad" });
+  assert.strictEqual(ui.playView(gone, idle).label, "Set game folder");
+  const fresh = st({ installed: null, game: { ok: false, installable: true } });
+  assert.strictEqual(ui.statusView(fresh, Object.assign({}, sIdle, { notInstalled: true })).title, "Ready to install");
+});
+
 console.log("all %d ui tests passed", passed);

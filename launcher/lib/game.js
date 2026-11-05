@@ -9,6 +9,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn, execFile, execFileSync } = require("child_process");
+const { missingFolder } = require("./errors");
 
 const WIN64 = ["Victory", "Binaries", "Win64"];
 const GAME_EXE = "Victory.exe";
@@ -30,9 +31,14 @@ function defaultInstallDir() {
 
 // ok: the game is there. installable: nothing is there yet (missing or empty
 // folder, or a partial install Game Sync started), so Game Sync can install
-// the whole game into it.
-function check(root) {
+// the whole game into it. missing: the folder is gone (its drive isn't
+// there, or opts.expectInstalled says the game was installed there): not a
+// place to install into but something to reconnect or choose again.
+function check(root, opts = {}) {
   if (!root) return { ok: false, installable: false, reason: "No game folder chosen" };
+  if (!fs.existsSync(root) && (opts.expectInstalled || !fs.existsSync(path.parse(path.resolve(root)).root))) {
+    return { ok: false, installable: false, missing: true, reason: missingFolder(root) };
+  }
   if (fs.existsSync(path.join(win64(root), GAME_EXE))) {
     return {
       ok: true,
@@ -155,7 +161,8 @@ function launch(root, logDir) {
       stdio: "ignore",
       env: Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1" })
     });
-    child.once("error", reject);
+    // An antivirus or app control blocking it: op "launch" (lib/errors.js).
+    child.once("error", (e) => reject(Object.assign(e, { op: "launch" })));
     child.once("spawn", () => { child.unref(); resolve(); });
   });
 }

@@ -79,4 +79,15 @@ function windowSize(workArea) {
   return { width, height, minWidth: Math.min(WINDOW.minWidth, width), minHeight: Math.min(WINDOW.minHeight, height) };
 }
 
-module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, STEAM_ACCOUNT };
+// The start-up screen's last line. check: game.check(); todo: the plan (null
+// without a release to plan against).
+function bootLabel({ online, check, todo }) {
+  // A vanished folder isn't a place to install into.
+  if (check && check.missing) return "Game folder not found";
+  if (!online) return "Offline";
+  if (!check || !check.ok) return check && check.installable ? "Ready to install" : "Choose a game folder";
+  if (todo && todo.length) return "Update available";
+  return "Ready";
+}
+
+module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, bootLabel, STEAM_ACCOUNT };

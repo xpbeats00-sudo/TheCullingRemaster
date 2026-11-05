@@ -179,31 +179,10 @@
 
   function renderStatus() {
     const box = $("#status-game");
-    box.className = "status-game";
-    let title, sub = "Version " + (state.installed || "-");
-    const resume = resumeInfo();
-    if (syncing) { title = pausing ? "Pausing" : "Syncing"; box.classList.add("busy"); }
-    else if (!state.online && state.offlineStaged > 0) {
-      title = "Download paused";
-      sub = `${bytes(state.offlineStaged)} kept · reconnect to resume`;
-      box.classList.add("warn");
-    }
-    else if (resume) {
-      title = "Download paused";
-      sub = `${Math.floor(resume.have / resume.total * 100)}% done, ${bytes(resume.total - resume.have)} left`;
-      box.classList.add("warn");
-    }
-    else if (notInstalled()) {
-      title = state.online ? "Ready to install" : "Not installed";
-      sub = !state.online ? "Can't reach xplab.shop" : state.pending ? bytes(state.pending.bytes) + " download" : "Checking";
-      box.classList.add("warn");
-    }
-    else if (!state.game.ok) { title = "Choose a game folder"; sub = "In Settings"; box.classList.add("bad"); }
-    else if (state.pending && state.pending.files) { title = "Update available"; sub = `${state.pending.files} file(s), ${bytes(state.pending.bytes)}`; box.classList.add("warn"); }
-    else if (!state.online) { title = "Offline"; sub = "Can't reach xplab.shop"; box.classList.add("warn"); }
-    else title = "Game Up to Date";
-    $("#status-title").textContent = title;
-    $("#status-sub").textContent = sub;
+    const v = UiLogic.statusView(state, { syncing, pausing, resume: resumeInfo(), notInstalled: notInstalled(), bytes });
+    box.className = "status-game" + (v.look ? " " + v.look : "");
+    $("#status-title").textContent = v.title;
+    $("#status-sub").textContent = v.sub;
   }
 
   // A paused or interrupted download: what is already on disk, of how much.

@@ -44,6 +44,37 @@ function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
+// Settings changes are written at once; a refusal is the launcher's own
+// AppData folder, not the game folder (lib/errors.js).
+function saveSettings(patch) {
+  try {
+    settings = config.save(SETTINGS(), Object.assign(settings, patch));
+  } catch (e) {
+    throw Object.assign(e, { op: e.op || "appdata" });
+  }
+  return settings;
+}
+
+// The game folder's state. A folder the launcher saw installed that is gone
+// now reads as missing, not as somewhere to install into.
+function checkGame() {
+  return game.check(settings.gamePath, { expectInstalled: !!settings.gamePath && settings.installedPath === settings.gamePath });
+}
+
+// What lib/errors.js needs to word an error.
+function errorContext() {
+  let missing = false;
+  try { missing = !!checkGame().missing; } catch { /* unknown */ }
+  return { gamePath: settings && settings.gamePath, gameFolderMissing: missing };
+}
+
+// Remembers the folder holds a finished install (see checkGame).
+function noteInstalled() {
+  if (settings.gamePath && settings.installedPath !== settings.gamePath && sync.installedVersion(settings.gamePath)) {
+    try { saveSettings({ installedPath: settings.gamePath }); } catch (e) { log("settings", { error: e.message }); }
+  }
+}
+
 function createWindow() {
   // Never bigger than the screen it opens on (a small laptop, 150% scaling).
   let workArea = null;
@@ -76,7 +107,7 @@ function createWindow() {
 // ---------------------------------------------------------------- boot checks
 
 async function refreshPlan(onHash, opts = {}) {
-  const check = game.check(settings.gamePath);
+  const check = checkGame();
   if (!(check.ok || check.installable) || !manifest) { todo = null; return; }
   todo = await sync.plan(manifest, settings.gamePath, onHash, opts);
 }
@@ -104,15 +135,16 @@ async function boot() {
     const steam = game.detect();
     const managed = steam && fs.existsSync(path.join(steam, sync.STATE_DIR));
     const gamePath = managed ? steam : game.defaultInstallDir();
-    settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
+    saveSettings({ gamePath });
   }
   try { sync.recover(settings.gamePath); } catch (e) { log("recover", { error: e.message }); }
+  noteInstalled();
   progress(0.25, "Contacting xplab.shop");
   try {
     await latestManifest();
   } catch (e) {
     manifest = null;
-    bootResult = { online: false, error: friendly(e) };
+    bootResult = { online: false, error: friendly(e, errorContext()) };
     log("manifest", { error: e.message });
   }
   // A newer launcher first: it may handle this release better than this one.
@@ -120,18 +152,19 @@ async function boot() {
     progress(0.25 + 0.7 * done / total, `Updating the launcher to ${manifest.launcher.version} (${Math.floor(done / total * 100)}%)`))) {
     return;                      // the setup takes over; this launcher is quitting
   }
-  const installed = game.check(settings.gamePath).ok;
+  const installed = checkGame().ok;
   progress(0.45, installed ? "Verifying game files" : "Preparing install");
   try {
     await refreshPlan((done, total) => progress(0.45 + 0.5 * done / total, installed ? "Verifying game files" : "Preparing install"));
   } catch (e) {
-    bootResult.error = e.message;
+    log("plan", { code: e.code, error: e.message });
+    bootResult.error = friendly(e, errorContext());
   }
   // A game started before the launcher (or by a launcher that was closed):
   // PLAY shows it running instead of starting a second copy.
   game.isRunning().then((up) => { if (up && !gameWatch.running) watchGame({ alreadyRunning: true }); }, () => {});
   log("boot", { online: bootResult.online, release: manifest && manifest.version, installed: sync.installedVersion(settings.gamePath), todo: todo ? todo.length : null });
-  progress(1, !bootResult.online ? "Offline" : !installed ? "Ready to install" : todo && todo.length ? "Update available" : "Ready");
+  progress(1, status.bootLabel({ online: bootResult.online, check: checkGame(), todo, installed: sync.installedVersion(settings.gamePath), release: manifest && manifest.version }));
 }
 
 // ---------------------------------------------------------------- launcher self-update
@@ -186,7 +219,7 @@ async function updateLauncher(onProgress) {
 // ---------------------------------------------------------------- state for the pages
 
 function state() {
-  const check = game.check(settings.gamePath);
+  const check = checkGame();
   return {
     appVersion: app.getVersion(),
     build: build.info(app.getVersion()),
@@ -251,7 +284,7 @@ function handle(channel, fn) {
     } catch (err) {
       // The raw error goes to the log; the window gets what to do about it.
       log("error", { channel, kind: err.kind, code: err.code, error: String(err.message || err) });
-      throw new Error(friendly(err));
+      throw new Error(friendly(err, errorContext()));
     }
   });
 }
@@ -277,14 +310,14 @@ function registerIpc() {
     if (game.isSteamFolder(r.filePaths[0])) throw new Error(game.STEAM_FOLDER);
     const gamePath = game.installTarget(r.filePaths[0]);
     if (game.isSteamFolder(gamePath)) throw new Error(game.STEAM_FOLDER);
-    settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
+    saveSettings({ gamePath });
     await refreshPlan();
     return state();
   });
 
   handle("set-setting", (key, value) => {
     if (!["serverId", "closeOnLaunch", "playIntro", "parallel", "maxMBps"].includes(key)) throw new Error("not a user setting: " + key);
-    settings = config.save(SETTINGS(), Object.assign(settings, { [key]: value }));
+    saveSettings({ [key]: value });
     return state();
   });
 
@@ -368,8 +401,8 @@ function registerIpc() {
   // Install / update / resume, or with { repair: true } rehash every file first.
   handle("sync", async (opts = {}) => {
     if (busy) throw new Error("Game Sync is already running");
-    const check = game.check(settings.gamePath);
-    if (!(check.ok || check.installable)) throw new Error(check.reason + ": choose another folder in Settings");
+    const check = checkGame();
+    if (!(check.ok || check.installable)) throw new Error(check.missing ? check.reason : check.reason + ": choose another folder in Settings");
     if (await game.isRunning()) throw new Error("Close The Culling first: its files can't be updated while it runs");
     busy = true;
     syncAbort = new AbortController();
@@ -394,7 +427,8 @@ function registerIpc() {
         maxBytesPerSec: settings.maxMBps * 1048576,
         log
       });
-      log("synced", { version: manifest.version, files: r.files, bytes: r.bytes, seconds: r.seconds, retries: r.retries });
+      log("synced", { version: manifest.version, files: r.files, bytes: r.bytes, seconds: r.seconds, retries: r.retries, kept: r.kept });
+      noteInstalled();
       // The Repair report is read before the plan is cleared.
       const outcome = status.syncOutcome(r, todo, repair);
       todo = [];
@@ -420,7 +454,7 @@ function registerIpc() {
   handle("ping-servers", async () => Promise.all(state().servers.map(ping)));
 
   handle("play", async () => {
-    const check = game.check(settings.gamePath);
+    const check = checkGame();
     const server = currentServer();
     const signedIn = accounts.get(server.id);
     const why = status.playBlocker({
@@ -440,10 +474,15 @@ function registerIpc() {
       if (e.code === "signed-out") { accounts.remove(server.id); send("state-changed"); }
       throw e;
     }
-    playername.write(settings.gamePath, grant.username);
-    playername.writeSteamId(settings.gamePath, grant.userID);
-    // The player's own Func client, pointed at the chosen server.
-    clientdll.ensure(game.win64(settings.gamePath), server.api);
+    try {
+      playername.write(settings.gamePath, grant.username);
+      playername.writeSteamId(settings.gamePath, grant.userID);
+      // The player's own Func client, pointed at the chosen server.
+      clientdll.ensure(game.win64(settings.gamePath), server.api);
+    } catch (e) {
+      // A locked file here is the game still running (lib/errors.js).
+      throw Object.assign(e, { op: e.op || "play" });
+    }
     await game.launch(settings.gamePath, app.getPath("logs"));
     const presence = watchGame();
     // With Discord presence on, "close on launch" hides the window and the

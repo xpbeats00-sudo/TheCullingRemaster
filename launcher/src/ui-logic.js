@@ -50,6 +50,29 @@
     return list.find((s) => s.id === state.settings.serverId) || list[0] || null;
   }
 
+  // The status line at the bottom left: { title, sub, look ("busy", "warn",
+  // "bad" or "") }. f: syncing, pausing, resume ({ have, total } or null),
+  // notInstalled, bytes (a formatter).
+  function statusView(state, f) {
+    const v = (title, sub, look = "") => ({ title, sub, look });
+    const version = "Version " + (state.installed || "-");
+    if (f.syncing) return v(f.pausing ? "Pausing" : "Syncing", version, "busy");
+    // A folder that is gone (an unplugged drive): not somewhere to install.
+    if (state.game && state.game.missing) return v("Game folder not found", "Reconnect the drive or choose it in Settings", "bad");
+    if (!state.online && state.offlineStaged > 0) return v("Download paused", `${f.bytes(state.offlineStaged)} kept · reconnect to resume`, "warn");
+    if (f.resume) {
+      return v("Download paused", `${Math.floor(f.resume.have / f.resume.total * 100)}% done, ${f.bytes(f.resume.total - f.resume.have)} left`, "warn");
+    }
+    if (f.notInstalled) {
+      return v(state.online ? "Ready to install" : "Not installed",
+        !state.online ? "Can't reach xplab.shop" : state.pending ? f.bytes(state.pending.bytes) + " download" : "Checking", "warn");
+    }
+    if (!state.game.ok) return v("Choose a game folder", "In Settings", "bad");
+    if (state.pending && state.pending.files) return v("Update available", `${state.pending.files} file(s), ${f.bytes(state.pending.bytes)}`, "warn");
+    if (!state.online) return v("Offline", "Can't reach xplab.shop", "warn");
+    return v("Game Up to Date", version);
+  }
+
   // The PLAY button: { label, look ("working", "secondary" or ""), disabled }.
   // f: syncing, pausing, resume (a paused download to continue),
   // notInstalled, accountNeeded.
@@ -67,5 +90,5 @@
     return v("Play");
   }
 
-  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, playView };
+  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView };
 });
