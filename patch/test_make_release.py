@@ -51,8 +51,12 @@ game = os.path.join(tmp, "game")
 os.makedirs(game)
 
 
-def build(g, **kw):
-    mr.main("https://example.test", "9.9.9", out=out, game=g, setup=False, **kw)
+def build(g, version="9.9.9", **kw):
+    mr.main("https://example.test", version, out=out, game=g, setup=False, **kw)
+
+
+real_live_version = mr.live_version
+mr.live_version = lambda base: ("1.3.5", "the live manifest (stand-in)")    # no network in tests
 
 
 try:
@@ -115,6 +119,28 @@ try:
         refuses("test builds only", mr.main, "https://example.test", "9.9.9", setup=False, pak_only=True, skip_gate=True)
 
     real_git_state = mr.git_state
+
+    @test
+    def versions():
+        """a version not newer than the live one, a built version or a malformed one is refused"""
+        assert mr.compare_versions("1.10.0", "1.9.2") == 1 and mr.compare_versions("1.3.5", "1.3.5.0") == 0
+        assert mr.compare_versions("1.3.4", "1.3.5") == -1
+        refuses("not newer than the live release 1.3.5", build, None, "1.3.5", pak_only=True)
+        refuses("not newer than the live release 1.3.5", build, None, "1.2.9", pak_only=True)
+        refuses("use numbers like 1.4.0", build, None, "1.4.0-test", pak_only=True)
+        # Server unreachable: releases/LATEST is the live version.
+        saved_root, mr.ROOT = mr.ROOT, tmp
+        try:
+            touch(tmp, "releases/LATEST", b"1.4.2")
+            assert real_live_version("http://127.0.0.1:9", timeout=3) == ("1.4.2", os.path.join(tmp, "releases", "LATEST"))
+        finally:
+            mr.ROOT = saved_root
+            shutil.rmtree(os.path.join(tmp, "releases"))
+        os.makedirs(os.path.join(out, "publish"))
+        try:
+            refuses("already exists: release 9.9.9 was built before", build, None, pak_only=True)
+        finally:
+            shutil.rmtree(out)
 
     @test
     def dirty():

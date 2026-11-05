@@ -34,12 +34,18 @@ for test builds into an --out folder outside releases/, and the publish
 signs with another key (a throwaway one for a test build).
 
 usage: python make_release.py <server base url> <version> (--full <game dir> | --pak-only) [--out <dir>] [--no-setup]
-         [--allow-dirty] [--skip-gate] [--key <private key>]
+         [--allow-dirty] [--skip-gate] [--key <private key>] [--overwrite]
+
+The version must be new: no releases/<version> folder (or release in --out)
+unless --overwrite, and newer than the live release (the live manifest's
+version from <server>/remaster/manifest.json, a read-only GET; offline,
+releases/LATEST).
   python make_release.py https://xplab.shop:8443 1.4.0 --full C:/Culling/TheCulling
 """
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -192,7 +198,56 @@ def run_gate(paks, skip):
     return "passed"
 
 
-def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_dirty=False, skip_gate=False, key=None):
+def compare_versions(a, b):
+    """-1, 0 or 1, like the launcher's sync.compareVersions ("1.10.0" > "1.9.2")."""
+    pa, pb = str(a).split("."), str(b).split(".")
+    for i in range(max(len(pa), len(pb))):
+        x, y = (pa[i] if i < len(pa) else "0"), (pb[i] if i < len(pb) else "0")
+        if x.isdigit() and y.isdigit():
+            c = int(x) - int(y)
+        else:
+            c = (x > y) - (x < y)
+        if c:
+            return -1 if c < 0 else 1
+    return 0
+
+
+def live_version(base, timeout=15):
+    """(version, where from): the live manifest's version (a read-only GET of
+    <server>/remaster/manifest.json), else releases/LATEST, else (None, None)."""
+    import urllib.request
+    url = base + "/remaster/manifest.json"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Cache-Control": "no-cache"}), timeout=timeout) as r:
+            return str(json.loads(r.read().decode("utf-8"))["version"]), url
+    except Exception as e:                                   # offline, HTTP error, bad JSON
+        print("live manifest not readable (%s): checking against releases/LATEST" % e)
+    latest = os.path.join(ROOT, "releases", "LATEST")
+    if os.path.exists(latest):
+        return open(latest).read().strip(), latest
+    return None, None
+
+
+def check_version(base, version, out, overwrite):
+    """Refuses a version that was built already (releases/<version>, or a
+    release in --out) unless --overwrite, and one not newer than the live
+    release: launchers refuse a downgrade, and the same number twice means two
+    different releases under one name."""
+    if not re.match(r"^\d+(\.\d+){1,3}$", version):
+        raise ReleaseError("version %r: use numbers like 1.4.0" % version)
+    for folder in {os.path.join(ROOT, "releases", version), out}:
+        if os.path.isdir(folder) and os.listdir(folder) and not overwrite:
+            raise ReleaseError("%s already exists: release %s was built before. Use the next version, or --overwrite "
+                               "to rebuild it (never one that was published)" % (folder, version))
+    live, where = live_version(base)
+    if live and compare_versions(version, live) <= 0:
+        raise ReleaseError("version %s is not newer than the live release %s (%s): launchers refuse a downgrade"
+                           % (version, live, where))
+    return live
+
+
+def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_dirty=False, skip_gate=False, key=None,
+         overwrite=False):
     base = base.rstrip("/")
     if pak_only == bool(game):
         raise ReleaseError("give --full <absolute game dir> (a full release) or --pak-only, not both or neither")
@@ -208,6 +263,8 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_d
     out = out or os.path.join(releases, version)
     if skip_gate and under(out, releases):
         raise ReleaseError("--skip-gate is for test builds only: give an --out folder outside %s" % releases)
+    live = check_version(base, version, out, overwrite)
+    print("release %s (live: %s)" % (version, live or "none"))
     commit, branch, changed = git_state()
     if changed and not allow_dirty:
         raise ReleaseError("the git tree has uncommitted changes (%s%s): commit them first, or --allow-dirty "
@@ -282,8 +339,9 @@ if __name__ == "__main__":
     ap.add_argument("--skip-gate", action="store_true",
                     help="test builds only (--out outside releases/): skip the consistency gate; the publish refuses it")
     ap.add_argument("--key", help="release signing key (default: make_manifest.js's, CULLING_RELEASE_KEY or the real key)")
+    ap.add_argument("--overwrite", action="store_true", help="rebuild a version whose folder exists (never a published one)")
     a = ap.parse_args()
     try:
-        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only, a.allow_dirty, a.skip_gate, a.key)
+        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only, a.allow_dirty, a.skip_gate, a.key, a.overwrite)
     except ReleaseError as e:
         sys.exit("make_release: " + str(e))
