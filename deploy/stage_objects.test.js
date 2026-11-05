@@ -59,7 +59,16 @@ function publish(version, files) {
     assert.match(cli.stderr, /--allow-removals/);
     const ok = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", "--allow-removals", pub, upd], { encoding: "utf8" });
     assert.strictEqual(ok.status, 0, ok.stdout + ok.stderr);
-    console.log("stage_objects: all 8 checks passed");
+    // A test build (make_release.py --skip-gate records gate "skipped") is refused.
+    publish("6", { "Victory/a.pak": A });
+    const tm = JSON.parse(fs.readFileSync(path.join(pub, "manifest.json")));
+    tm.build = { commit: "abc", gate: "skipped" };
+    fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(tm));
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true }), /without the release consistency gate/);
+    tm.build.gate = "passed";
+    fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(tm));
+    await stage(pub, upd, () => {}, { allowRemovals: true });
+    console.log("stage_objects: all 10 checks passed");
   } finally {
     fs.rmSync(t, { recursive: true, force: true });
   }

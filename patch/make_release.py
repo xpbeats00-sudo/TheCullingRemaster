@@ -24,7 +24,17 @@ folder would uninstall the game from every PC. --pak-only (only the patch pak
 and the setup) has to be asked for, and publishing it over a full release is
 refused unless removals are allowed (deploy/stage_objects.js).
 
+Before anything is packed it refuses a git tree with uncommitted changes
+(--allow-dirty overrides, and is recorded) and runs the release consistency
+gate (test_release_consistency.py: catalog, registry, assets, generated pages
+agree; no test content). The commit, branch, dirty flag and gate result go
+into the signed manifest ("build") and <out>/build.json. --skip-gate is only
+for test builds into an --out folder outside releases/, and the publish
+(deploy/stage_objects.js) refuses a release whose gate didn't pass. --key
+signs with another key (a throwaway one for a test build).
+
 usage: python make_release.py <server base url> <version> (--full <game dir> | --pak-only) [--out <dir>] [--no-setup]
+         [--allow-dirty] [--skip-gate] [--key <private key>]
   python make_release.py https://xplab.shop:8443 1.4.0 --full C:/Culling/TheCulling
 """
 import argparse
@@ -148,7 +158,41 @@ def link_game(game, release, files):
     return len(files)
 
 
-def main(base, version, out=None, game=None, setup=True, pak_only=False):
+def git_state():
+    """(commit, branch, [changed paths]) of the repo the release is built from."""
+    def run(*args):
+        return subprocess.run(["git", "-C", ROOT] + list(args), capture_output=True, text=True, check=True).stdout
+    try:
+        commit = run("rev-parse", "HEAD").strip()
+        branch = run("rev-parse", "--abbrev-ref", "HEAD").strip()
+        changed = [line[3:] for line in run("status", "--porcelain", "--untracked-files=normal").splitlines() if line.strip()]
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise ReleaseError("can't read the git state of %s (%s): a release records the commit it was built from" % (ROOT, e))
+    return commit, branch, changed
+
+
+def under(path, folder):
+    path, folder = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def run_gate(paks, skip):
+    """The release consistency gate (test_release_consistency.py), before packing."""
+    if skip:
+        print("CONSISTENCY GATE SKIPPED (--skip-gate): a test build; the publish refuses it")
+        return "skipped"
+    import test_release_consistency as gate
+    problems, notes = gate.run(paks=paks)
+    for n in notes:
+        print("  note: " + n)
+    if problems:
+        raise ReleaseError("the release consistency gate failed (%d problem(s)), nothing was packed:\n%s"
+                           % (len(problems), "\n".join("  " + p for p in problems[:40])))
+    print("release consistency gate: ok")
+    return "passed"
+
+
+def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_dirty=False, skip_gate=False, key=None):
     base = base.rstrip("/")
     if pak_only == bool(game):
         raise ReleaseError("give --full <absolute game dir> (a full release) or --pak-only, not both or neither")
@@ -160,7 +204,16 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False):
             raise ReleaseError("--full: %s has only %d files to ship (a full release has at least %d): nothing built"
                                % (game, len(files), MIN_FULL_FILES))
         check_source_exe(game)
-    out = out or os.path.join(ROOT, "releases", version)
+    releases = os.path.join(ROOT, "releases")
+    out = out or os.path.join(releases, version)
+    if skip_gate and under(out, releases):
+        raise ReleaseError("--skip-gate is for test builds only: give an --out folder outside %s" % releases)
+    commit, branch, changed = git_state()
+    if changed and not allow_dirty:
+        raise ReleaseError("the git tree has uncommitted changes (%s%s): commit them first, or --allow-dirty "
+                           "(the release then records it was built from a dirty tree)"
+                           % (", ".join(changed[:5]), ", ..." if len(changed) > 5 else ""))
+    gate = run_gate(os.path.join(game, "Victory", "Content", "Paks") if game else None, skip_gate)
     release = os.path.join(out, "release")
     publish = os.path.join(out, "publish")
     for d in (release, publish):
@@ -185,7 +238,19 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False):
         json.dump(servers, f, indent=1)
     if game:
         check_exe(release)
+    # What it was built from: in the signed manifest ("build") and beside it (build.json).
+    build = {"commit": commit, "branch": branch, "dirty": bool(changed), "gate": gate,
+             "kind": "full" if game else "pak-only", "server": base}
+    if game:
+        build["exeSha256"] = patch_exe.PATCHED_SHA256
+    with open(os.path.join(out, "build.json"), "w") as f:
+        json.dump(build, f, indent=1)
+    with open(os.path.join(out, "build-details.json"), "w") as f:
+        json.dump(dict(build, version=version, game=game, changed=changed[:500]), f, indent=1)
     cmd = ["node", os.path.join(ROOT, "launcher", "tools", "make_manifest.js"), release, version, publish]
+    if key:
+        cmd.append(os.path.abspath(key))
+    cmd += ["--build", os.path.join(out, "build.json")]
     setup_exe = os.path.join(ROOT, "launcher", "dist", "TheCullingRemasterSetup.exe")
     if setup and os.path.exists(setup_exe):
         cmd += ["--setup", setup_exe]
@@ -213,8 +278,12 @@ if __name__ == "__main__":
     ap.add_argument("--pak-only", action="store_true", help="ship only the patch pak (and setup), not the game")
     ap.add_argument("--out", help="output folder (default releases/<version>)")
     ap.add_argument("--no-setup", action="store_true", help="don't offer the built launcher setup as a launcher update")
+    ap.add_argument("--allow-dirty", action="store_true", help="build from a git tree with uncommitted changes (recorded)")
+    ap.add_argument("--skip-gate", action="store_true",
+                    help="test builds only (--out outside releases/): skip the consistency gate; the publish refuses it")
+    ap.add_argument("--key", help="release signing key (default: make_manifest.js's, CULLING_RELEASE_KEY or the real key)")
     a = ap.parse_args()
     try:
-        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only)
+        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only, a.allow_dirty, a.skip_gate, a.key)
     except ReleaseError as e:
         sys.exit("make_release: " + str(e))

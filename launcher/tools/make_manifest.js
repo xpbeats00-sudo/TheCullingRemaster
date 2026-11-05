@@ -21,7 +21,10 @@
 // sha256, url), so older launchers update themselves (lib/selfupdate.js). The
 // version is the one built into the setup exe, never assumed.
 //
-// usage: node tools/make_manifest.js <release dir> <version> [out dir] [private key] [--setup <setup.exe>]
+// With --build <build.json>, that object is the manifest's "build" (the commit
+// and checks make_release.py recorded); launchers ignore it, the publish reads it.
+//
+// usage: node tools/make_manifest.js <release dir> <version> [out dir] [private key] [--setup <setup.exe>] [--build <build.json>]
 //   writes <out dir>/manifest.json(.sig) and <out dir>/objects/...
 //   key: the argument, else CULLING_RELEASE_KEY, else <home>/.culling-release/release_ed25519.pem
 
@@ -129,17 +132,25 @@ async function launcherEntry(setup, outDir, cache) {
 }
 
 async function main(...args) {
-  let setup = null;
-  const i = args.indexOf("--setup");
-  if (i >= 0) { setup = args[i + 1]; args.splice(i, 2); if (!setup) throw new Error("--setup needs the setup exe"); }
+  const option = (name) => {
+    const i = args.indexOf(name);
+    if (i < 0) return null;
+    const v = args[i + 1];
+    args.splice(i, 2);
+    if (!v) throw new Error(name + " needs a value");
+    return v;
+  };
+  const setup = option("--setup");
+  const buildFile = option("--build");
+  const info = buildFile ? JSON.parse(fs.readFileSync(buildFile, "utf8")) : null;
   const [release, version, outDir = release && path.join(release, "..", "publish"),
     keyPath = process.env.CULLING_RELEASE_KEY || DEFAULT_KEY] = args;
-  return build(release, version, outDir, keyPath, setup);
+  return build(release, version, outDir, keyPath, setup, info);
 }
 
-async function build(release, version, outDir, keyPath, setup) {
+async function build(release, version, outDir, keyPath, setup, info) {
   if (!release || !version) {
-    console.error("usage: node tools/make_manifest.js <release dir> <version> [out dir] [private key] [--setup <setup.exe>]");
+    console.error("usage: node tools/make_manifest.js <release dir> <version> [out dir] [private key] [--setup <setup.exe>] [--build <build.json>]");
     process.exit(2);
   }
   if (!fs.existsSync(keyPath)) throw new Error("no release key at " + keyPath + ": run node tools/make_release_key.js once");
@@ -159,6 +170,8 @@ async function build(release, version, outDir, keyPath, setup) {
   const serversFile = path.join(release, "..", "servers.json");
   if (fs.existsSync(serversFile)) servers = JSON.parse(fs.readFileSync(serversFile, "utf8"));
   const manifest = { version, released: new Date().toISOString(), files, servers };
+  // What the release was built from (patch/make_release.py: commit, gate, ...); launchers ignore it.
+  if (info) manifest.build = info;
   if (setup) manifest.launcher = await launcherEntry(setup, outDir, cache);
   cache.save();
   const body = Buffer.from(JSON.stringify(manifest, null, 1));

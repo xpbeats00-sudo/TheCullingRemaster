@@ -204,7 +204,15 @@ def make_logos():
 
 
 def rebrand_html(src_html):
-    html = open(src_html, "rb").read().decode("utf-8")
+    html = branded_html(open(src_html, "rb").read().decode("utf-8"))
+    open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
+    print("FrontEnd.html rebranded")
+
+
+def branded_html(html):
+    """The stock FrontEnd.html as the Remaster ships it (before
+    make_server_config.py adds its script). test_release_consistency.py
+    compares the generated page with this."""
     link = '<link rel="stylesheet" type="text/css" href="css/Remaster.css">'
     if link not in html:
         assert "</head>" in html
@@ -235,8 +243,7 @@ def rebrand_html(src_html):
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)
-    open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
-    print("FrontEnd.html rebranded")
+    return html
 
 
 def install_font():

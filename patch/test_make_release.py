@@ -110,6 +110,37 @@ try:
         assert not set(files) & set(mr.FULL_EXCLUDE), set(files) & set(mr.FULL_EXCLUDE)
         assert len(files) == len(mr.REQUIRED) + 10, files
     @test
+    def skip_gate_only_for_tests():
+        """--skip-gate is refused for a build into releases/"""
+        refuses("test builds only", mr.main, "https://example.test", "9.9.9", setup=False, pak_only=True, skip_gate=True)
+
+    real_git_state = mr.git_state
+
+    @test
+    def dirty():
+        """a git tree with uncommitted changes is refused (unless --allow-dirty)"""
+        mr.git_state = lambda: ("0" * 40, "test", ["patch/make_camos.py"])
+        try:
+            refuses("uncommitted changes (patch/make_camos.py)", build, None, pak_only=True)
+            assert not os.path.exists(out)
+        finally:
+            mr.git_state = real_git_state
+
+    @test
+    def gate_fails():
+        """a failing consistency gate stops the build before anything is packed"""
+        import test_release_consistency as gate
+        mr.git_state = lambda: ("0" * 40, "test", [])
+        real_run = gate.run
+        gate.run = lambda paks=None: (["patch/registry/camos.bin is missing"], [])
+        try:
+            refuses("consistency gate failed (1 problem(s)), nothing was packed", build, None, pak_only=True)
+            assert not os.path.exists(out)
+        finally:
+            gate.run = real_run
+            mr.git_state = real_git_state
+
+    @test
     def links():
         """release files link the install's, but what the release changes is a copy or written new"""
         import patch_exe as P

@@ -51,6 +51,11 @@ function readLive(updatesDir) {
 // top of this file), unless removals are explicitly allowed.
 function checkRemovals(next, live, allowRemovals) {
   if (!Array.isArray(next.files) || next.files.length === 0) throw new Error(`release ${next.version} lists no files: refusing it`);
+  // patch/make_release.py records its checks; a test build (gate skipped) is never published.
+  if (next.build && next.build.gate !== "passed") {
+    throw new Error(`release ${next.version} was built without the release consistency gate (gate: ${next.build.gate}): ` +
+      "a test build, not publishable. Nothing was published.");
+  }
   if (!live || !Array.isArray(live.files)) return [];
   const keep = new Set(next.files.map((f) => f.path));
   const removed = live.files.filter((f) => !keep.has(f.path)).map((f) => f.path);
