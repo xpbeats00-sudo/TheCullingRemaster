@@ -164,13 +164,17 @@ async function updateLauncher(onProgress) {
       }
     });
     selfupdate.recordTry(UPDATES(), offer.version);
-    selfupdate.install(file);
+    // Quits only once the setup is running: a setup Windows blocks (an
+    // antivirus, AppLocker) leaves this launcher working, saying so.
+    await selfupdate.install(file);
     log("launcher-update", { installing: offer.version });
     setTimeout(() => app.quit(), 300);
     return true;
   } catch (e) {
-    log("launcher-update", { version: offer.version, error: e.message });
+    log("launcher-update", { version: offer.version, op: e.op, code: e.code, error: e.message });
     launcherUpdate = { version: offer.version, error: friendly(e) };
+    // The window drops its "Updating launcher" card.
+    send("sync-progress", { phase: "launcher", version: offer.version, error: launcherUpdate.error });
     return false;
   }
 }

@@ -78,11 +78,31 @@ const manifestFor = (base, url = "objects/" + SHA, version = "1.3.0") =>
       await assert.rejects(selfupdate.download(manifestFor(s.base, "http://example.com/setup.exe"), dir, { fetchImpl: fetch }), /non-https/);
     });
 
-    await test("the setup runs silently, detached, and starts the new launcher", () => {
+    await test("the setup runs silently, detached, and starts the new launcher", async () => {
+      const { EventEmitter } = require("events");
       let call = null;
-      selfupdate.install("C:\\x\\Setup.exe", (file, args, opts) => { call = { file, args, opts }; return { unref() { call.unref = true; } }; });
+      const done = selfupdate.install("C:\\x\\Setup.exe", (file, args, opts) => {
+        call = { file, args, opts };
+        const child = Object.assign(new EventEmitter(), { unref() { call.unref = true; } });
+        setImmediate(() => child.emit("spawn"));
+        return child;
+      });
+      await done;
       assert.deepStrictEqual(call.args, ["/S", "--updated", "--force-run"]);
       assert.ok(call.opts.detached && call.unref);
+    });
+
+    await test("a setup Windows won't start (antivirus, AppLocker) is reported, not an uncaught error", async () => {
+      const { EventEmitter } = require("events");
+      const blocked = selfupdate.install("C:\\x\\Setup.exe", () => {
+        const child = Object.assign(new EventEmitter(), { unref() {} });
+        setImmediate(() => child.emit("error", Object.assign(new Error("spawn EPERM"), { code: "EPERM" })));
+        return child;
+      });
+      await assert.rejects(blocked, (e) => e.code === "EPERM" && e.op === "setup");
+      // A real spawn of a file that isn't there fails the same way.
+      await assert.rejects(selfupdate.install(path.join(tmp, "no-such-setup.exe")), (e) => e.op === "setup");
+      await assert.rejects(selfupdate.install("x", () => { throw new Error("bad"); }), /bad/);
     });
 
     await test("a setup that doesn't take is tried twice, then left alone", () => {

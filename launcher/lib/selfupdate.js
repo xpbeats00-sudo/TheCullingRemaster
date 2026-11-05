@@ -112,10 +112,21 @@ async function download(manifest, dir, { fetchImpl, onProgress = () => {}, stall
 }
 
 // Runs the setup silently: it waits for this launcher to close, installs over
-// it and starts the new launcher (--force-run). The caller quits right after.
+// it and starts the new launcher (--force-run). Resolves once the setup is
+// running (the caller quits then); rejects when it can't start, e.g. an
+// antivirus or AppLocker blocks it (the error carries op "setup").
 function install(file, spawnImpl = spawn) {
-  const child = spawnImpl(file, ["/S", "--updated", "--force-run"], { detached: true, stdio: "ignore", windowsHide: true });
-  child.unref();
+  return new Promise((resolve, reject) => {
+    const fail = (e) => reject(Object.assign(e instanceof Error ? e : new Error(String(e)), { op: "setup" }));
+    let child;
+    try {
+      child = spawnImpl(file, ["/S", "--updated", "--force-run"], { detached: true, stdio: "ignore", windowsHide: true });
+    } catch (e) {
+      return fail(e);
+    }
+    child.once("error", fail);
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
 }
 
 module.exports = { offered, validate, download, install, mayTry, recordTry, cleanup, MAX_TRIES };

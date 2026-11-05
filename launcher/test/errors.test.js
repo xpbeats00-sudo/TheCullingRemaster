@@ -23,6 +23,12 @@ test("disk and permission problems say what to do", () => {
   assert.match(friendly(Object.assign(new Error("EACCES: permission denied, open 'C:\\Program Files\\x'"), { code: "EACCES" })), /refused access/);
 });
 
+test("a launcher update Windows blocked says so, not the game folder", () => {
+  const m = friendly(Object.assign(new Error("spawn EPERM"), { code: "EPERM", op: "setup" }));
+  assert.match(m, /didn't let the launcher update start/);
+  assert.doesNotMatch(m, /game folder/);
+});
+
 test("a server error on the manifest asks to retry later", () => {
   assert.match(friendly(new SyncError("manifest.json request failed: HTTP 503", "http")), /having trouble right now \(HTTP 503\)/);
 });

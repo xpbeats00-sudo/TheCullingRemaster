@@ -14,6 +14,9 @@ function friendly(e) {
   if (kind === "signature") {
     return "The update server sent a release this launcher can't verify, so nothing was installed. Try again later. " + DIAGNOSE;
   }
+  if (e && e.op === "setup") {
+    return "Windows didn't let the launcher update start (an antivirus or app control may have blocked it). Download the new launcher from the website." + detail(msg);
+  }
   if (code === "ENOSPC" || /ENOSPC/.test(msg)) {
     return "Your drive is full. Free up some space, or choose another game folder in Settings, then press Resume." + detail(msg);
   }
