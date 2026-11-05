@@ -4,12 +4,13 @@
 // - The SHOWDOWN tile queues "showdown" (the stock Play screen only queues the
 //   Solo and Duo tiles). The server answers "showdown:1v1" and ClientWeb.js
 //   opens the arena match (StartTraining with REMASTER_SHOWDOWN_URL).
-// - Back in the menu after a round, the server sends "remaster-showdown":
-//   "next" shows the score and starts the next round after a countdown (Leave
-//   ends the series); "over" shows the final score once.
+// - The whole series is one match (the patched exe plays every round,
+//   patch/showdown_rounds.c). Back in the menu the server sends
+//   "remaster-showdown" "over" once: the final score, or the forfeit of a
+//   series quit before its end. Nothing here starts a match by itself: PLAY
+//   AGAIN is a click.
 (function () {
-  var NEXT_ROUND_SECONDS = 8;
-  var root = null, timer = null;
+  var root = null;
 
   if (typeof PlayScreen != "undefined") {
     var selected = PlayScreen.prototype.OnOptionElemSelected;
@@ -24,6 +25,7 @@
   function queue(onQueued, onFailed) {
     if (!Matchmaking.CanStartMatching() || Matchmaking.IsStartingMatchmaking) {
       if (onFailed) onFailed();
+      ShowError("Showdown can't start right now. Please try again in a moment.");
       return;
     }
     QueueMatchmaking("showdown").then(function (result) {
@@ -68,12 +70,16 @@
     document.head.appendChild(style);
     root = el("div", "hidden");
     root.id = "remaster-showdown";
+    // The card is on top of the menu: its clicks (and the right click the
+    // stock screens take as Back) stay here.
+    ["mousedown", "mouseup", "click", "contextmenu"].forEach(function (type) {
+      root.addEventListener(type, function (e) { e.stopPropagation(); if (type == "contextmenu") e.preventDefault(); });
+    });
     document.body.appendChild(root);
     return root;
   }
 
   function hide() {
-    if (timer) { clearInterval(timer); timer = null; }
     if (root) root.className = "hidden";
   }
 
@@ -107,30 +113,11 @@
     return b;
   }
 
-  function next(series, kit) {
-    var last = series.rounds[series.rounds.length - 1];
-    var ui = card(series, last == "won" ? "ROUND " + series.round + " WON" : "ROUND " + series.round + " LOST");
-    var left = NEXT_ROUND_SECONDS;
-    var kitName = kit ? " · Kit: " + kit.name : "";
-    function tick() {
-      ui.note.textContent = "Round " + (series.round + 1) + " starts in " + left + "s" + kitName;
-      if (left-- <= 0) {
-        hide();
-        queue(null, null);
-      }
-    }
-    button(ui.buttons, "START NOW", false, function () { hide(); queue(null, null); });
-    button(ui.buttons, "LEAVE SHOWDOWN", true, function () {
-      hide();
-      if (socketConnection) socketConnection.emit("showdown-leave");
-    });
-    tick();
-    timer = setInterval(tick, 1000);
-  }
-
   function over(series) {
     var title = series.forfeit ? "SHOWDOWN LEFT" : series.won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT";
-    var ui = card(series, title, series.won ? "You took " + series.wins + " rounds first." : "Your rival took " + series.losses + " rounds first.");
+    var note = series.forfeit ? "You left before the end: the series counts as lost."
+      : series.won ? "You took " + series.wins + " rounds first." : "Your rival took " + series.losses + " rounds first.";
+    var ui = card(series, title, note);
     button(ui.buttons, "CLOSE", false, hide);
     button(ui.buttons, "PLAY AGAIN", true, function () { hide(); queue(null, null); });
   }
@@ -138,8 +125,7 @@
   window.RemasterShowdown = {
     onState: function (msg) {
       if (!msg || !msg.series) return;
-      if (msg.phase == "next") next(msg.series, msg.kit);
-      else if (msg.phase == "over") over(msg.series);
+      if (msg.phase == "over") over(msg.series);
       else if (msg.phase == "left") hide();
     },
     hide: hide
