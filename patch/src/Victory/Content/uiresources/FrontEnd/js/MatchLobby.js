@@ -19,7 +19,9 @@
 // Self-contained: builds its own markup and styles (only .js files are kept
 // in the patch tree), so it can also be previewed outside the game.
 (function () {
-  var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo", showdown: "Showdown" };
+  var MODES = { ffa: "Solo Play", coop2: "Duo Play", coop3: "Trio Play", coop4: "Quad Play", lightning: "Lightning",
+    ranked_ffa: "Ranked Solo", showdown: "Showdown" };
+  var TEAM_SIZES = { coop2: 2, coop3: 3, coop4: 4 };   // the team modes (server/server.js TEAM_MODES)
   var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
   var ROWS = 10;                    // player rows that fit at any resolution
   // The bots' names: the same list the game draws from in the match
@@ -143,6 +145,8 @@
     if (q.indexOf("showdown") >= 0) return MODES.showdown;
     if (q.indexOf("ranked") >= 0) return MODES.ranked_ffa;
     if (q.indexOf("coop2") >= 0) return MODES.coop2;
+    if (q.indexOf("coop3") >= 0) return MODES.coop3;
+    if (q.indexOf("coop4") >= 0) return MODES.coop4;
     if (q.indexOf("ffa") >= 0) return MODES.ffa;
     return "";
   }
@@ -314,11 +318,12 @@
     return byMap && lobby.map && typeof byMap[lobby.map] == "number" ? byMap[lobby.map] : lobby.matchBots;
   }
 
-  // The pregame roster: you, then the contestants of your match. In Duo: your
-  // team first (you and your teammate), then the other teams.
+  // The pregame roster: you, then the contestants of your match. In Duo, Trios
+  // and Quads: your team first (you and your 1-3 teammates), then the others.
   function renderRoster(lobby, list, names) {
     var count = matchBots(lobby);
-    var duo = lobby.queue === "coop2";
+    var size = TEAM_SIZES[lobby.queue] || 0;
+    var duo = size > 0;
     var me = myName(), you = null;
     for (var i = 0; i < lobby.players.length; i++) if (lobby.players[i].name === me) you = lobby.players[i];
     if (!you) you = lobby.players[0];
@@ -330,12 +335,12 @@
     var shown = count > rows ? rows - 1 : count;
     for (var b = 0; b < shown; b++) {
       var r = botRow(bots[b], cards[b], lobby.id * 31 + b + 1);
-      if (duo && b === 0) {
+      if (duo && b < size - 1) {
         r.insertBefore(el("span", "rl-tag", "TEAMMATE"), r.lastChild && r.lastChild.className == "rl-rank" ? r.lastChild : null);
       }
       list.appendChild(r);
       names["bot " + bots[b]] = true;
-      if (duo && b === 0) list.appendChild(divider("OPPONENTS"));
+      if (duo && b === size - 2) list.appendChild(divider("OPPONENTS"));
     }
     if (shown < count) {
       var more = emptyRow("+" + (count - shown) + " more contestants");
@@ -343,7 +348,7 @@
       list.appendChild(more);
     }
     build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
-    build().querySelector(".rl-count").textContent = duo ? Math.ceil((count + 1) / 2) + " teams" : (count + 1) + " contestants";
+    build().querySelector(".rl-count").textContent = duo ? Math.ceil((count + 1) / size) + " teams" : (count + 1) + " contestants";
     build().querySelector(".rl-note").textContent = lobby.note || "";
   }
 

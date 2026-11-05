@@ -1153,20 +1153,25 @@ function lobbyCard(userID) {
 
 // The menu's queue names carry a mode and sometimes a map ("ffa_jungle",
 // "ffa_prison_coop2", "ranked_ffa"): one lobby per mode, the map as the
-// player's first vote.
+// player's first vote. coop2/coop3/coop4 are Duo, Trios and Quads.
 function lobbyQueue(raw) {
   const q = queueName(raw);
   const map = /prison/.test(q) ? 'prison' : /jungle/.test(q) ? 'jungle' : null;
-  const mode = q.startsWith('ranked') ? 'ranked_ffa' : /coop2/.test(q) ? 'coop2' : q.startsWith('lightning') ? 'lightning'
+  const team = /coop([234])/.exec(q);
+  const mode = q.startsWith('ranked') ? 'ranked_ffa' : team ? 'coop' + team[1] : q.startsWith('lightning') ? 'lightning'
     : /^(ffa|quick_play)/.test(q) ? 'ffa' : q;
   return { mode, map };
 }
 
+// The team modes: the team size, and the prefix of the match the menu opens
+// ("duo:<map>", "trio:<map>", "quad:<map>"; patch/make_duo.py's URLs).
+const TEAM_MODES = { coop2: { size: 2, start: 'duo:' }, coop3: { size: 3, start: 'trio:' }, coop4: { size: 4, start: 'quad:' } };
+
 function startLocalMatch(socket, queue) {
   const { mode, map } = lobbyQueue(queue);
   const q = queueName(queue);           // cleaned: a malformed name is 'ffa'
-  if (/^ranked/.test(q) && /coop2/.test(q)) {
-    // Ranked Duo isn't a mode (yet): say so rather than start Ranked Solo.
+  if (/^ranked/.test(q) && /coop[234]/.test(q)) {
+    // Ranked teams aren't a mode (yet): say so rather than start Ranked Solo.
     socket.emit('join-mm-fail', { reason: 'queue-unavailable' });
     return;
   }
@@ -1190,8 +1195,8 @@ function startLocalMatch(socket, queue) {
     for (const id of p.members) {
       const s = socketsByUser.get(id);
       if (id === socket.userID || !s || !s.connected || presenceState(id) === 'match') continue;
-      // Duo is played in pairs: the leader and one party member.
-      if (mode === 'coop2' && group.length >= 2) break;
+      // A team mode takes as many as its teams hold (Duo: the leader and one).
+      if (TEAM_MODES[mode] && group.length >= TEAM_MODES[mode].size) break;
       group.push({ id, socket: s });
       s.emit('join-mm-group');
     }
@@ -1206,9 +1211,9 @@ function startLocalMatch(socket, queue) {
 // their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
 function launchMatch(socket, queue, map) {
   const showdown = queue === SHOWDOWN.queue;
-  // Duo: the pairs mode, you and a teammate (patch/make_duo.py); the menu
-  // starts it from "duo:<map>".
-  const duo = lobbyQueue(queue).mode === 'coop2';
+  // Duo, Trios, Quads: the pairs mode with you and 1-3 teammates
+  // (patch/make_duo.py); the menu starts it from "duo:<map>" ("trio:", "quad:").
+  const team = TEAM_MODES[lobbyQueue(queue).mode] || null;
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   let rankedId = null;
   if (String(queue).startsWith('ranked')) {
@@ -1227,9 +1232,9 @@ function launchMatch(socket, queue, map) {
     ranked: rankedId
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode: lobbyQueue(queue).mode });
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex);
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (duo ? 'duo:' : 'offline:') + mapIndex,
+    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (team ? team.start : 'offline:') + mapIndex,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex')
   });
@@ -1262,7 +1267,8 @@ function sendShowdown(socket, loginAt) {
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
 const MATCH_PRESENCE_MS = 45 * 60 * 1000;
-const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning' };
+const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', coop3: 'Trios', coop4: 'Quads', ranked_ffa: 'Ranked', showdown: 'Showdown',
+  lightning: 'Lightning' };
 
 function usernameOf(userID) {
   const key = accounts.keyForUserID(userID);
@@ -1473,7 +1479,8 @@ io.on('connection', (socket) => {
     socket.emit('player-online-response', { data: socketsByUser.size });
     socket.emit('player-counts', { online: socketsByUser.size, inQueue: 0 });
     socket.emit('update-queue-status', {
-      ffa: { isActive: true }, coop2: { isActive: true }, lightning: { isActive: true }, ranked_ffa: { isActive: true }
+      ffa: { isActive: true }, coop2: { isActive: true }, coop3: { isActive: true }, coop4: { isActive: true },
+      lightning: { isActive: true }, ranked_ffa: { isActive: true }
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);

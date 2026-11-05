@@ -208,12 +208,13 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
   line-height: 1;
   color: rgba(240, 240, 240, 1);
 }
-/* Play screen: five tiles (Solo, Ranked, Duo, Showdown, Custom) in the stock
-   19:25 shape, titles in the Remaster face; Showdown art from
+/* Play screen: seven tiles (Solo, Ranked, Duo, Trio, Quad, Showdown, Custom)
+   in the stock 19:25 shape, within the stock row (90% of the width), titles
+   in the Remaster face; Trio and Quad use Duo's art, Showdown's is from
    make_showdown_tile.py. */
-.play-tiled-menu-options-container ul li { width: 16vw; height: 21vw; }
+.play-tiled-menu-options-container ul li { width: 11.4vw; height: 15vw; }
 .play-tiled-menu-options-container ul:first-child li { margin-left: 0.6vw; margin-right: 0.6vw; }
-#play-menu .play-title h1 { font: 2.3vw Creepster; letter-spacing: 0.15vw; color: rgba(240, 240, 240, 1); }
+#play-menu .play-title h1 { font: 1.8vw Creepster; letter-spacing: 0.1vw; color: rgba(240, 240, 240, 1); white-space: nowrap; }
 #play-menu li:focus .play-title h1, #play-menu li:hover .play-title h1 { color: rgba(255, 70, 60, 1); }
 #play-menu .play-showdown-bg { background-image: url("../images/ShowdownPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
 .play-tiled-menu-options-container ul li.play-showdown-bg:focus,
@@ -284,6 +285,7 @@ def rebrand_html(src_html):
         html = html.replace(old, new)
     html = add_ranked(html)
     html = add_play_screen(html)
+    html = add_team_tiles(html)
     html = add_airdrop_unlocks(html)
     html = show_survival(html)
     html = add_friends(html)
@@ -380,6 +382,48 @@ def add_play_screen(html):
         block = html[start:end]
         old = block[block.index("<p>"):block.index("</p>") + 4]
         html = html[:start] + block.replace(old, "<p>%s</p>" % text) + html[end:]
+    return html
+
+
+TEAM_TILE = """          <li tabindex="0" class="play-duo-bg" id="{id}">
+            <div class="tiledhighlighttopcontainer">
+              <div class="tiledhighlighttop"></div>
+            </div>
+            <div class="tiled-menu-rollover">
+              <p>{text}</p>
+            </div>
+            <div class="play-title">
+              <h1>{title}</h1>
+            </div>
+            <div class="tiledhighlightbottomcontainer">
+              <div class="tiledhighlightbottom"></div>
+            </div>
+          </li>
+"""
+# Trios and Quads (make_duo.TEAM_URLS): (tile id, title, description), after Duo.
+TEAM_TILES = [
+    ("trio_play", "TRIO PLAY", "Fight in threes with two teammates. Vote for Jungle or Prison in the lobby."),
+    ("quad_play", "QUAD PLAY", "Fight in fours with three teammates. Vote for Jungle or Prison in the lobby."),
+]
+# Queues the TRIO and QUAD tiles (the stock Play screen queues only Solo and Duo).
+TEAMS_SCRIPT = '<script src="js/Teams.js"></script>'
+
+
+def add_team_tiles(html):
+    """The Play screen's TRIO and QUAD tiles, right after DUO, queued by
+    js/Teams.js (loaded after the Play screen's script). In the page's own
+    line endings; safe to run on a page that already has them."""
+    nl = "\r\n" if "\r\n" in html else "\n"
+    if 'id="trio_play"' not in html:
+        start = html.index('id="duo_play"')
+        end = html.index("</li>", start) + len("</li>")
+        end = html.index("\n", end) + 1
+        tiles = "".join(TEAM_TILE.format(id=i, title=t, text=x) for i, t, x in TEAM_TILES).replace("\n", nl)
+        html = html[:end] + tiles + html[end:]
+    if TEAMS_SCRIPT not in html:
+        play = '<script src="js/Screens/Play.js"></script>'
+        assert html.count(play) == 1, play
+        html = html.replace(play, play + nl + "  " + TEAMS_SCRIPT)
     return html
 
 
@@ -484,14 +528,19 @@ def add_leaderboard(html):
 
 
 def apply_menu_changes(path):
-    """--menu-only: the friends menu, the leaderboard and the SURVIVAL item
-    applied to an already generated FrontEnd.html in place (no logos, fonts or
-    movies). Safe to repeat."""
+    """--menu-only: the friends menu, the leaderboard, the SURVIVAL item and the
+    TRIO and QUAD tiles applied to an already generated FrontEnd.html in place,
+    and css/Remaster.css beside it rewritten (no logos, fonts or movies). Safe
+    to repeat."""
     html = open(path, "rb").read().decode("utf-8")
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)
+    html = add_team_tiles(html)
     open(path, "wb").write(html.encode("utf-8"))
+    css = os.path.join(os.path.dirname(os.path.abspath(path)), "css")
+    if os.path.isdir(css):
+        open(os.path.join(css, "Remaster.css"), "w").write(REMASTER_CSS)
     print(path, "updated")
 
 

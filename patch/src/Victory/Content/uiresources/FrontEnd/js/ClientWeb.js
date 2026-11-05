@@ -21,6 +21,19 @@ var REMASTER_DUO_URLS = [
   "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
 ];
 var REMASTER_SHOWDOWN_URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C";
+// Trios and Quads: the Duo URLs with ?TeamSize=3 / 4 (make_duo.TEAM_URLS; the
+// patched exe teams contestants by it). The server answers "trio:<map>" and
+// "quad:<map>".
+var REMASTER_TEAM_URLS = {
+  "trio": [
+    "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C?TeamSize=3",
+    "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C?TeamSize=3"
+  ],
+  "quad": [
+    "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C?TeamSize=4",
+    "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C?TeamSize=4"
+  ]
+};
 
 var socketConnection = null;
 var bSentInvite = false;
@@ -1450,6 +1463,17 @@ function BindClientwebEvents(deferred) {
           Matchmaking.SetMatchmaking(false);
           engine.call("PostSoundEvent", "Stop_MenuMusic");
           engine.call("StartTraining", REMASTER_DUO_URLS[duoMap == 1 ? 1 : 0]);
+          return;
+      }
+      // Trios and Quads: the same, with the team size in the URL.
+      var teamStart = msg && typeof msg.gameServer == "string" ? /^(trio|quad):(\d*)$/.exec(msg.gameServer) : null;
+      if (teamStart) {
+          var teamMap = parseInt(teamStart[2], 10) || 0;
+          console.log("match-ready:: " + teamStart[1] + " on map " + teamMap);
+          Matchmaking.MatchmakingState = "JOINING";
+          Matchmaking.SetMatchmaking(false);
+          engine.call("PostSoundEvent", "Stop_MenuMusic");
+          engine.call("StartTraining", REMASTER_TEAM_URLS[teamStart[1]][teamMap == 1 ? 1 : 0]);
           return;
       }
       // Showdown (make_showdown.py): you against one bot in the Jungle arena,
