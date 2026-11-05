@@ -501,15 +501,21 @@
   }
 
   // The launcher updating itself: it restarts on its own when done.
-  function onLauncherUpdate(p) {
-    const pct = Math.floor(p.done / p.total * 100);
+  async function onLauncherUpdate(p) {
+    const v = UiLogic.launcherUpdateView(p, bytes);
+    if (!v) {
+      // It failed: the card goes, the screen shows the launcher as it is.
+      if (opLive && opLive.launcher) opLive = null;
+      if (p && p.error) toast(p.error);
+      if (!syncing) state = await api.state();
+      render();
+      return;
+    }
     const box = $("#status-game");
     box.className = "status-game busy";
-    $("#status-title").textContent = "Updating launcher";
-    $("#status-sub").textContent = p.done < p.total ? `Version ${p.version} · ${pct}%` : `Version ${p.version} · restarting`;
-    opLive = { kind: "Operation in progress · Updating launcher", title: `Launcher ${p.version}`,
-      file: p.done < p.total ? "The launcher restarts by itself when it's done" : "Restarting",
-      frac: p.total ? p.done / p.total : 1, size: `${bytes(p.done)} / ${bytes(p.total)}` };
+    $("#status-title").textContent = v.title;
+    $("#status-sub").textContent = v.sub;
+    opLive = v.op;
     setOp(opLive);
     const btn = $("#play");
     btn.disabled = true;
@@ -587,6 +593,7 @@
       state = await api.state();
     } finally {
       btn.disabled = false;
+      opLive = UiLogic.keepOp(opLive, state);
       render();
     }
   }
@@ -648,7 +655,12 @@
   async function start() {
     api = window.launcher;
     // Without the intro, the start-up checks finish after this page shows.
-    if (api.onStateChanged) api.onStateChanged(async () => { if (!syncing) { state = await api.state(); render(); } });
+    if (api.onStateChanged) api.onStateChanged(async () => {
+      if (syncing) return;
+      state = await api.state();
+      opLive = UiLogic.keepOp(opLive, state);
+      render();
+    });
     state = await api.state();
     buildNews();
     wire();

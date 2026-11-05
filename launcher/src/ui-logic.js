@@ -16,5 +16,28 @@
     return "Downloading";
   }
 
-  return { downloadVerb };
+  // The launcher updating itself, from its progress events: the status line
+  // and the operation card, or null once it failed (p.error): the card goes
+  // and the screen shows the launcher's normal state again.
+  function launcherUpdateView(p, bytes) {
+    if (!p || p.error || !p.total) return null;
+    const pct = Math.floor(p.done / p.total * 100);
+    const going = p.done < p.total;
+    return {
+      title: "Updating launcher",
+      sub: going ? `Version ${p.version} · ${pct}%` : `Version ${p.version} · restarting`,
+      op: { launcher: true, kind: "Operation in progress · Updating launcher", title: `Launcher ${p.version}`,
+        file: going ? "The launcher restarts by itself when it's done" : "Restarting",
+        frac: p.done / p.total, size: `${bytes(p.done)} / ${bytes(p.total)}` }
+    };
+  }
+
+  // The operation card to keep after a state refresh: a launcher update's card
+  // goes once the update failed.
+  function keepOp(opLive, state) {
+    if (opLive && opLive.launcher && (!state.launcherUpdate || state.launcherUpdate.error)) return null;
+    return opLive;
+  }
+
+  return { downloadVerb, launcherUpdateView, keepOp };
 });
