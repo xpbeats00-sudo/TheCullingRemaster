@@ -99,28 +99,60 @@ class Sessions {
     return s.userID;
   }
 
+  // Ends every game session of a player (a password reset); returns how many.
+  revokeUser(userID) {
+    const list = (this.byUser.get(userID) || []).slice();
+    for (const t of list) this.remove(t);
+    if (list.length) this.save();
+    return list.length;
+  }
+
   get size() { return this.tokens.size; }
 }
 
 class MatchTickets {
-  constructor(now = Date.now) {
+  // file: where open tickets are kept, so a server restart (every deploy)
+  // doesn't lose the matches being played; null keeps them in memory only.
+  constructor(now = Date.now, file = null, opts = {}) {
     this.now = now;
     this.open = new Map();          // userID -> { id, userID, ip, startedAt, ...info }
     this.recent = new Map();        // ip -> { userID, at } of the last paid result
+    this.store = null;
+    if (file) {
+      let saved = [];
+      try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none yet */ }
+      const cutoff = this.now() - TICKET_TTL_MS;
+      (Array.isArray(saved) ? saved : [])
+        .filter((t) => t && typeof t.userID === "string" && typeof t.id === "string" && Number.isFinite(t.startedAt) && t.startedAt >= cutoff)
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .forEach((t) => this.open.set(t.userID, t));
+      this.store = new CoalescedJsonFile(file, () => JSON.stringify([...this.open.values()]),
+        { delayMs: opts.saveDelayMs || 0, onError: opts.onSaveError, now });
+    }
   }
 
-  // info: what the result needs to know about the match (its map).
+  save() {
+    if (this.store) this.store.markDirty();
+  }
+
+  flushSync() {
+    return this.store ? this.store.flushSync() : false;
+  }
+
+  // info: what the result needs to know about the match (map, mode, and the
+  // ranked match it is, if any).
   start(userID, ip, info = {}) {
     this.expire();
     const t = Object.assign({}, info, { id: crypto.randomBytes(8).toString("hex"), userID, ip, startedAt: this.now() });
     this.open.delete(userID);       // re-insert so the Map stays oldest-first
     this.open.set(userID, t);       // a new match replaces an unfinished one
+    this.save();
     return t;
   }
 
   expire() {
     const cutoff = this.now() - TICKET_TTL_MS;
-    for (const [u, t] of this.open) { if (t.startedAt >= cutoff) break; this.open.delete(u); }
+    for (const [u, t] of this.open) { if (t.startedAt >= cutoff) break; this.open.delete(u); this.save(); }
     const recentCutoff = this.now() - RECENT_TTL_MS;
     for (const [ip, r] of this.recent) { if (r.at >= recentCutoff) break; this.recent.delete(ip); }
   }
@@ -142,6 +174,7 @@ class MatchTickets {
       if (!t) return { error: "no-match" };
     }
     this.open.delete(t.userID);
+    this.save();
     this.recent.delete(ip);         // re-insert so the Map stays oldest-first
     this.recent.set(ip, { userID: t.userID, at: this.now() });
     return { ticket: t, elapsed: (this.now() - t.startedAt) / 1000 };

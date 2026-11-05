@@ -77,7 +77,7 @@ async function play(port, userID) {
   await next(socket, "login_ready");
   socket.emit("login", { token: login.json.token });
   await next(socket, "auth-response");
-  socket.emit("set-card", { cardID: 195041 });
+  socket.emit("set-card", { cardID: 191001 });
   socket.emit("join-mm", { queueName: "ffa" });
   await next(socket, "match-ready");
   const r = await request(port, "POST", "/api/matchresult", { victory: true, kills: 4, damage: 300, timeAlive: 1 },
@@ -118,7 +118,7 @@ async function gracefulStopKeepsEverything(port, how) {
     assert.ok(after, "profile saved");
     assert.strictEqual(after.stats.gamesPlayed, 1, "match result saved on stop");
     assert.strictEqual(after.stats.wins, 1);
-    assert.strictEqual(after.cardID, 195041, "card choice saved on stop");
+    assert.strictEqual(after.cardID, 191001, "card choice saved on stop");
     const sessions = JSON.parse(fs.readFileSync(path.join(dir, "sessions.json"), "utf8"));
     assert.ok(Object.values(sessions).some((s) => s.userID === user), "login token saved");
     assert.ok(!fs.existsSync(path.join(dir, "profiles.json.tmp")), "no temp file left");

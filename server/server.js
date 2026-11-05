@@ -302,7 +302,10 @@ const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
   saveDelayMs: SAVE_DELAY_MS,
   onSaveError: (e) => { metrics.error('save'); log('saving sessions failed:', e.message); }
 });
-const tickets = new MatchTickets();
+const tickets = new MatchTickets(Date.now, path.join(DATA_DIR, 'tickets.json'), {
+  saveDelayMs: SAVE_DELAY_MS,
+  onSaveError: (e) => { metrics.error('save'); log('saving match tickets failed:', e.message); }
+});
 // Friends (friends.json) and parties (memory); see friends.js.
 const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
   saveDelayMs: SAVE_DELAY_MS,
@@ -341,7 +344,7 @@ const socketIp = (socket) => clientIp(socket.handshake.address, socket.handshake
 
 function normalizeUserID(raw) {
   let id = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
-  if (!id) id = 'steam:76561198000000000';
+  if (!id) return '';
   if (!id.includes(':')) id = 'steam:' + id;
   return id;
 }
@@ -517,7 +520,9 @@ app.post('/api/matchresult', (req, res) => {
   const credits = matchCredits(r);
   p.cullCredits += credits;
   let rankedResult = null;
-  if (p.ranked && p.ranked.pending) {
+  // Only the result of the ranked match itself scores it: a Solo, Duo or
+  // Showdown result never finishes a ranked match left pending.
+  if (p.ranked && p.ranked.pending && claim.ticket.ranked && p.ranked.pending.id === claim.ticket.ranked) {
     const placement = tooShort ? field : r.victory ? 1 : parseInt(body.placement, 10);
     if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
     const out = ranked.finishMatch(p, { matchId: body.matchId, placement, field, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
@@ -670,6 +675,7 @@ app.post('/api/account/register', asyncRoute(async (req, res) => {
     do userID = acc.randomSteamID(); while (hasProfile(userID) || accounts.ownsUserID(userID));
   }
   accounts.create({ username, email, userID, password: hash });
+  rememberAccountIp(accounts.get(key), ip);
   leaderboard.changed();
   getProfile(userID);
   const token = accounts.issueToken(key);
@@ -677,13 +683,30 @@ app.post('/api/account/register', asyncRoute(async (req, res) => {
   res.json({ token, username, userID, claimed });
 }));
 
+// The last few addresses an account signed in from, hashed (accounts.hashIp).
+const KNOWN_IPS = 5;
+function accountKnowsIp(a, ip) {
+  return Boolean(a && Array.isArray(a.knownIps) && a.knownIps.includes(accounts.hashIp(ip)));
+}
+function rememberAccountIp(a, ip) {
+  if (!a) return;
+  const h = accounts.hashIp(ip);
+  a.knownIps = [h].concat((Array.isArray(a.knownIps) ? a.knownIps : []).filter((x) => x !== h)).slice(0, KNOWN_IPS);
+  accounts.save();
+}
+
 app.post('/api/account/login', asyncRoute(async (req, res) => {
   const body = bodyObject(req);
   const ip = requestIp(req);
   const key = acc.usernameKey(body.username);
   // Every attempt counts against the limits; a right password is given back.
   if (!allowLoginIp(ip)) return res.status(429).json({ error: 'too-many-attempts' });
-  if (key && !allowLoginUser(key)) { allowLoginIp.refund(ip); return res.status(429).json({ error: 'too-many-attempts' }); }
+  // The per-username limit stops guessing spread over many addresses, but the
+  // addresses the player has signed in from before (kept hashed) are exempt,
+  // so someone else's wrong guesses can't lock the player out.
+  const known = key && accountKnowsIp(accounts.get(key), ip);
+  const userCounted = Boolean(key && !known);
+  if (userCounted && !allowLoginUser(key)) { allowLoginIp.refund(ip); return res.status(429).json({ error: 'too-many-attempts' }); }
   const password = body.password;
   // No account can have a malformed name or an over-long password: no hash needed.
   if (!key || typeof password !== 'string' || password.length > 128) return res.status(401).json({ error: 'wrong-credentials' });
@@ -692,7 +715,8 @@ app.post('/api/account/login', asyncRoute(async (req, res) => {
   const ok = await acc.verifyPassword(password, a ? a.password : await acc.dummyPasswordHash());
   if (!ok || !a) return res.status(401).json({ error: 'wrong-credentials' });
   allowLoginIp.refund(ip);
-  allowLoginUser.refund(key);
+  if (userCounted) allowLoginUser.refund(key);
+  rememberAccountIp(a, ip);
   a.lastLoginAt = Date.now();
   const token = accounts.issueToken(key);
   res.json({ token, username: a.username, userID: a.userID });
@@ -817,9 +841,10 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
   const password = acc.randomPassword(16);
   accounts.setPassword(key, await acc.hashPassword(password));
   const revoked = accounts.revokeAll(key);
-  // Signed out everywhere, and the game can't log in on an old grant either.
+  // Signed out everywhere, and the game can't log in on an old grant or session either.
   accounts.revokeGrant(a.userID);
-  log('password reset for', a.userID, '(' + revoked + ' tokens revoked)');
+  const sessionsRevoked = sessions.revokeUser(a.userID);
+  log('password reset for', a.userID, '(' + revoked + ' tokens, ' + sessionsRevoked + ' game sessions revoked)');
   res.json({ username: a.username, password, revokedTokens: revoked });
 }));
 
@@ -1056,14 +1081,22 @@ function launchMatch(socket, queue, map) {
   // starts it from "duo:<map>".
   const duo = lobbyQueue(queue).mode === 'coop2';
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
-  tickets.start(socket.userID, socketIp(socket), { map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
+  let rankedId = null;
   if (String(queue).startsWith('ranked')) {
-    const p = getProfile(socket.userID || normalizeUserID());
+    const p = getProfile(socket.userID);
     const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
     if (abandoned) log('ranked abandoned', abandoned.matchId, abandoned.ratingBefore, '->', abandoned.ratingAfter);
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
+    rankedId = match.id;
     saveProfiles();
   }
+  // The ticket says which match this is: its map, its mode, and the ranked
+  // match it scores (only that ranked match is finished by its result).
+  tickets.start(socket.userID, socketIp(socket), {
+    map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle',
+    mode: showdown ? SHOWDOWN.queue : lobbyQueue(queue).mode,
+    ranked: rankedId
+  });
   if (!showdown) setPresence(socket.userID, 'match', { mode: lobbyQueue(queue).mode });
   log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
   socket.emit('match-ready', {
@@ -1312,7 +1345,10 @@ io.on('connection', (socket) => {
     later(sendEntitlements, 2000);
     later(() => sendShowdown(socket), 1500);
     friends.seen(userID);
-    if (presenceState(userID) !== 'match') presence.delete(userID);   // back in the menu
+    // The menu logging in means the game is back in the menu: a match the HUD
+    // never reported (a crash) no longer keeps the player "In match", so a
+    // party leader's queue includes them again. The ticket stays claimable.
+    presence.delete(userID);
     notifyFriends(userID);
   });
 
@@ -1349,7 +1385,12 @@ io.on('connection', (socket) => {
     // Card IDs are item type IDs (the game sends a number or a numeric string).
     const id = msg && msg.cardID;
     const ok = (typeof id === 'number' && Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^\d{1,12}$/.test(id));
-    getProfile(socket.userID).cardID = ok ? id : 0;
+    const p = getProfile(socket.userID);
+    // Only a card the player owns (ranked reward cards included once earned).
+    const item = ok ? catalogByTid.get(Number(id)) : null;
+    const owned = item && !NOT_OWNABLE.has(item.class) && levelReached(p, item) && (!isCustom(item) || ownsItem(p, item));
+    if (ok && Number(id) !== 0 && !owned) log('set-card refused (not owned)', socket.userID, id);
+    p.cardID = ok && (Number(id) === 0 || owned) ? id : 0;
     saveProfiles();
   });
   on('get-cards', (msg) => {
@@ -1367,7 +1408,7 @@ io.on('connection', (socket) => {
   // The game only asks for owned items now and then, so push them whenever
   // the catalog has (re)loaded as well.
   const sendEntitlements = () => socket.emit('entitlements-response',
-    entitlements(getProfile(socket.userID || normalizeUserID())));
+    entitlements(getProfile(socket.userID)));
   on('get-entitlements', sendEntitlements);
   on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {
@@ -1383,8 +1424,13 @@ io.on('connection', (socket) => {
   on('purchase-entitlement', (msg) => {
     const typeId = parseInt(msg && msg.entitlementID, 10);
     const item = catalogByTid.get(typeId);
-    const p = getProfile(socket.userID || normalizeUserID());
-    if (item && item.rankedReward && !p.owned.includes(typeId)) {
+    const p = getProfile(socket.userID);
+    // Nothing to buy: an unknown ID, currency or a crate is never "bought".
+    if (!item || NOT_OWNABLE.has(item.class)) {
+      socket.emit('purchase-fail', { reason: 'unknown-item' });
+      return;
+    }
+    if (item.rankedReward && !p.owned.includes(typeId)) {
       socket.emit('purchase-fail', { reason: 'ranked-reward' });
       return;
     }
@@ -1416,7 +1462,7 @@ io.on('connection', (socket) => {
   on('purchase-item-authenticated', () => socket.emit('purchase-item-authenticated-fail', { message: 'The store is not available on the local server.' }));
 
   on('player-leaderboard-request', () => {
-    const p = getProfile(socket.userID || normalizeUserID());
+    const p = getProfile(socket.userID);
     socket.emit('player-leaderboard-response', { data: emptyLeaderboard(p) });
   });
   on('get-season-summary', (msg) => {
@@ -1525,8 +1571,9 @@ io.on('connection', (socket) => {
   });
   on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   on('lobby-start-match', () => {
+    if (!socket.lobby) return socket.emit('lobby-update-fail', {});
     const map = socket.lobby && /prison|jungle2/i.test(socket.lobby.mapName) ? 1 : 0;
-    tickets.start(socket.userID, socket.ip);
+    tickets.start(socket.userID, socket.ip, { map: map ? 'prison' : 'jungle', mode: 'custom' });
     socket.emit('match-ready', { gameServer: 'offline:' + map, nonce: 'x', serverNonce: 'x' });
   });
 
@@ -1554,6 +1601,7 @@ const BLANK_PROFILE = { stats: { wins: 0, kills: 0, level: 1, rank: 0 }, cardID:
 function flushAll(why) {
   const wroteProfiles = profileStore.flushSync();
   const wroteSessions = sessions.flushSync();
+  tickets.flushSync();
   const wroteAccounts = accounts.flushSync();
   friends.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {

@@ -158,7 +158,7 @@ function setup(options = {}) {
     const a = await srv.connect(await srv.login(A));
     const b = await srv.connect(await srv.login(B));
     sockets.push(a, b);
-    a.emit("set-card", { cardID: 42 });
+    a.emit("set-card", { cardID: 191001 });   // a stock card (only owned cards can be shown)
 
     await test("on the server: both players see the lobby with cards, then both matches start", async () => {
       const seen = [];
@@ -170,7 +170,7 @@ function setup(options = {}) {
       assert.ok(ma.gameServer.startsWith("offline:") && mb.gameServer.startsWith("offline:"));
       const both = seen.find((l) => l.players.length === 2);
       assert.ok(both, "a saw both players");
-      assert.deepStrictEqual(both.players.map((p) => p.cardID).sort(), [0, 42]);
+      assert.deepStrictEqual(both.players.map((p) => p.cardID).sort(), [0, 191001]);
       assert.ok(both.players.every((p) => p.name === "Player" && p.level >= 1 && !("userID" in p)), "no IDs shown");
       assert.ok(seen.some((l) => l.state === "starting"));
     });
