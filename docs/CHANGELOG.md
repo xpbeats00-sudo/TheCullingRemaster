@@ -13,6 +13,31 @@
 - Up to 24 contestants instead of 16 (Victory.exe patched by `patch/patch_exe.py`): 23 bots on Jungle. Bots have 25 names, so none show an ID.
 - Ranked scores a match out of the contestants it really had: 24 on Jungle from the new build, 16 on Prison and from older builds.
 
+## Launcher (next release)
+
+**Game Sync**
+- Files changed in the game folder at the release already installed now read "Repair needed (N files changed)", not "Update available". PLAY offers Repair or Play anyway instead of forcing a sync, and a repair keeps the files it replaces in the game folder's `.remaster\replaced` folder (the newest repair's only, up to 1 GB).
+- Verify & Sync with nothing to do, and a repair at the installed release, no longer delete the previous version's backup or point "Restore previous version" at the current version. The old backup goes only once a new update has installed.
+- A dropped connection mid-download pauses Game Sync with "Connection lost — Resume when you're back online" instead of retrying every file for hours; the progress shows "Reconnecting" while connections keep failing.
+- Downloads left over from an older release are deleted, and no longer show as "Download paused" offline.
+- A game folder at the root of a drive (D:\) works.
+
+**Start-up and offline**
+- Offline at start-up, the launcher keeps trying to reach the update server by itself (5 s, growing to once a minute), with a Retry button next to Offline. Server ping and player count refresh every 45 s.
+- A start-up check that fails finishes the start-up screen with the error instead of hanging it.
+- A game folder that is gone (an unplugged drive, a deleted folder) says "Game folder not found" instead of "Ready to install".
+
+**PLAY**
+- PLAY shows Running while the game runs and can't start a second copy.
+- An install that uses a real Steam account is told so at PLAY, not asked to sign in.
+- A Steam copy of the game chosen in Settings is refused (installing there would replace Steam's files) unless the launcher already manages it.
+
+**Other**
+- Error messages say what Windows blocked: the game starting, a file locked by the running game, the launcher's settings folder, the game folder, or a launcher update.
+- A launcher update an antivirus blocks is reported instead of crashing the launcher, and the "Updating launcher" card goes away after a failed update. Offline starts no longer reset the limit on update tries.
+- Settings with an empty server list or a bad update address fall back to the defaults; the window buttons always work.
+- The window fits screens smaller than 1280x760.
+
 ## Launcher 1.3.0 (not yet published)
 
 **Accounts**

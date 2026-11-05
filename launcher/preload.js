@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("launcher", {
   copyDiagnostics: () => ipcRenderer.invoke("diagnostics"),
   onStateChanged: on("state-changed"),
   pingServers: () => ipcRenderer.invoke("ping-servers"),
+  retryConnection: () => ipcRenderer.invoke("retry-connection"),
   play: () => ipcRenderer.invoke("play"),
   chooseGameFolder: () => ipcRenderer.invoke("choose-game-folder"),
   setSetting: (key, value) => ipcRenderer.invoke("set-setting", key, value),

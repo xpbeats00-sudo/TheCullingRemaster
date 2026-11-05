@@ -70,6 +70,7 @@
     setSetting: async (k, v) => { state.settings[k] = v; return window.launcher.state(); },
     chooseGameFolder: async () => window.launcher.state(),
     checkUpdates: async () => { await wait(600); return window.launcher.state(); },
+    retryConnection: async () => { await wait(500); return Object.assign(await window.launcher.state(), { reconnected: state.online }); },
     sync: async () => {
       paused = false;
       const p = state.pending;

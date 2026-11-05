@@ -17,12 +17,17 @@
 //      and SHA-256 as it completes;
 //   2. once every file is staged, a journal is written and the files are moved
 //      into place, the files they replace (and launcher-managed files the new
-//      release no longer has) going to <game>/.remaster/backup/;
+//      release no longer has) going to a backup folder of the commit's own
+//      (<game>/.remaster/backup-<id>/);
 //   3. the release is marked installed only when the commit finishes. A crash
 //      mid-commit is finished from the journal on the next start; a locked
 //      file (the game running) rolls the commit back, keeping the downloads.
-// The previous version's replaced files stay in backup/ until the next update,
-// so it can be restored (rollback()).
+// The previous version's replaced files stay in their backup folder until the
+// next update has committed, so it can be restored (rollback()). A repair at
+// the installed version (Verify & Sync, Verify & Repair) doesn't touch that
+// backup: the files it replaces, a player's own edits among them, are kept in
+// <game>/.remaster/replaced/ (the newest repair's only). Nothing to replace
+// means nothing is committed.
 //
 // The manifest comes from the network, so it is trusted only after its
 // signature verifies, every path must stay inside the game folder (never the
@@ -57,6 +62,12 @@ const MIN_PARALLEL = 2;
 const RECOVER_MS = 20000;            // a slot comes back after this long without trouble
 // A connection that delivers nothing for this long is dropped and resumed.
 const STALL_MS = 30000;
+// The connection counts as lost after this many connection failures in a row
+// (no byte received in between) on at least LOST_FILES files; the window shows
+// "reconnecting" from RECONNECTING_AFTER of them.
+const LOST_FAILURES = 20;
+const LOST_FILES = 3;
+const RECONNECTING_AFTER = 4;
 // Progress (sync-state.json) is written at most this often while downloading.
 const SAVE_EVERY_MS = 2000;
 // Resume metadata (.part.json: hash + ETag) is kept only for files this big;
@@ -82,6 +93,10 @@ class SyncError extends Error {
 class SyncPaused extends SyncError {
   constructor() { super("Game Sync paused", "paused"); this.paused = true; }
 }
+// apply() paused itself because the connection is gone (see LOST_FAILURES).
+class ConnectionLost extends SyncPaused {
+  constructor() { super(); this.message = "Connection lost — Resume when you're back online"; this.lost = true; }
+}
 
 function checkUrl(u) {
   const url = new URL(u);
@@ -104,14 +119,23 @@ function targetPath(gameRoot, rel) {
   }
   const root = path.resolve(gameRoot);
   const full = path.resolve(root, ...parts);
-  if (!full.startsWith(root + path.sep)) throw new SyncError("path escapes the game folder: " + rel);
+  // A drive root ("D:\") already ends in a separator.
+  const base = root.endsWith(path.sep) ? root : root + path.sep;
+  if (!full.startsWith(base)) throw new SyncError("path escapes the game folder: " + rel);
   return full;
 }
 
 const stateDir = (gameRoot) => path.join(gameRoot, STATE_DIR);
 // Where a file is staged; its path was checked by targetPath first.
 const stagedPath = (gameRoot, rel) => path.join(stateDir(gameRoot), "staging", ...rel.split("/"));
-const backupPath = (gameRoot, rel) => path.join(stateDir(gameRoot), "backup", ...rel.split("/"));
+// Where a commit keeps the files it replaces: the journal names the folder
+// (journals of the first launchers didn't: "backup").
+const holdDir = (gameRoot, journal) => path.join(stateDir(gameRoot), ...String(journal.hold || "backup").split("/"));
+const holdPath = (gameRoot, journal, rel) => path.join(holdDir(gameRoot, journal), ...rel.split("/"));
+// A same-version repair keeps the files it replaced (a player's own edits)
+// here, the newest repair only, up to this many bytes.
+const REPLACED_DIR = "replaced";
+const REPLACED_MAX = 1024 * 1024 * 1024;
 
 function validateManifest(m) {
   if (!m || typeof m !== "object" || !Array.isArray(m.files) || typeof m.version !== "string") {
@@ -300,6 +324,11 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
       // The first launchers downloaded next to the target: a leftover .part
       // beside a verified file is theirs.
       if (statOrNull(target + ".part")) fs.rmSync(target + ".part", { force: true });
+      // A download of this file left in staging is no longer needed.
+      if (state.staged[f.path] || statOrNull(stagedPath(gameRoot, f.path)) || statOrNull(stagedPath(gameRoot, f.path) + ".part")) {
+        dropStaged(gameRoot, f.path);
+        delete state.staged[f.path];
+      }
     } else {
       delete state.files[f.path];
       if (stat) report.changed++; else report.missing++;
@@ -316,10 +345,39 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
     }
     onProgress(++n, manifest.files.length);
   }
+  // Downloads of files this release doesn't have at all (a paused download of
+  // an older release) are dropped: they would only use disk space, and read
+  // as a paused download while the launcher is offline.
+  const wanted = new Set(manifest.files.map((f) => f.path));
+  pruneStaging(gameRoot, wanted);
+  for (const p of Object.keys(state.staged)) if (!wanted.has(p)) delete state.staged[p];
   // A fresh install's folder isn't created just by looking at it.
   if (fs.existsSync(gameRoot)) saveState(gameRoot, state);
   Object.defineProperty(todo, "report", { value: report, enumerable: false });
   return todo;
+}
+
+// A staged file and its partial download (.part, .part.json).
+function dropStaged(gameRoot, rel) {
+  const staged = stagedPath(gameRoot, rel);
+  for (const f of [staged, staged + ".part", staged + ".part.json"]) fs.rmSync(f, { force: true });
+}
+
+// Deletes staged and partial files whose path isn't in `wanted`.
+function pruneStaging(gameRoot, wanted) {
+  const root = path.join(stateDir(gameRoot), "staging");
+  if (!fs.existsSync(root)) return;
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = rel ? rel + "/" + e.name : e.name;
+      if (e.isDirectory()) { walk(path.join(dir, e.name), r); continue; }
+      if (!wanted.has(r) && !wanted.has(r.replace(/\.part(\.json)?$/, ""))) fs.rmSync(path.join(dir, e.name), { force: true });
+    }
+  };
+  walk(root, "");
+  removeEmptyDirs(root);
 }
 
 // Bytes of planned files already on disk: staged ones in full, partial
@@ -467,10 +525,11 @@ async function download(manifest, f, gameRoot, onBytes, o) {
   fs.mkdirSync(path.dirname(staged), { recursive: true });
   const part = staged + ".part";
   let counted = 0;                               // bytes of this file reported so far
-  const count = (n) => { counted += n; onBytes(n); };
+  // fromDisk: bytes already on disk, not bytes that just arrived.
+  const count = (n, fromDisk) => { counted += n; onBytes(n, !!fromDisk); };
   // A .part left by an earlier run counts as already downloaded.
   const st = statOrNull(part);
-  if (st) count(Math.min(st.size, f.size));
+  if (st) count(Math.min(st.size, f.size), true);
   // Tries count only failures without progress: a long download over a flaky
   // line that keeps moving forward isn't given up on (TOTAL_TRIES bounds it).
   let lastError = null;
@@ -494,7 +553,7 @@ async function download(manifest, f, gameRoot, onBytes, o) {
       if (!retryable(e)) break;
       fails = counted > before && e.kind !== "verify" ? 0 : fails + 1;
       if (fails >= ATTEMPTS) break;
-      o.onRetry(classify(e), e, fails);
+      o.onRetry(classify(e), e, fails, f.path);
       await sleep(o.retryDelayMs * 2 ** Math.max(0, fails - 1) * (0.75 + Math.random() * 0.5), o.signal);
       if (o.signal && o.signal.aborted) throw new SyncPaused();
     }
@@ -508,52 +567,99 @@ async function download(manifest, f, gameRoot, onBytes, o) {
 // ---------------------------------------------------------------- commit
 // Moves every staged file of the journal into place. Idempotent: after a
 // crash, running it again finishes the job. For each file, in order: the
-// current file goes to backup (once), then the staged one takes its place.
+// current file goes to the journal's hold folder (once), then the staged one
+// takes its place.
 function commitFiles(gameRoot, journal) {
   for (const e of journal.files) {
     const target = targetPath(gameRoot, e.path);
     const staged = stagedPath(gameRoot, e.path);
-    const backup = backupPath(gameRoot, e.path);
+    const held = holdPath(gameRoot, journal, e.path);
     if (!fs.existsSync(staged)) continue;                       // already in place
-    if (fs.existsSync(target) && !fs.existsSync(backup)) move(target, backup);
+    if (fs.existsSync(target) && !fs.existsSync(held)) move(target, held);
     move(staged, target);
     fs.rmSync(target + ".part", { force: true });                // left by the first launchers
   }
   for (const rel of journal.obsolete) {
     const target = targetPath(gameRoot, rel);
-    if (fs.existsSync(target)) move(target, backupPath(gameRoot, rel));
+    if (fs.existsSync(target)) move(target, holdPath(gameRoot, journal, rel));
   }
 }
 
 // Undoes commitFiles for the files already moved (a failed commit): the new
-// file goes back to staging, the backup back into place.
+// file goes back to staging, the held one back into place.
 function uncommitFiles(gameRoot, journal) {
   for (const e of journal.files) {
     const target = targetPath(gameRoot, e.path);
     const staged = stagedPath(gameRoot, e.path);
-    const backup = backupPath(gameRoot, e.path);
+    const held = holdPath(gameRoot, journal, e.path);
     if (!fs.existsSync(staged) && fs.existsSync(target)) move(target, staged);
-    if (fs.existsSync(backup) && !fs.existsSync(target)) move(backup, target);
+    if (fs.existsSync(held) && !fs.existsSync(target)) move(held, target);
   }
   for (const rel of journal.obsolete) {
-    const backup = backupPath(gameRoot, rel);
-    if (fs.existsSync(backup) && !fs.existsSync(targetPath(gameRoot, rel))) move(backup, targetPath(gameRoot, rel));
+    const held = holdPath(gameRoot, journal, rel);
+    if (fs.existsSync(held) && !fs.existsSync(targetPath(gameRoot, rel))) move(held, targetPath(gameRoot, rel));
   }
+  removeEmptyDirs(holdDir(gameRoot, journal));
 }
 
 // Marks a finished commit in the state, and keeps what rollback() needs.
-function finishCommit(gameRoot, state, journal) {
+// An update (a new version) replaces the previous update's backup, only now
+// that it has succeeded. A same-version repair leaves the backup, the
+// previous version and "Restore previous version" alone: the files it
+// replaced (a player's own edits) are kept in replaced/ instead.
+function finishCommit(gameRoot, state, journal, opts = {}) {
   for (const e of journal.files) {
     state.files[e.path] = recordOf(targetPath(gameRoot, e.path), e.sha256);
     delete state.staged[e.path];
   }
   for (const rel of journal.obsolete) delete state.files[rel];
-  state.previous = journal.from;
+  if (!journal.repair) state.previous = journal.from;
   state.version = journal.version;
   saveState(gameRoot, state);
-  writeJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), journal);
-  fs.rmSync(path.join(stateDir(gameRoot), JOURNAL_FILE), { force: true });
-  removeEmptyDirs(path.join(stateDir(gameRoot), "staging"));
+  const dir = stateDir(gameRoot);
+  if (!journal.repair) {
+    writeJson(path.join(dir, LAST_COMMIT_FILE), journal);
+    const keep = path.basename(holdDir(gameRoot, journal));
+    for (const name of safeReaddir(dir)) {
+      if ((name === "backup" || name.startsWith("backup-")) && name !== keep) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    }
+  } else {
+    pruneReplaced(gameRoot, journal, opts.replacedMax);
+  }
+  fs.rmSync(path.join(dir, JOURNAL_FILE), { force: true });
+  // Every planned file is in place now: whatever is left in staging (partial
+  // downloads of files this release doesn't need) is of no use any more.
+  fs.rmSync(path.join(dir, "staging"), { recursive: true, force: true });
+}
+
+const safeReaddir = (dir) => { try { return fs.readdirSync(dir); } catch { return []; } };
+
+// replaced/ keeps the newest repair's files only (when it replaced any), and
+// at most REPLACED_MAX bytes of them: the biggest go first.
+function pruneReplaced(gameRoot, journal, max = REPLACED_MAX) {
+  if (max == null) max = REPLACED_MAX;
+  const root = path.join(stateDir(gameRoot), REPLACED_DIR);
+  const mine = holdDir(gameRoot, journal);
+  removeEmptyDirs(mine);
+  if (!fs.existsSync(mine)) return;
+  for (const name of safeReaddir(root)) {
+    if (path.join(root, name) !== mine) fs.rmSync(path.join(root, name), { recursive: true, force: true });
+  }
+  const files = [];
+  const walk = (d) => {
+    for (const e of (() => { try { return fs.readdirSync(d, { withFileTypes: true }); } catch { return []; } })()) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p); else { const st = statOrNull(p); if (st) files.push({ p, size: st.size }); }
+    }
+  };
+  walk(mine);
+  let total = files.reduce((s, f) => s + f.size, 0);
+  for (const f of files.sort((a, b) => b.size - a.size)) {
+    if (total <= max) break;
+    fs.rmSync(f.p, { force: true });
+    total -= f.size;
+  }
+  removeEmptyDirs(mine);
 }
 
 // Removes a folder tree's empty folders (left in staging after a commit);
@@ -574,26 +680,37 @@ function recover(gameRoot) {
   return true;
 }
 
-// Commits the staged release. Throws (with everything put back as it was, the
-// downloads kept) when a file can't be replaced, e.g. the game is running.
-function commit(gameRoot, manifest, todo, state, onProgress) {
+// Launcher-managed files the release doesn't have. Files the launcher never
+// installed (the player's own) are never touched.
+function obsoleteFiles(gameRoot, manifest, state) {
   const wanted = new Set(manifest.files.map((f) => f.path));
-  // Launcher-managed files the new release doesn't have. Files the launcher
-  // never installed (the player's own) are never touched.
-  const obsolete = Object.keys(state.files).filter((p) => !wanted.has(p)).filter((p) => {
+  return Object.keys(state.files).filter((p) => !wanted.has(p)).filter((p) => {
     try { targetPath(gameRoot, p); return true; } catch { return false; }
   });
+}
+
+// Commits the staged release. Throws (with everything put back as it was, the
+// downloads kept) when a file can't be replaced, e.g. the game is running.
+// Returns the journal, or null when there was nothing to commit (a Verify &
+// Sync that found every file in place: the backup and the previous version
+// stay as they are).
+function commit(gameRoot, manifest, todo, state, onProgress, opts = {}) {
+  const obsolete = obsoleteFiles(gameRoot, manifest, state);
+  const repair = !!state.version && state.version === manifest.version;
+  if (repair && !todo.length && !obsolete.length) return null;
+  const id = Date.now().toString(36) + crypto.randomBytes(3).toString("hex");
   const journal = {
     version: manifest.version,
     from: state.version,
+    repair,
+    // Each commit holds what it replaces in a folder of its own, so the last
+    // update's backup survives until this commit has succeeded.
+    hold: repair ? `${REPLACED_DIR}/${id}` : `backup-${id}`,
     files: todo.map((f) => ({ path: f.path, sha256: f.sha256, size: f.size, hadOld: fs.existsSync(targetPath(gameRoot, f.path)) })),
     obsolete,
     oldRecords: Object.fromEntries(todo.concat(obsolete.map((p) => ({ path: p })))
       .filter((f) => state.files[f.path]).map((f) => [f.path, state.files[f.path]]))
   };
-  // The previous update's backups make way for this one's.
-  fs.rmSync(path.join(stateDir(gameRoot), "backup"), { recursive: true, force: true });
-  fs.rmSync(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), { force: true });
   writeJson(path.join(stateDir(gameRoot), JOURNAL_FILE), journal);
   onProgress({ phase: "install", done: 0, total: journal.files.length });
   try {
@@ -606,11 +723,12 @@ function commit(gameRoot, manifest, todo, state, onProgress) {
       ? `a game file is in use (${path.basename(e.path || "")}): close the game, then press Resume`
       : `installing the update failed (${e.code || e.message}); your previous files were put back`, "commit");
   }
-  finishCommit(gameRoot, state, journal);
+  finishCommit(gameRoot, state, journal, opts);
   onProgress({ phase: "install", done: journal.files.length, total: journal.files.length });
+  return journal;
 }
 
-// Restores the version before the last update from backup/. Returns the
+// Restores the version before the last update from its backup. Returns the
 // restored version, or throws when there is nothing to restore.
 function rollback(gameRoot) {
   recover(gameRoot);
@@ -619,7 +737,7 @@ function rollback(gameRoot) {
   const state = loadState(gameRoot);
   for (const e of last.files) {
     const target = targetPath(gameRoot, e.path);
-    const backup = backupPath(gameRoot, e.path);
+    const backup = holdPath(gameRoot, last, e.path);
     if (e.hadOld && !fs.existsSync(backup)) throw new SyncError("the previous version's files are no longer kept");
     fs.rmSync(target, { force: true });
     if (e.hadOld) move(backup, target);
@@ -627,7 +745,7 @@ function rollback(gameRoot) {
     else delete state.files[e.path];
   }
   for (const rel of last.obsolete) {
-    const backup = backupPath(gameRoot, rel);
+    const backup = holdPath(gameRoot, last, rel);
     if (fs.existsSync(backup)) {
       move(backup, targetPath(gameRoot, rel));
       if (last.oldRecords[rel]) state.files[rel] = recordOf(targetPath(gameRoot, rel), last.oldRecords[rel].sha256);
@@ -637,6 +755,7 @@ function rollback(gameRoot) {
   state.previous = null;
   saveState(gameRoot, state);
   fs.rmSync(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), { force: true });
+  removeEmptyDirs(holdDir(gameRoot, last));
   return last.from;
 }
 
@@ -675,16 +794,41 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     stallMs: opts.stallMs || STALL_MS,
     retryDelayMs: opts.retryDelayMs == null ? 1000 : opts.retryDelayMs,
     limit: bandwidth(opts.maxBytesPerSec || 0),
-    onRetry(kind, e, n) {
+    onRetry(kind, e, n, file) {
       retries++;
       log("retry", { file: e.message, kind, attempt: n });
       if (kind === "stall" || kind === "network") {
         lastTrouble = Date.now();
         const next = Math.max(Math.min(MIN_PARALLEL, maxParallel), Math.floor(parallel / 2));
         if (next < parallel) { parallel = next; log("parallel", { now: parallel, why: kind }); }
+        trouble(file);
       }
     }
   };
+  // The connection itself gone: connection failures one after another, on
+  // several files, without a byte arriving in between. Retrying each of
+  // thousands of files six times would take hours and never say why, so the
+  // sync pauses instead (everything downloaded so far is kept).
+  let streak = 0;
+  const streakFiles = new Set();
+  let lost = false;
+  function trouble(file) {
+    streak++;
+    streakFiles.add(file);
+    if (!lost && streak >= LOST_FAILURES && streakFiles.size >= LOST_FILES) {
+      lost = true;
+      log("connection-lost", { failures: streak, files: streakFiles.size });
+      stopAll.abort();
+    }
+    if (streak === RECONNECTING_AFTER || lost) report(file);
+  }
+  function progressed() {
+    if (!streak) return;
+    const was = streak >= RECONNECTING_AFTER;
+    streak = 0;
+    streakFiles.clear();
+    if (was) log("reconnected", {});
+  }
   let retries = 0;
   let doneBytes = 0;
   let filesDone = 0;
@@ -702,7 +846,9 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
   const active = new Set();
   const failed = [];
   let fatal = null;
-  const report = (file) => onProgress({ phase: "download", file, doneBytes, totalBytes, active: active.size, filesDone, filesTotal: todo.length });
+  // reconnecting: connections keep failing (the window says so); lost: given up.
+  const report = (file) => onProgress({ phase: "download", file, doneBytes, totalBytes, active: active.size, filesDone, filesTotal: todo.length,
+    reconnecting: streak >= RECONNECTING_AFTER, lost });
   const t0 = Date.now();
 
   async function worker() {
@@ -718,7 +864,11 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
       active.add(f.path);
       report(f.path);
       try {
-        state.staged[f.path] = await download(manifest, f, gameRoot, (n) => { doneBytes += n; report(f.path); }, o);
+        state.staged[f.path] = await download(manifest, f, gameRoot, (n, fromDisk) => {
+          doneBytes += n;
+          if (n > 0 && !fromDisk) progressed();
+          report(f.path);
+        }, o);
         f.staged = true;
         filesDone++;
         save(false);
@@ -727,6 +877,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
           log("failed", { file: f.path, kind: classify(e), error: e.message });
           if (classify(e) === "disk") { fatal = fatal || e; stopAll.abort(); }
           else failed.push({ path: f.path, error: e.message, kind: classify(e) });
+          if (classify(e) === "network" || classify(e) === "stall") trouble(f.path);
         }
       } finally {
         active.delete(f.path);
@@ -740,17 +891,20 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     if (opts.signal) opts.signal.removeEventListener("abort", onPause);
   }
   const seconds = (Date.now() - t0) / 1000;
-  log("download", { files: toDownload, seconds, retries, failed: failed.length });
+  log("download", { files: toDownload, seconds, retries, failed: failed.length, lost });
   if (fatal) throw fatal;
+  if (lost) throw new ConnectionLost();
   if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   if (failed.length) {
     const e = new SyncError(`${failed.length} file(s) couldn't be downloaded (${failed[0].error}); press Resume to try them again`, failed[0].kind);
     e.failed = failed;
     throw e;
   }
-  commit(gameRoot, manifest, todo, state, onProgress);
-  log("commit", { version: manifest.version, files: todo.length });
-  return { files: todo.length, bytes: totalBytes, seconds, retries };
+  const journal = commit(gameRoot, manifest, todo, state, onProgress, { replacedMax: opts.replacedMax });
+  // A repair keeps the files it replaced (see finishCommit): how many are kept.
+  const kept = journal && journal.repair ? countFiles(holdDir(gameRoot, journal)) : 0;
+  log("commit", { version: manifest.version, files: todo.length, committed: !!journal, repair: !!(journal && journal.repair), kept });
+  return { files: todo.length, bytes: totalBytes, seconds, retries, kept };
 }
 
 // Compares dotted versions ("1.10.0" > "1.9.2"); non-numeric parts as text.
@@ -783,10 +937,18 @@ function stagedBytes(gameRoot) {
   return n;
 }
 
+function countFiles(dir) {
+  let n = 0;
+  for (const e of (() => { try { return fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; } })()) {
+    n += e.isDirectory() ? countFiles(path.join(dir, e.name)) : 1;
+  }
+  return n;
+}
+
 function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
 
 module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion,
   freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
-  SyncError, SyncPaused, STATE_DIR, PARALLEL };
+  SyncError, SyncPaused, ConnectionLost, STATE_DIR, REPLACED_DIR, PARALLEL };

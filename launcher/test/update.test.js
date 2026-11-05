@@ -62,6 +62,9 @@ async function install(name, root, opts = {}) {
   return { m, todo, r };
 }
 const read = (root, p) => fs.readFileSync(path.join(root, ...p.split("/")));
+// The backup folders of the last update, and the folders of kept repair files.
+const backups = (root) => fs.readdirSync(path.join(root, ".remaster")).filter((n) => n === "backup" || n.startsWith("backup-"));
+const replaced = (root) => { const d = path.join(root, ".remaster", sync.REPLACED_DIR); return fs.existsSync(d) ? fs.readdirSync(d).map((n) => path.join(d, n)) : []; };
 
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
@@ -115,6 +118,49 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       await install("v2", root);
     });
 
+    await test("Verify & Sync with nothing to do keeps the previous version and its backup", async () => {
+      assert.strictEqual(sync.previousVersion(root), "1.0.0");
+      const before = backups(root);
+      assert.strictEqual(before.length, 1);
+      const { todo, r } = await install("v2", root);
+      assert.deepStrictEqual(todo, []);
+      assert.strictEqual(r.files, 0);
+      assert.strictEqual(sync.previousVersion(root), "1.0.0", "Restore previous version still offers 1.0.0");
+      assert.deepStrictEqual(backups(root), before, "backup untouched");
+      assert.ok(!fs.existsSync(path.join(root, ".remaster", "journal.json")));
+    });
+
+    await test("a same-version repair keeps the backup, and the player's replaced file in replaced/", async () => {
+      fs.writeFileSync(path.join(root, "Victory", "c.ini"), "my own edit");
+      const before = backups(root);
+      const { todo, r } = await install("v2", root);
+      assert.deepStrictEqual(todo.map((f) => f.path), ["Victory/c.ini"]);
+      assert.strictEqual(r.kept, 1);
+      assert.ok(read(root, "Victory/c.ini").equals(C2), "repaired");
+      assert.strictEqual(sync.installedVersion(root), "1.1.0");
+      assert.strictEqual(sync.previousVersion(root), "1.0.0", "previous isn't pointed at the current version");
+      assert.deepStrictEqual(backups(root), before, "the last update's backup survives a repair");
+      assert.strictEqual(fs.readFileSync(path.join(replaced(root)[0], "Victory", "c.ini"), "utf8"), "my own edit");
+      // A second repair: only the newest one's files are kept.
+      fs.writeFileSync(path.join(root, "Victory", "c.ini"), "second edit");
+      await install("v2", root);
+      assert.strictEqual(replaced(root).length, 1, "newest repair only");
+      assert.strictEqual(fs.readFileSync(path.join(replaced(root)[0], "Victory", "c.ini"), "utf8"), "second edit");
+      // Bounded: over the size limit, the biggest kept files go.
+      fs.writeFileSync(path.join(root, "Victory", "c.ini"), "third edit");
+      fs.writeFileSync(path.join(root, "Victory", "a.pak"), Buffer.alloc(200000, 0xee));
+      const { r: r3 } = await install("v2", root, { replacedMax: 1000 });
+      assert.strictEqual(r3.kept, 1, "the big file isn't kept");
+      assert.strictEqual(fs.readFileSync(path.join(replaced(root)[0], "Victory", "c.ini"), "utf8"), "third edit");
+      assert.ok(read(root, "Victory/a.pak").equals(A));
+      // Restore previous version still brings back 1.0.0 exactly.
+      assert.strictEqual(sync.rollback(root), "1.0.0");
+      assert.ok(read(root, "Victory/c.ini").equals(C) && read(root, "Victory/old.pak").equals(OLD));
+      assert.deepStrictEqual(await sync.plan(await get("v1"), root), []);
+      await install("v2", root);
+      assert.strictEqual(backups(root).length, 1, "an update replaces the old backup once it has committed");
+    });
+
     await test("a locked file during commit puts everything back and keeps the downloads", async () => {
       const C3 = Buffer.from("config v3"), A3 = Buffer.alloc(200000, 9);
       release("v3", "1.2.0", { "Victory/a.pak": A3, "Victory/b.pak": B, "Victory/c.ini": C3, "Victory/d.pak": D });
@@ -132,6 +178,8 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       }
       assert.strictEqual(sync.installedVersion(root), "1.1.0");
       assert.ok(read(root, "Victory/c.ini").equals(C2) && read(root, "Victory/a.pak").equals(A), "1.1.0 files back in place");
+      assert.strictEqual(sync.previousVersion(root), "1.0.0", "a failed commit leaves the last update's backup");
+      assert.ok(backups(root).some((n) => fs.existsSync(path.join(root, ".remaster", n, "Victory", "c.ini"))), "1.0.0's files still kept");
       for (const k of Object.keys(hits)) delete hits[k];
       const m = await get("v3");
       const todo = await sync.plan(m, root);
@@ -319,6 +367,32 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(lowered.length >= 1 && lowered[lowered.length - 1][1].now < 8, JSON.stringify(lowered));
     });
 
+    await test("a dropped connection pauses the sync with a clear message instead of retrying every file", async () => {
+      const files = {};
+      for (let i = 0; i < 8; i++) files[`Victory/n${i}.bin`] = Buffer.alloc(40000, i + 1);
+      release("netdown", "1", files);
+      let requests = 0;
+      for (const b of Object.values(files)) routes[`/netdown/o/${sha(b)}`] = (req) => { requests++; req.socket.destroy(); };
+      const r = path.join(tmp, "netdown");
+      // A partial download from before the outage stays for the resume.
+      const part = path.join(r, ".remaster", "staging", "Victory", "n0.bin.part");
+      fs.mkdirSync(path.dirname(part), { recursive: true });
+      fs.writeFileSync(part, Buffer.alloc(1000, 1));
+      const m = await get("netdown");
+      const seen = [];
+      const e = await sync.apply(m, await sync.plan(m, r), r, (p) => seen.push(p), { parallel: 4, retryDelayMs: 1 }).then(() => null, (x) => x);
+      assert.ok(e instanceof sync.SyncPaused && e instanceof sync.ConnectionLost && e.lost, e && e.message);
+      assert.match(e.message, /^Connection lost — Resume when you're back online$/);
+      assert.ok(seen.some((p) => p.reconnecting), "the window is told it is reconnecting");
+      assert.ok(requests < 8 * 6, `gave up early: ${requests} requests, not ${8 * 6}`);
+      assert.ok(fs.existsSync(part), "partial download kept");
+      assert.strictEqual(sync.installedVersion(r), null);
+      // Back online: Resume finishes it.
+      for (const b of Object.values(files)) routes[`/netdown/o/${sha(b)}`] = (req, res) => serveRange(req, res, b);
+      await sync.apply(m, await sync.plan(m, r), r, () => {}, { retryDelayMs: 1 });
+      assert.strictEqual(sync.installedVersion(r), "1");
+    });
+
     await test("unsafe or ambiguous manifests are refused", async () => {
       const entry = (p) => ({ path: p, size: 1, sha256: "a".repeat(64), url: "x" });
       for (const p of ["REMAST~1/x", "Victory./x", "a/con .txt", "a/CONIN$", "../x", "C:/x", ".remaster/x"]) {
@@ -357,6 +431,43 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(events.find(([ev]) => ev === "download")[1].files, 1, "the log counts downloaded files");
     });
 
+    await test("orphaned downloads are deleted: by planning against the release, and after a commit", async () => {
+      const r = path.join(tmp, "orphans");
+      const st = (p) => path.join(r, ".remaster", "staging", ...p.split("/"));
+      const orphan = () => {
+        fs.mkdirSync(path.dirname(st("Victory/old/x.pak")), { recursive: true });
+        fs.writeFileSync(st("Victory/gone.bin.part"), Buffer.alloc(5000, 1));       // a paused download of an older release
+        fs.writeFileSync(st("Victory/gone.bin.part.json"), "{}");
+        fs.writeFileSync(st("Victory/old/x.pak"), Buffer.alloc(3000, 2));
+      };
+      release("orph", "1", { "Victory/a.txt": Buffer.from("aaa"), "Victory/keep.part": Buffer.from("a file really named .part") });
+      fs.mkdirSync(path.dirname(st("Victory/old/x.pak")), { recursive: true });
+      orphan();
+      assert.ok(sync.stagedBytes(r) >= 8000);
+      await sync.plan(await get("orph"), r);
+      assert.strictEqual(sync.stagedBytes(r), 0, "nothing the release needs: nothing reads as a paused download");
+      assert.ok(!fs.existsSync(st("Victory/gone.bin.part")) && !fs.existsSync(st("Victory/old/x.pak")));
+      fs.mkdirSync(path.dirname(st("Victory/old/x.pak")), { recursive: true });
+      orphan();
+      // Downloads of files the release does have are kept for the resume...
+      fs.writeFileSync(st("Victory/a.txt.part"), "a");
+      const m = await get("orph");
+      await sync.plan(m, r);
+      assert.ok(fs.existsSync(st("Victory/a.txt.part")), "a wanted partial download stays");
+      // ...and after the commit nothing is left in staging.
+      orphan();
+      await sync.apply(m, await sync.plan(m, r), r, () => {}, { retryDelayMs: 5 });
+      assert.strictEqual(sync.installedVersion(r), "1");
+      assert.ok(read(r, "Victory/keep.part").equals(Buffer.from("a file really named .part")));
+      assert.ok(!fs.existsSync(path.join(r, ".remaster", "staging")), "staging emptied after the commit");
+      assert.strictEqual(sync.stagedBytes(r), 0);
+      // A leftover download of a file that is now in place goes at the next check.
+      fs.mkdirSync(path.dirname(st("Victory/a.txt")), { recursive: true });
+      fs.writeFileSync(st("Victory/a.txt.part"), "aa");
+      assert.deepStrictEqual(await sync.plan(m, r), []);
+      assert.strictEqual(sync.stagedBytes(r), 0);
+    });
+
     await test("a corrupted state file is rebuilt by rehashing, nothing is downloaded again", async () => {
       const data = { "Victory/x.pak": Buffer.alloc(70000, 3), "Victory/y.ini": Buffer.from("y") };
       release("corrupt-state", "1", data);
@@ -379,6 +490,13 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       for (const [p, b] of Object.entries(files)) assert.ok(read(r, p).equals(b), p);
       assert.deepStrictEqual(await sync.plan(await get("unicode"), r), []);
       assert.strictEqual(sync.installedVersion(r), "1");
+    });
+
+    await test("a game folder at a drive root works", async () => {
+      const drive = path.parse(tmp).root;                // "C:\" on Windows, "/" elsewhere
+      assert.strictEqual(sync.targetPath(drive, "Victory/Binaries/Win64/Victory.exe"), path.join(drive, "Victory", "Binaries", "Win64", "Victory.exe"));
+      assert.throws(() => sync.targetPath(drive, "../x"), sync.SyncError);
+      assert.throws(() => sync.targetPath(drive, ".remaster/x"), sync.SyncError);
     });
 
     await test("versions compare numerically", async () => {

@@ -38,6 +38,16 @@ function offered(manifest, current) {
   return sync.compareVersions(l.version, current) > 0 ? l : null;
 }
 
+// What to do about the launcher: { offer } a newer one, or { cleanup } when a
+// fetched release offers nothing newer (downloaded setups and try counts go).
+// Without a release (offline) nothing happens: cleaning up then would reset
+// the try cap for a setup that doesn't take. Throws on a bad launcher entry.
+function decide(manifest, current, allowed) {
+  if (!allowed || !manifest) return { offer: null, cleanup: false };
+  const offer = offered(manifest, current);
+  return { offer, cleanup: !offer };
+}
+
 const attemptsFile = (dir) => path.join(dir, "attempts.json");
 function attempts(dir) {
   try { return JSON.parse(fs.readFileSync(attemptsFile(dir), "utf8")) || {}; } catch { return {}; }
@@ -112,10 +122,21 @@ async function download(manifest, dir, { fetchImpl, onProgress = () => {}, stall
 }
 
 // Runs the setup silently: it waits for this launcher to close, installs over
-// it and starts the new launcher (--force-run). The caller quits right after.
+// it and starts the new launcher (--force-run). Resolves once the setup is
+// running (the caller quits then); rejects when it can't start, e.g. an
+// antivirus or AppLocker blocks it (the error carries op "setup").
 function install(file, spawnImpl = spawn) {
-  const child = spawnImpl(file, ["/S", "--updated", "--force-run"], { detached: true, stdio: "ignore", windowsHide: true });
-  child.unref();
+  return new Promise((resolve, reject) => {
+    const fail = (e) => reject(Object.assign(e instanceof Error ? e : new Error(String(e)), { op: "setup" }));
+    let child;
+    try {
+      child = spawnImpl(file, ["/S", "--updated", "--force-run"], { detached: true, stdio: "ignore", windowsHide: true });
+    } catch (e) {
+      return fail(e);
+    }
+    child.once("error", fail);
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
 }
 
-module.exports = { offered, validate, download, install, mayTry, recordTry, cleanup, MAX_TRIES };
+module.exports = { offered, decide, validate, download, install, mayTry, recordTry, cleanup, MAX_TRIES };

@@ -85,6 +85,45 @@ try {
     assert.ok(!game.defaultInstallDir().includes(path.join("Programs", game.INSTALL_NAME)), "not inside the launcher's own folder");
   });
 
+  test("a vanished game folder reads as missing, not as ready to install", () => {
+    const gone = path.join(tmp, "WasInstalledHere");
+    assert.strictEqual(game.check(gone).installable, true, "never installed: a place to install into");
+    const c = game.check(gone, { expectInstalled: true });
+    assert.deepStrictEqual([c.ok, c.installable, c.missing], [false, false, true]);
+    assert.match(c.reason, /can't be found: reconnect the drive or choose the folder in Settings/);
+    // A drive that isn't there (an unplugged USB disk).
+    let drive = null;
+    for (const l of "QXYZWVUTSRPONMLKJIHG") if (!fs.existsSync(l + ":\\")) { drive = l; break; }
+    if (process.platform === "win32" && drive) {
+      const d = game.check(drive + ":\\Games\\The Culling Remaster");
+      assert.ok(d.missing && !d.installable, "missing drive");
+    }
+    fs.mkdirSync(gone);
+    assert.strictEqual(game.check(gone, { expectInstalled: true }).installable, true, "an empty folder there again is installable");
+  });
+
+  test("Steam's own copy, picked by hand, is refused unless the launcher manages it", () => {
+    const steamGame = path.join(tmp, "Games", "SteamLibrary", "steamapps", "common", "Culling Custom Dir");
+    assert.ok(game.check(steamGame).ok, "the Steam copy from the first test");
+    assert.strictEqual(game.isSteamFolder(steamGame), true);
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "Games", "SteamLibrary", "steamapps", "common")), true, "inside a library");
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "Games", "SteamLibrary", "STEAMAPPS", "common", "New")), true, "any case, not made yet");
+    // Moved out of steamapps but still next to Steam's manifest for the game.
+    const odd = path.join(tmp, "Odd", "lib", "TheCulling");
+    fakeGame(odd);
+    fs.writeFileSync(path.join(tmp, "Odd", "lib", "appmanifest_437220.acf"), "\"AppState\" {}");
+    assert.strictEqual(game.isSteamFolder(odd), true);
+    // A Steam copy the launcher already manages is used, as at start-up.
+    fs.mkdirSync(path.join(steamGame, ".remaster"));
+    assert.strictEqual(game.isSteamFolder(steamGame), false);
+    fs.rmSync(path.join(steamGame, ".remaster"), { recursive: true });
+    // Ordinary folders, including a sibling of a Steam library, are fine.
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "TheCulling")), false);
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "Games", "SteamLibrary", "My Remaster")), false);
+    assert.strictEqual(game.isSteamFolder(game.defaultInstallDir()), false);
+    assert.match(game.STEAM_FOLDER, /Steam's copy/);
+  });
+
   console.log("all %d game tests passed", passed);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
