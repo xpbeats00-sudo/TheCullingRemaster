@@ -141,7 +141,7 @@
       li.className = "server" + (s.id === selectedServer().id ? " selected" : "") + (p && !p.ok ? " offline" : "");
       li.dataset.id = s.id;
       const level = !p || !p.ok ? 0 : p.ms < 60 ? 4 : p.ms < 120 ? 3 : p.ms < 220 ? 2 : 1;
-      const players = p && p.ok && p.users != null ? `${p.users} online` : p && !p.ok ? "Unreachable" : "Checking";
+      const players = UiLogic.activityView(p).text;
       li.innerHTML = `
         <div class="server-thumb"><img src="assets/mask.png" alt=""></div>
         <div><div class="server-name"></div><div class="server-meta"></div></div>
@@ -170,9 +170,9 @@
     const online = $("#env-online");
     const live = $("#env-live");
     online.className = "env-online" + (!p ? "" : p.ok ? " ok" : " bad");
-    $("#env-online-text").textContent = !p ? "Checking"
-      : !p.ok ? "Unreachable"
-      : p.users != null ? `${Number(p.users).toLocaleString()} online` : `${p.ms} ms`;
+    const activity = UiLogic.activityView(p);
+    $("#env-online-text").textContent = activity.text;
+    online.title = activity.title;
     live.className = "env-live" + (!p ? "" : p.ok ? " ok" : " bad");
     live.textContent = !p ? "..." : p.ok ? "Live" : "Offline";
   }

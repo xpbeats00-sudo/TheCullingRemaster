@@ -51,7 +51,7 @@
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   window.launcher = {
     state: async () => JSON.parse(JSON.stringify(state)),
-    pingServers: async () => { await wait(400); return [{ id: "eu", ok: true, ms: 16, users: 24 }, { id: "us", ok: true, ms: 32, users: 18 }]; },
+    pingServers: async () => { await wait(400); return [{ id: "eu", ok: true, ms: 16, users: 24, matchesToday: 310, playersWeek: 96 }, { id: "us", ok: true, ms: 32, users: 0, matchesToday: 128, playersWeek: 42 }]; },
     // Accounts: "taken" is a taken username; any password but "wrong" signs in.
     createAccount: async (f) => {
       await wait(500);

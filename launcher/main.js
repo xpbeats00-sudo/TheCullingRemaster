@@ -303,11 +303,12 @@ async function ping(server) {
     sync.checkUrl(url);
     const res = await net.fetch(url, { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(4000) });
     const ms = Date.now() - t0;
-    let users = null;
-    try { users = (await res.json()).users; } catch { /* not our health route */ }
-    return { id: server.id, ok: res.ok, ms, users: typeof users === "number" ? users : null };
+    let body = {};
+    try { body = (await res.json()) || {}; } catch { /* not our health route */ }
+    const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+    return { id: server.id, ok: res.ok, ms, users: count(body.users), matchesToday: count(body.matchesToday), playersWeek: count(body.playersWeek) };
   } catch {
-    return { id: server.id, ok: false, ms: null, users: null };
+    return { id: server.id, ok: false, ms: null, users: null, matchesToday: null, playersWeek: null };
   }
 }
 

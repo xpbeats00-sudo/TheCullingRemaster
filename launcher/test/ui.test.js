@@ -92,4 +92,18 @@ test("a restored previous version: a newer release is offered, PLAY still plays 
   assert.strictEqual(ui.playAction(held, idle), "choose", "Update or Play this version");
 });
 
+test("the server line: online when busy, else this week's players, else today's matches, never invented", () => {
+  assert.strictEqual(ui.activityView(null).text, "Checking");
+  assert.strictEqual(ui.activityView({ ok: false }).text, "Unreachable");
+  assert.strictEqual(ui.activityView({ ok: true, ms: 30, users: 12, matchesToday: 300, playersWeek: 90 }).text, "12 online");
+  const quiet = ui.activityView({ ok: true, ms: 30, users: 0, matchesToday: 128, playersWeek: 42 });
+  assert.strictEqual(quiet.text, "42 played this week");
+  assert.strictEqual(quiet.title, "0 online now · 128 matches in the last 24 hours · 42 players this week");
+  assert.strictEqual(ui.activityView({ ok: true, ms: 30, users: 1, matchesToday: 3, playersWeek: 0 }).text, "3 matches today");
+  assert.strictEqual(ui.activityView({ ok: true, ms: 30, users: 0, matchesToday: 0, playersWeek: 0 }).text, "0 online", "an empty server says so");
+  assert.strictEqual(ui.activityView({ ok: true, ms: 30, users: 2, matchesToday: null, playersWeek: null }).text, "2 online", "an older server without activity");
+  assert.strictEqual(ui.activityView({ ok: true, ms: 45, users: null }).text, "45 ms", "not our health route");
+  assert.strictEqual(ui.activityView({ ok: true, ms: 30, users: 1500, matchesToday: 9000, playersWeek: 4000 }).text, "1,500 online");
+});
+
 console.log("all %d ui tests passed", passed);

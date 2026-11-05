@@ -114,5 +114,28 @@
     return v("Play");
   }
 
-  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView, playAction, showRetry, PING_EVERY_MS };
+  // The server line: who's online, or, when only a few are, the server's
+  // recent activity (real counts from its /health): players this week, else
+  // matches today. Never a made-up number.
+  const ONLINE_SHOWN = 5;
+  function activityView(p) {
+    if (!p) return { text: "Checking", title: "" };
+    if (!p.ok) return { text: "Unreachable", title: "" };
+    const n = (v) => Number(v).toLocaleString("en-US");
+    const has = (v) => typeof v === "number" && v >= 0;
+    const parts = [];
+    if (has(p.users)) parts.push(n(p.users) + " online now");
+    if (has(p.matchesToday)) parts.push(n(p.matchesToday) + (p.matchesToday === 1 ? " match" : " matches") + " in the last 24 hours");
+    if (has(p.playersWeek)) parts.push(n(p.playersWeek) + (p.playersWeek === 1 ? " player" : " players") + " this week");
+    const title = parts.join(" · ");
+    let text;
+    if (has(p.users) && p.users >= ONLINE_SHOWN) text = n(p.users) + " online";
+    else if (has(p.playersWeek) && p.playersWeek > 0) text = n(p.playersWeek) + " played this week";
+    else if (has(p.matchesToday) && p.matchesToday > 0) text = n(p.matchesToday) + (p.matchesToday === 1 ? " match today" : " matches today");
+    else if (has(p.users)) text = n(p.users) + " online";
+    else text = p.ms + " ms";
+    return { text, title };
+  }
+
+  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView, playAction, showRetry, activityView, PING_EVERY_MS };
 });
