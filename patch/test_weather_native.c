@@ -145,8 +145,25 @@ static u8 *spawn_attached(u8 *t, u8 *parent, u64 name, const float *loc, const f
 
 static char stock_end(u8 *gm) { (void)gm; return 0; }
 
+/* Shelter traces: the roof over the centre trace, and over how many of the 4 side ones. */
+static u8 *pawn, *root;
+static int roof_center, roof_sides, traces, side_traces;
+static char line_trace(u8 *ctx, const float *st, const float *en, u8 channel, char complex, const void *ignore,
+                       i32 draw, u8 *hit, char self, const float *c1, const float *c2, float time)
+{
+    const float *at = (const float *)(root + 0x1a0);
+    float dx = st[0] - at[0], dy = st[1] - at[1];
+    (void)c1; (void)c2; (void)time;
+    CHECK(ctx == pawn && channel == 0 && complex == 1 && draw == 0 && self == 1 && hit && ignore);
+    CHECK(en[0] == st[0] && en[1] == st[1] && en[2] == st[2] + 3000.0f && st[2] == at[2] + 60.0f);
+    traces++;
+    if (dx == 0.0f && dy == 0.0f) { side_traces = 0; return (char)roof_center; }
+    CHECK(dx * dx + dy * dy == 250.0f * 250.0f);
+    return (char)(side_traces++ < roof_sides);
+}
+
 /* ---------------------------------------------------------------- a match */
-static u8 *gm, *gs, *pc, *pawn, *root;
+static u8 *gm, *gs, *pc;
 static u16 opts[256];
 
 static void set_options(const char *o)
@@ -163,6 +180,9 @@ static void new_pawn(void)
 {
     pawn = new_obj(0);
     root = new_obj(0);
+    F(root, 0x1a0, float) = 1000.0f;        /* ComponentToWorld translation */
+    F(root, 0x1a4, float) = -2000.0f;
+    F(root, 0x1a8, float) = 300.0f;
     F(pawn, 0x1e0, u8 *) = root;
     F(pc, 0x408, u8 *) = pawn;
 }
@@ -230,11 +250,51 @@ static void checks(void)
     }
     printf("ok    an emitter left on an old pawn is deactivated\n");
 
+    /* Under a roof: the rain goes off after 2 covered ticks, and stays off. */
+    {
+        int s0 = spawned, d0 = deactivated, i;
+        roof_center = 1; roof_sides = 4;
+        tick(6);
+        CHECK(deactivated == d0 && alive(last_comp));            /* one covered tick: still raining */
+        tick(7);
+        CHECK(deactivated == d0 + 1 && !alive(last_comp));       /* covered twice: off */
+        for (i = 8; i < 12; i++) tick(i);
+        CHECK(spawned == s0 && deactivated == d0 + 1);
+        printf("ok    under a roof the rain turns off after 2 covered ticks and stays off\n");
+
+        roof_center = 0; roof_sides = 0;
+        tick(12);
+        CHECK(spawned == s0);                                    /* one open tick: still off */
+        tick(13);
+        CHECK(spawned == s0 + 1 && alive(last_comp) && rain_level_of(spawn_tmpl) == 3 && spawn_parent == root);
+        printf("ok    back in the open the rain comes back after 2 open ticks\n");
+
+        s0 = spawned; d0 = deactivated;
+        roof_center = 1; roof_sides = 1;                         /* a small overhang */
+        for (i = 14; i < 18; i++) tick(i);
+        CHECK(spawned == s0 && deactivated == d0 && alive(last_comp));
+        roof_center = 0; roof_sides = 4;                         /* roof beside, nothing above */
+        for (i = 18; i < 21; i++) tick(i);
+        CHECK(spawned == s0 && deactivated == d0 && alive(last_comp));
+        printf("ok    a small overhang (or a roof only beside you) keeps the rain\n");
+
+        for (i = 21; i < 31; i++) {                              /* in and out every second */
+            roof_center = i & 1; roof_sides = (i & 1) ? 4 : 0;
+            tick(i);
+        }
+        CHECK(spawned == s0 && deactivated == d0 && alive(last_comp));
+        printf("ok    in and out every second: no thrash (no deactivate, no respawn)\n");
+        roof_center = 0; roof_sides = 0;
+    }
+
     new_match("?Weather=clear?WeatherSeed=9?WeatherCycle=0");
     before = spawned;
-    tick(0);
-    CHECK(spawned == before && p_stars > 0.5f);
-    printf("ok    clear: no rain, stars out\n");
+    traces = 0;
+    roof_center = 1; roof_sides = 4;
+    tick(0); tick(1); tick(2);
+    CHECK(spawned == before && p_stars > 0.5f && traces == 0);
+    roof_center = 0; roof_sides = 0;
+    printf("ok    clear: no rain, stars out, no shelter traces\n");
 }
 
 static void run(const char *options, const wchar_t *prefix, i32 t1)
@@ -274,6 +334,7 @@ int main(int argc, char **argv)
     hook(0x12c0830, (void *)set_sky);
     hook(0x1423690, (void *)set_scalar);
     hook(0x1348fa0, (void *)spawn_attached);
+    hook(0x13b7d00, (void *)line_trace);
     VirtualAlloc(image + 0x2567000, 0x1000, MEM_COMMIT, PAGE_READWRITE);   /* L"/Script/Victory" */
     sd_self_rva = (u64)&sd_self_rva - (u64)image;
     if (argc >= 2 && !strcmp(argv[1], "probe")) {

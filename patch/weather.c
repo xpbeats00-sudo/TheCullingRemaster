@@ -32,7 +32,15 @@
  *     spawned with UGameplayStatics::SpawnEmitterAttached on the local
  *     player's pawn root (kept in a weak pointer; a new pawn gets a new
  *     emitter), deactivated (it then finishes its drops and destroys
- *     itself) when the rain level changes.
+ *     itself) when the rain level changes;
+ *   - shelter: while it rains, upward line traces (Visibility, complex) from
+ *     just above the pawn's centre - straight up and at 4 points 250 units
+ *     around - say whether a roof is overhead. Covered (the centre and at
+ *     least 2 of the 4 hit within WX_ROOF_UP) for WX_SHELTER_TICKS ticks in a
+ *     row turns the rain off (deactivated: the drops already falling finish);
+ *     open for as many ticks turns it back on. The camera-attached drops
+ *     would otherwise fall through roofs (their GPU collision only sees the
+ *     depth buffer). A small overhang (the centre only) keeps the rain.
  */
 
 /* ---------------------------------------------------------------- the game */
@@ -48,6 +56,9 @@
 #define WXV_DEACTIVATE   0x210     /* UActorComponent::Deactivate (vtable offset) */
 #define WXA_ROOT         0x1e0     /* AActor::RootComponent */
 #define WXG_OPTIONS      0x400     /* AGameModeBase::OptionsString (FString) */
+#define WX_LINE_TRACE    0x13b7d00 /* UKismetSystemLibrary::LineTraceSingle(ctx, &start, &end, channel, complex,
+                                      &ignore, draw, &hit, ignore self, &color, &hit color, time) */
+#define WXC_LOCATION     0x1a0     /* USceneComponent ComponentToWorld translation (K2_GetActorLocation) */
 
 #include "weather_maps.h"
 
@@ -58,6 +69,8 @@ typedef void (*wx_setf_t)(u8 *, float);
 typedef void (*wx_mid_t)(u8 *, u64, float);
 typedef u8 *(*wx_spawn_t)(u8 *, u8 *, u64, const float *, const float *, i32, char);
 typedef void (*wx_void_t)(u8 *);
+typedef char (*wx_trace_t)(u8 *, const float *, const float *, u8, char, const void *, i32, u8 *, char,
+                           const float *, const float *, float);
 typedef void (*wx_weak_set_t)(i32 *, u8 *);
 typedef u8 *(*wx_weak_get_t)(i32 *);
 
@@ -242,7 +255,15 @@ static struct {
     i32 rain_level, rain_weak[2];
     u8 *rain_pawn;
     i32 flashed;
+    i32 sheltered, shelter_flip;       /* rain off under a roof; ticks the other way */
+    u8 hit[0x400];                     /* FHitResult out (the exec thunk keeps it in under 0xd8 bytes) */
+    struct { void *data; i32 num, max; } no_ignore;
 } W;
+
+#define WX_ROOF_UP       3000.0f   /* how far up a roof counts */
+#define WX_ROOF_START    60.0f     /* traces start this far above the pawn's centre */
+#define WX_ROOF_AROUND   250.0f    /* the 4 side traces, this far out */
+#define WX_SHELTER_TICKS 2         /* ticks in a row before the rain turns off / on */
 
 static u8 *wx_find(const u16 *path)
 {
@@ -267,11 +288,49 @@ static u8 *wx_local_pawn(u8 *world)
     return 0;
 }
 
+static int wx_roof(u8 *pawn, const float *at, float dx, float dy)
+{
+    float start[3], end[3], color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    start[0] = at[0] + dx; start[1] = at[1] + dy; start[2] = at[2] + WX_ROOF_START;
+    end[0] = start[0]; end[1] = start[1]; end[2] = start[2] + WX_ROOF_UP;
+    return ((wx_trace_t)AT(WX_LINE_TRACE))(pawn, start, end, 0 /* Visibility */, 1, &W.no_ignore, 0 /* no debug */,
+                                           W.hit, 1, color, color, 0.0f) != 0;
+}
+
+/* Is a roof over the pawn (not just a small overhang)? */
+static int wx_covered(u8 *pawn)
+{
+    u8 *root = FIELD(pawn, WXA_ROOT, u8 *);
+    const float *at;
+    int n;
+    if (!root) return 0;
+    at = (const float *)(root + WXC_LOCATION);
+    if (!wx_roof(pawn, at, 0.0f, 0.0f)) return 0;
+    n = wx_roof(pawn, at, WX_ROOF_AROUND, 0.0f) + wx_roof(pawn, at, -WX_ROOF_AROUND, 0.0f)
+        + wx_roof(pawn, at, 0.0f, WX_ROOF_AROUND) + wx_roof(pawn, at, 0.0f, -WX_ROOF_AROUND);
+    return n >= 2;
+}
+
+/* Debounced shelter: flips only after WX_SHELTER_TICKS ticks the other way. */
+static int wx_shelter(u8 *pawn)
+{
+    int now = pawn ? wx_covered(pawn) : 0;
+    if (now == W.sheltered) {
+        W.shelter_flip = 0;
+    } else if (++W.shelter_flip >= WX_SHELTER_TICKS) {
+        W.sheltered = now;
+        W.shelter_flip = 0;
+    }
+    return W.sheltered;
+}
+
 static void wx_rain(u8 *world, i32 level)
 {
     u8 *pawn = wx_local_pawn(world);
     u8 *comp = ((wx_weak_get_t)AT(R_WEAK_GET))(W.rain_weak);
     float zero[3] = {0.0f, 0.0f, 0.0f};
+    if (level > 0 && wx_shelter(pawn)) level = 0;          /* under a roof */
+    else if (level <= 0) W.sheltered = W.shelter_flip = 0;
     if (comp && (level != W.rain_level || pawn != W.rain_pawn)) {
         ((wx_void_t)VFN(comp, WXV_DEACTIVATE))(comp);     /* finishes its drops, then goes */
         comp = 0;
@@ -306,6 +365,7 @@ static void wx_begin(u8 *gm, u8 *gs)
     W.rain_weak[1] = 0;
     W.rain_pawn = 0;
     W.flashed = 0;
+    W.sheltered = W.shelter_flip = 0;
     for (i = 0; i < 4; i++) W.templates[i] = 0;
     if (W.preset < 0) return;
     W.n_cloud = wx_name(L"Cloud opacity");

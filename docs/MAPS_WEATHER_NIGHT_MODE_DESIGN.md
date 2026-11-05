@@ -9,11 +9,12 @@ Status words: **PASS** (seen working in game), **PARTIAL** (some of it seen work
 | Piece | What it is | Status |
 |---|---|---|
 | Jungle Night look | `Lighting_Night` copy of Jungle's Lighting level | **PASS** (look only). Seen in a real match through `test_override.pak`: a dark, cloudy night sky, moonlit trees, the sky board working, no errors. Fog distance, readability and FPS are **NOT TESTED**. |
-| Prison Night (storm) look | `Lighting_Night` copy of Prison's Lighting level | **NOT TESTED** |
-| Night maps as their own maps | `Jungle_Night_P`, `Jungle2_Night_P`, opened by URL | **NOT TESTED** (copies of persistent levels opened by URL; sublevel copies are already proven by the menu) |
-| Map choice | Server setting, `map:` answers, ClientWeb URLs, vote cards | **NOT TESTED** in game. Server tests PASS. |
-| Rain particles | `P_Rain_{Light,Heavy,Storm}` (GPU streaks) | **NOT TESTED** |
-| Weather over a match | `weather.c` in the native module | **NOT TESTED** in game. Harness and exe-address tests PASS. |
+| Prison Night (storm) look | `Lighting_Night` copy of Prison's Lighting level | **PASS**. Chosen from the menu vote in a real Solo match (local server, `CULLING_NIGHT_MAPS=1`, branch audit-combined 7a5c8d8): storm sky, moon behind clouds, surroundings readable, sky board fine. |
+| Night maps as their own maps | `Jungle_Night_P`, `Jungle2_Night_P`, opened by URL | **PARTIAL**. `Jungle2_Night_P` opened by URL from the vote and played (PASS); `Jungle_Night_P` by URL is NOT TESTED. |
+| Map choice | Server setting, `map:` answers, ClientWeb URLs, vote cards | **PARTIAL**: Prison Night from the vote PASS; Jungle Night and Duo NOT TESTED. Server tests PASS. |
+| Rain particles | `P_Rain_{Light,Heavy,Storm}` (GPU streaks) | **PARTIAL**. Streaks visible in game on Prison Night. Bug: indoors (the Prison mess hall's glass roof) the camera-attached rain fell inside, because its GPU collision only sees the depth buffer. Fixed by the shelter check (below): **NOT TESTED** in game. |
+| Weather over a match | `weather.c` in the native module | **PARTIAL**: it ran in game (rain spawned on the player); changes over a match NOT TESTED. Harness and exe-address tests PASS. |
+| Rain shelter | Upward line traces from the pawn turn the rain off under a roof | **NOT TESTED** in game. Harness and exe-address tests PASS. |
 | Lightning | Moon and sky light pulse for one tick (1 s) | **PARTIAL** by design: there is no faster tick, so a flash lasts 1 s. Not seen in game. |
 | Thunder audio | — | **BLOCKED** for now. It needs the AkGameplayStatics::PostEvent address and an event; `Play_Lobby_Boom` and `Play_Lobby_Rumble_*` are candidates. Not attempted. |
 | Wet surfaces, puddles, splashes on materials | — | **BLOCKED**. This needs new or changed material shaders. Shipping copies of compiled shaders broke the game before (`docs/ANIMATED_SKIN_AUDIT.md`), and only material instances of stock materials work. The rain's GPU collision gives small bounces on the ground, but nothing gets wet. |
@@ -111,6 +112,7 @@ The fixed bounds cover the ball and the fall.
   - sun (or moon) and SkyLight intensity (map base × the state's factor);
   - the sky material's "Cloud opacity", "Cloud speed" and, on night maps, "Stars brightness";
   - rain: the state's level, spawned with `SpawnEmitterAttached` on the local pawn's root (in a weak pointer). It is deactivated (it finishes its drops, then destroys itself) when the level changes or the player has a new pawn.
+  - shelter: while it rains, 5 upward line traces per second (`LineTraceSingle`, Visibility, complex, ignoring the pawn, 3,000 units up from 60 above the pawn's centre). One goes straight up, four start 250 units out. The pawn is covered when the centre trace and at least 2 of the 4 side traces hit. Two covered ticks in a row turn the rain off (deactivated: drops already falling finish). Two open ticks turn it back on. A small overhang (only the centre trace hits) keeps the rain, and stepping in and out every second never thrashes the emitter. Where tree canopies have collision on the Visibility channel, they count as a roof too.
 - **Game addresses**, each re-derived from the stock exe by `test_weather_native.py`:
 
 | Address | Role |
@@ -125,6 +127,8 @@ The fixed bounds cover the ball and the fall.
 | `0x1423690` | MID SetScalarParameterValue |
 | `0x1348fa0` | SpawnEmitterAttached |
 | vtable `+0x210` | Deactivate |
+| `0x13b7d00` | UKismetSystemLibrary::LineTraceSingle (the thunk's 12 parameters; start in rdx, end in r8) |
+| `+0x1a0` | USceneComponent ComponentToWorld translation (as K2_GetActorLocation reads it) |
 | `+0x1e0` | AActor::RootComponent |
 | `+0x400` | AGameModeBase::OptionsString |
 
@@ -137,7 +141,7 @@ The five presets on a night map give clear, cloudy, rainy, storm and foggy night
 | Test | Checks | Result |
 |---|---|---|
 | `python patch/test_weather.py <Paks> [--pak out.pak] [--override-pak out.pak]` | Every package saves back byte-for-byte. Only the intended exports change, and native data after the tags (cooked cubemaps) is untouched. Every import resolves to an existing object. Every streamed level exists. Preset values and fog visibility read back. `--fog` scales. For rain: stock imports, only the GPU emitter and system changed, every value read back. Menu URLs, server indices and presets, the `weather.c` table and `weather_maps.h` all agree. The paks read back. | PASS (22 checks) |
-| `python patch/test_weather_native.py [Victory.exe]` | The weather C code against fake game objects: off without `Weather=`, waits for the level, applies everything, rain on the pawn, re-spawn for a new pawn. The schedule matches Python over 96,080 seconds (8 seeds × 5 presets × with and without cycling). Every applied value matches over 900 s per preset. All 12 game addresses re-derived from the stock exe (by registered native name, exec thunk call, log strings, vtable slot, property offsets, class neighbourhood) and present in the blob. | PASS (8 checks) |
+| `python patch/test_weather_native.py [Victory.exe]` | The weather C code against fake game objects: off without `Weather=`, waits for the level, applies everything, rain on the pawn, re-spawn for a new pawn; rain off under a roof after 2 ticks, back after 2 in the open, kept under a small overhang, no thrash, no traces while dry. The schedule matches Python over 96,080 seconds (8 seeds × 5 presets × with and without cycling). Every applied value matches over 900 s per preset. All 14 game addresses re-derived from the stock exe (by registered native name, exec thunk call, log strings, vtable slot, property offsets, class neighbourhood) and present in the blob. | PASS (8 checks) |
 | `python patch/test_native_module.py`, `python patch/test_patch_exe.py` | The existing module and exe tests | PASS |
 | `node server/test/weather.test.js` | Default off; night maps and day weather settings; answers | PASS (7 tests) |
 | The other server test files | Unchanged behaviour | PASS. `showdown.test.js` fails its last test (a missing `profiles.json`) with or without these changes. |

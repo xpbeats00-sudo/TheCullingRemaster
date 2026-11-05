@@ -2,6 +2,10 @@
 with the blob's own flags) against fake game objects (test_weather_native.c),
 and check it against make_weather.py's Python copy of the schedule:
 
+- shelter: under a roof (the centre and 2+ of 4 side traces hit) the rain
+  turns off after 2 ticks and stays off; back in the open it returns after
+  2; a small overhang or a roof only beside you keeps it; in and out every
+  second never thrashes; no traces while it doesn't rain;
 - behaviour: no ?Weather= (or an unknown preset) touches nothing; the
   weather waits for its Lighting level; storm sets fog, lights, sky and
   spawns the storm rain on the local pawn's root; one emitter per pawn; an
@@ -208,7 +212,7 @@ def exe_checks(path):
 
     def native_impl(name, impl):
         thunks = ex.natives(name)
-        check(any(impl in ex.calls(t) for t in thunks),
+        check(any(impl in ex.calls(t, 0x600) for t in thunks),
               "%s: no registered exec thunk calls %x (thunks %s)" % (name, impl, [hex(t) for t in thunks]))
     native_impl("SetFogDensity", w["WX_FOG_DENSITY"])
     native_impl("SetStartDistance", w["WX_FOG_START"])
@@ -249,6 +253,43 @@ def exe_checks(path):
     check("[rax + 0x%x]" % (w["WXV_DEACTIVATE"] - 8) in act, "Activate is not the slot before Deactivate")
     root = " ".join(i.op_str for t in ex.natives("K2_GetRootComponent") for i in ex.code(t, 0x30))
     check("[rcx + 0x%x]" % w["WXA_ROOT"] in root, "RootComponent is not +0x1e0")
+    # The pawn's location: K2_GetActorLocation reads RootComponent, then its
+    # ComponentToWorld translation (+0x1a0).
+    loc = " ".join(i.op_str for t in ex.natives("K2_GetActorLocation") for i in ex.code(t, 0x40))
+    check("[rcx + 0x%x]" % w["WXA_ROOT"] in loc and "[rax + 0x%x]" % w["WXC_LOCATION"] in loc,
+          "K2_GetActorLocation does not read RootComponent +0x1a0")
+    # LineTraceSingle (UKismetSystemLibrary): its exec thunk calls it with
+    # what it read, in order (ctx, start, end, channel, complex, ignore,
+    # draw, hit, ignore self, trace colour, hit colour, time: 12 parameters),
+    # start in rdx and end in r8 (the first and second vectors read).
+    native_impl("LineTraceSingle", w["WX_LINE_TRACE"])
+    thunks = [t for t in ex.natives("LineTraceSingle") if w["WX_LINE_TRACE"] in ex.calls(t, 0x500)]
+    check(len(thunks) == 1, "LineTraceSingle thunks: %d" % len(thunks))
+    body = ex.code(thunks[0], 0x400)
+    steps = [i for i in body if i.mnemonic == "call" and int(i.op_str, 16) - BASE in (0x696150,)]
+    check(len(steps) == 12, "LineTraceSingle reads %d parameters, not 12" % len(steps))
+    # Where each parameter is read to: the "lea r8, <slot>" before each Step call.
+    reads = []
+    for k, i in enumerate(body):
+        if i.mnemonic == "call" and i.op_str.startswith("0x") and int(i.op_str, 16) - BASE == 0x696150:
+            prev = body[k - 1].op_str
+            check(prev.startswith("r8, "), "LineTraceSingle: unexpected Step call")
+            reads.append(prev.split(", ", 1)[1])
+    start_slot, end_slot = reads[1], reads[2]          # after the world context
+    # Before the call each vector's first 8 bytes are copied (movsd load,
+    # movsd store) to the slot rdx or r8 then points at.
+    call_at = next(k for k, i in enumerate(body) if i.op_str == "0x%x" % (BASE + w["WX_LINE_TRACE"]))
+    copies, loaded, regs = {}, None, {}
+    for i in body[max(0, call_at - 60):call_at]:
+        if i.mnemonic == "movsd" and i.op_str.startswith("xmm0, qword ptr "):
+            loaded = i.op_str[len("xmm0, qword ptr "):]
+        elif i.mnemonic == "movsd" and i.op_str.endswith(", xmm0") and loaded:
+            copies[loaded] = i.op_str[len("qword ptr "):-len(", xmm0")]
+            loaded = None
+        elif i.mnemonic == "lea" and i.op_str.split(", ")[0] in ("rdx", "r8"):
+            regs[i.op_str.split(", ")[0]] = i.op_str.split(", ", 1)[1]
+    check(copies.get(start_slot) == regs.get("rdx") and copies.get(end_slot) == regs.get("r8"),
+          "LineTraceSingle: start is not passed in rdx and end in r8 (%s %s %s)" % (reads[:3], copies, regs))
     site = ex.sites_of("OptionsString")
     check(site, "no OptionsString registration")
     text = " ".join("%s %s" % (i.mnemonic, i.op_str) for i in ex.code(site[0], 0x100))
@@ -261,7 +302,7 @@ def exe_checks(path):
         for h in re.findall(r"0x[0-9a-f]+", i.op_str):
             imm.add(int(h, 16))
     for k in ("WX_FIND_OBJECT", "WX_LOAD_OBJECT", "WX_FNAME", "WX_FOG_DENSITY", "WX_FOG_START",
-              "WX_LIGHT_INTENSITY", "WX_SKY_INTENSITY", "WX_MID_SCALAR", "WX_SPAWN_ATTACHED"):
+              "WX_LIGHT_INTENSITY", "WX_SKY_INTENSITY", "WX_MID_SCALAR", "WX_SPAWN_ATTACHED", "WX_LINE_TRACE"):
         check(w[k] in imm, "the blob doesn't call %s" % k)
     return len(w)
 
