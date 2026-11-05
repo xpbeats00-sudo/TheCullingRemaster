@@ -136,8 +136,10 @@ function inventoryTypes() {
 
 // Custom camos are a one-time purchase: owning a camo's skin on one weapon
 // owns that camo on every weapon. The camo is the part of the asset name after
-// "_XP_" (".../IceAxe_XP_Lava_Storm" -> "Lava_Storm").
-const camoKey = (i) => (i.source === 'xp-camos' ? String(i.asset).split('_XP_')[1] || null : null);
+// "_XP_" (".../IceAxe_XP_Lava_Storm" -> "Lava_Storm"). The VFX camos
+// (patch/make_vfx_camos.py, ".../Katana_XP_VFX_Dark_Matter") work the same way.
+const CAMO_SOURCES = new Set(['xp-camos', 'xp-vfx-camos']);
+const camoKey = (i) => (CAMO_SOURCES.has(i.source) ? String(i.asset).split('_XP_')[1] || null : null);
 
 function ownedCamos(p) {
   const out = new Set();

@@ -101,6 +101,19 @@ function credits() {
     const other = camo('Amethyst');
     assert.ok(other.every((i) => !have.has(i.tid)), 'other camos stay locked');
     console.log('ok    other camos stay locked');
+
+    // VFX camos (patch/make_vfx_camos.py) follow the same rule.
+    const dark = catalog.filter((i) => i.source === 'xp-vfx-camos' && i.asset.endsWith('_XP_VFX_Dark_Matter'));
+    assert.ok(dark.length >= 2, 'Dark Matter exists on several weapons');
+    assert.ok(dark.every((i) => !have.has(i.tid)), 'Dark Matter not owned yet');
+    const before2 = credits();
+    assert.strictEqual(await buy(socket, dark[0].tid), 'ok');
+    assert.strictEqual(credits(), before2 - dark[0].purchaseCost, 'VFX camo charged once');
+    have = await owned(socket);
+    assert.ok(dark.every((i) => have.has(i.tid)), 'VFX camo owned on every weapon that has it');
+    const popper = catalog.filter((i) => i.source === 'xp-vfx-camos' && i.asset.endsWith('_XP_VFX_Dark_Matter_Popper'));
+    assert.ok(popper.every((i) => !have.has(i.tid)), 'Dark Matter Popper is its own camo');
+    console.log('ok    a VFX camo is charged once and unlocks %d skins', dark.length);
     console.log('all camo purchase tests passed');
   } finally {
     socket.close();
