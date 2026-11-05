@@ -43,9 +43,8 @@
    and calls SetTeamNum(playerState, (index >> 1) + 1, true) so contestants
    pair up (0,1 -> team 1; 2,3 -> team 2; ...), then runs the original sort.
    It reasserts each refresh, so join order and timing don't matter.
-   With the native module (fix 5, the default) the refresh's call leads to the
-   module instead (fix 9): the same, for any team size. The stub stays in the
-   padding for an exe patched without the module (patch(rounds=False)).
+   This hook and stub are the ones 1.3.9 shipped and are kept as they are in
+   every build: they are what pairs Duo (see fix 9).
 
 5. Showdown rounds (showdown_rounds.c, built by build_showdown_rounds.py into
    showdown_rounds_blob.py). A new section (.sdround, RVA 0x35b4000, after
@@ -127,14 +126,20 @@
    gets the user as instigator, except the user and the user's teammate
    (TeamNumber > 0 and equal), who keep "no instigator".
 
-9. Team sizes: Trios and Quads (module of fix 5). The scoreboard refresh's
-   "mov rcx, rax; call 0x140243c80" (VA 0x140203b3a) keeps its mov and its
-   call goes to the module's sd_teams, which assigns
-   SetTeamNum(ps, index / N + 1, true) over PlayerArray and runs the sort.
+9. Team sizes: Trios and Quads (module of fix 5). Fix 4's hook at the
+   scoreboard refresh (VA 0x140203b3a) and its stub stay exactly as 1.3.9
+   shipped them, so Duo is paired by the proven stub. Only the stub's own
+   final "call 0x140243c80" (the sort, VA 0x14005ac50) goes to the module's
+   sd_teams, which runs after the stub's pairing: in a ClassicTeams match with
+   ?TeamSize= 3-8 it reassigns SetTeamNum(ps, index / N + 1, true) over
+   PlayerArray, in a Lightning match with ?TeamSize= 2-8 (team Showdown, which
+   the stub skips) it assigns them; everything else (Duo included) it leaves
+   as the stub set it. Then the sort. (An earlier build of fix 9 replaced the
+   refresh's own call, VA 0x140203b3d, with sd_teams doing all the pairing;
+   in game Duo then had no teammate. That form is upgraded to this one.)
    N is the match URL's ?TeamSize= (read from the GameMode's OptionsString,
    AGameModeBase +0x400, which AGameModeBase::InitGame sets from the URL's
-   options at 0x14133e2c3): 2-8 in ClassicTeams (2 without it: Duo), and in a
-   Lightning match only when it is given (team Showdown). The GameMode's call
+   options at 0x14133e2c3). The GameMode's call
    of its bot spawner at match start (VA 0x14023330d) also goes to the module:
    in team Showdown it sets BotsToSpawn (+0x518) to 2N - 1 first. Fix 7's
    team win, fix 8's teammate check, DetermineMatchWinner and the
@@ -219,7 +224,7 @@ SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 # fix (1-9, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "e02e5f98db8d55aa92389ec83d936f196f51ea4b5e9371f88b48ca1ffcc52a85"
+PATCHED_SHA256 = "d9b18781cdaa62ca0869c5c2caa64a481da54b537b3ea79b2d944aca9290126b"
 
 
 def _cap(data, path, contestants):
@@ -260,28 +265,46 @@ def _slots(data, path):
     return True
 
 
-def _module_hook(hook):
-    """The refresh's hook as fix 9 leaves it: the stock mov, then a call into the module's section."""
-    if hook[:4] != DUO_HOOK[:4]:
+OLD_TEAMS_CALL_VA = 0x140203B3D     # where the first fix 9 build called sd_teams (the refresh's own call)
+STUB_SORT = DUO_STUB.index(bytes.fromhex("e82b901e00"))   # the stub's call of the sort (fix 9 takes it)
+
+
+def _into_module(call, va):
+    """A 5-byte call at va that leads into the module's section."""
+    if call[:1] != b"\xe8":
         return False
-    target = TEAMS_CALL[2] + 5 + struct.unpack_from("<i", hook, 4)[0]
+    target = va + 5 + struct.unpack_from("<i", call, 1)[0]
     return IMAGE_BASE + ROUNDS.SECTION_RVA <= target < IMAGE_BASE + ROUNDS.SECTION_RVA + 0x100000
 
 
+def _module_hook(hook):
+    """The refresh as the first fix 9 build left it: the stock mov, then a call into the module."""
+    return hook[:4] == DUO_HOOK[:4] and _into_module(hook[3:8], OLD_TEAMS_CALL_VA)
+
+
+def _module_stub(stub):
+    """Fix 4's stub with its sort call leading into the module (fix 9)."""
+    return (len(stub) == len(DUO_STUB) and stub[:STUB_SORT] == DUO_STUB[:STUB_SORT]
+            and stub[STUB_SORT + 5:] == DUO_STUB[STUB_SORT + 5:]
+            and _into_module(stub[STUB_SORT:STUB_SORT + 5], TEAMS_CALL[2]))
+
+
 def _duoteam(data, path, rounds=True):
-    """Fix 4's stub; with the module (rounds) the hook is left to it (fix 9: stock bytes, or
-    already the module's call; an older build's call of the stub goes back to stock), else the
-    hook calls the stub."""
+    """Fix 4: the refresh calls the pairing stub, in every build (1.3.9's proven hook). With
+    the module (rounds) the stub's sort call is left to fix 9 (stock, or already the module's
+    call); without it, stock. The first fix 9 build's hook (the refresh's call into the module)
+    goes back to fix 4's."""
     hook = bytes(data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)])
     stub = bytes(data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)])
-    if (hook not in (DUO_HOOK, DUO_HOOK_NEW) and not _module_hook(hook)) or stub not in (DUO_STUB, DUO_PAD):
+    if ((hook not in (DUO_HOOK, DUO_HOOK_NEW) and not _module_hook(hook))
+            or (stub not in (DUO_STUB, DUO_PAD) and not _module_stub(stub))):
         raise ValueError("%s is not the Victory.exe this patch is for (team pairing %s / %s)"
                          % (path, hook.hex(), stub[:8].hex()))
-    want = (DUO_HOOK if hook == DUO_HOOK_NEW else hook) if rounds else DUO_HOOK_NEW
-    if hook == want and stub == DUO_STUB:
+    want = stub if rounds and _module_stub(stub) else DUO_STUB
+    if hook == DUO_HOOK_NEW and stub == want:
         return False
-    data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)] = DUO_STUB
-    data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = want
+    data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)] = want
+    data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = DUO_HOOK_NEW
     return True
 
 
@@ -320,8 +343,8 @@ MODULE_CALLS = (
     # 8. AGasWound's two "call 0x141119150" (GetInstigatorController: the gas's EventInstigator)
     ("gas damage", 0x2E67E8, 0x1402E71E8, bytes.fromhex("e8631fe300"), ROUNDS.SD_GAS_INSTIGATOR),
     ("gas tick", 0x2E6B2F, 0x1402E752F, bytes.fromhex("e81c1ce300"), ROUNDS.SD_GAS_INSTIGATOR),
-    # 9. the scoreboard refresh's "call 0x140243c80" (after fix 4's mov rcx, rax: the team sizes)
-    ("teams", 0x20313D, 0x140203B3D, bytes.fromhex("e83e010400"), ROUNDS.SD_TEAMS),
+    # 9. fix 4's stub's own "call 0x140243c80" (the sort, after its pairing: the team sizes)
+    ("teams", 0x5A250, 0x14005AC50, bytes.fromhex("e82b901e00"), ROUNDS.SD_TEAMS),
     # 9. the GameMode's "call 0x1402320f0" at match start (team Showdown's bot count)
     ("bots", 0x23290D, 0x14023330D, bytes.fromhex("e8deedffff"), ROUNDS.SD_SPAWN_BOTS),
 )

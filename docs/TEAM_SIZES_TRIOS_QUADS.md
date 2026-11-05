@@ -23,19 +23,29 @@ PARTIAL.
   in `AGameModeBase::InitGame` (VA 0x14133e2c3: `lea rcx, [rbx+0x400]; mov rdx,
   Options; call FString=`). The module parses `?TeamSize=` itself (UE option
   syntax, key in any case, value 2-8); no game function is called for it.
-- Fix 4 used to pair contestants with a stub (`SetTeamNum(ps, index/2 + 1)`)
-  called from the scoreboard refresh (VA 0x140203b3a). With the native module
-  (the default build) that call keeps its `mov rcx, rax` and its `call` goes to
-  the module's `sd_teams` instead (patch_exe.py fix 9): `SetTeamNum(ps,
-  index / N + 1, true)` over GameState.PlayerArray, then the stock sort.
-  - ClassicTeams (GameMode/GameState type 2): N = `?TeamSize=` 2-8, else 2 (Duo
-    is unchanged).
-  - Lightning (Showdown, type 3): only with `?TeamSize=` 2-8 (team Showdown);
-    the 1v1 URL has none, so 1v1 is unchanged.
-  - Every other type: no teams (as before).
-  - The stub stays in the int3 padding for an exe patched without the module
-    (`patch(rounds=False)`), and an exe patched by the main-branch build is
-    upgraded byte-for-byte to the same result as a fresh patch (checked).
+- Fix 4 pairs contestants with a stub (`SetTeamNum(ps, index/2 + 1)`, VA
+  0x14005ac03) called from the scoreboard refresh (VA 0x140203b3a). That hook
+  and stub are kept exactly as 1.3.9 shipped them in every build: they pair
+  Duo. Fix 9 takes only the stub's own final sort call (VA 0x14005ac50) to the
+  module's `sd_teams`, which runs after the stub's pairing:
+  - ClassicTeams (type 2) with `?TeamSize=` 3-8: re-teamed `SetTeamNum(ps,
+    index / N + 1, true)` over GameState.PlayerArray (Trios, Quads).
+  - ClassicTeams without it, or 2 (Duo): left exactly as the stub paired it.
+  - Lightning (Showdown, type 3, which the stub skips): teamed only with
+    `?TeamSize=` 2-8 (team Showdown); the 1v1 URL has none.
+  - Every other type: no teams (as before). Then the stock sort.
+  - Without the module (`patch(rounds=False)`) the stub calls the sort itself.
+  - **In-game regression (2026-11-05, pin e02e5f98):** the first fix 9 build put
+    `sd_teams` on the refresh's own call (VA 0x140203b3d, keeping the `mov rcx,
+    rax`) and let it do Duo's pairing too; Duo then had no teammate in game,
+    while the 1.3.9 exe paired with the same pak. Static review found that
+    build's `sd_teams` equivalent to the stub for Duo (same GameState, type
+    byte +0x4e4, PlayerArray, SetTeamNum arguments; ABI and stack checked), so
+    the cause was not pinned down; Duo was moved back onto the proven code
+    instead. The exe is upgraded from that build (and from older ones) to the
+    current bytes; `test_patch_exe.py` asserts the hook site and stub, and
+    `test_native_module.py` runs the stub-then-`sd_teams` path for Duo URLs.
+    New pin: PATCHED_SHA256 `d9b18781cdaa62ca0869c5c2caa64a481da54b537b3ea79b2d944aca9290126b`.
 - 24 contestants divide by 2, 3 and 4. Teams are by PlayerArray index; you
   join first, so you are on team 1 with the next N - 1 contestants.
 
@@ -135,7 +145,7 @@ unaffected (no `?TeamSize=` in its URL).
 |---|---|
 | `python build_showdown_rounds.py --check` (cl /W4 /WX, 11136 bytes, 7 entries) | PASS |
 | `python test_patch_exe.py <copy of stock Victory.exe>` (stand-ins + real exe: new calls lead to `sd_teams`/`sd_spawn_bots`, stock bytes matched, idempotent, older-build upgrade, foreign call refused) | PASS |
-| Real exe copy: `mov rcx, rax; call sd_teams` at 0x140203b3a, `call sd_spawn_bots` at 0x14023330d (capstone) | PASS |
+| Real exe copy: fix 4's `call 0x14005ac03` at 0x140203b3a, the stub's sort call to `sd_teams` at 0x14005ac50, `call sd_spawn_bots` at 0x14023330d (capstone) | PASS |
 | Main-branch-patched exe re-patched == fresh patch (byte compare) | PASS |
 | `python test_native_module.py`: team sizes from URLs (20 URL forms), Showdown-only-with-TeamSize, holes, 2N-1 bots, team win for 2/3/4 of 24, Showdown 1v1, team Showdown 2v2/3v3/4v4, Trios/Quads `TMS|` report, Chokening with a trio | PASS |
 | Mutation check (5 mutants of the new code, each caught) | PASS |

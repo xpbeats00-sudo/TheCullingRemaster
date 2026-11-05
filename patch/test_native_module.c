@@ -328,19 +328,36 @@ static void teams_setup(u8 type, const char *url)
     F(tgs, 0x470, i32) = NP;
 }
 
-/* sd_teams on the setup: every contestant's team is index / size + 1. */
-static int teams_are(int size)
+/* What the patched exe runs at the scoreboard refresh: fix 4's stub (1.3.9's,
+   patch_exe.DUO_STUB) pairs a ClassicTeams match - SetTeamNum(ps, i / 2 + 1)
+   for every non-null PlayerArray entry - then its sort call, which fix 9 sends
+   to sd_teams. The stub's pairing is written here directly (not through the
+   SetTeamNum stand-in), so set_team_calls counts only sd_teams' own calls. */
+static char refresh(u8 *gs)
 {
     int i;
+    if (gs && F(gs, 0x4e4, u8) == 2)
+        for (i = 0; i < F(gs, 0x420, i32); i++)
+            if (F(gs, 0x418, u8 **)[i]) F(F(gs, 0x418, u8 **)[i], 0x490, i32) = i / 2 + 1;
+    return sd_teams(gs);
+}
+
+/* The refresh on the setup: every contestant's team is index / size + 1
+   (size 0: none), and sd_teams itself only re-teamed what the stub can't:
+   Trios/Quads (ClassicTeams, size 3+) and team Showdown (Lightning). */
+static int teams_are(int size)
+{
+    int i, ours;
     set_team_calls = sort_calls = 0;
     for (i = 0; i < NP; i++) F(tps[i], 0x490, i32) = 0;
-    if (sd_teams(tgs) != 7 || sort_calls != 1) return 0;          /* the sort runs, its result returned */
+    if (refresh(tgs) != 7 || sort_calls != 1) return 0;           /* the sort runs, its result returned */
     for (i = 0; i < NP; i++) {
         i32 want = size ? i / size + 1 : 0;
         if (F(tps[i], 0x490, i32) != want) return 0;
         F(F(tgs, 0x468, u8 *) + i * REC, 0x40, i32) = want;       /* SetTeamNum writes the record too */
     }
-    return set_team_calls == (size ? NP : 0);
+    ours = F(tgs, 0x4e4, u8) == 2 ? size > 2 : size > 0;
+    return set_team_calls == (ours ? NP : 0);
 }
 
 static void team_die(int i)
@@ -381,7 +398,7 @@ static void test_team_sizes(void)
             exit(1);
         }
     }
-    printf("ok    team sizes: ClassicTeams takes ?TeamSize= 2-8 from the URL (any case), else Duo's 2\n");
+    printf("ok    team sizes: ClassicTeams takes ?TeamSize= 3-8 from the URL (any case) over the stub's pairs, else Duo's 2\n");
 
     teams_setup(2, "?TeamSize=3");
     F(world, 0xf0, u8 *) = 0;                         /* no AuthorityGameMode: Duo's pairs */
@@ -403,11 +420,33 @@ static void test_team_sizes(void)
     teams_setup(2, "?TeamSize=3");                    /* a hole in PlayerArray keeps the others' places */
     F(tgs, 0x418, u8 **)[4] = 0;
     set_team_calls = 0;
-    sd_teams(tgs);
+    refresh(tgs);
     CHECK(set_team_calls == NP - 1 && F(tps[3], 0x490, i32) == 2 && F(tps[5], 0x490, i32) == 2);
     sort_calls = 0;
     CHECK(sd_teams(0) == 7 && sort_calls == 1);       /* no game state: just the sort */
     printf("ok    team sizes: Showdown only with ?TeamSize= 2-8; Solo and others never; holes, no game mode\n");
+
+    /* Duo regression (in game, a build whose sd_teams did Duo's pairing on the
+       refresh's own call left Duo with no teammate): Duo is paired by fix 4's
+       stub alone; sd_teams never calls SetTeamNum in a Duo match and leaves
+       the stub's teams as they are, with any Duo URL, or with no game mode. */
+    {
+        static const char *duo[] = { 0,
+            "?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C",
+            "?TeamSize=2", "?TeamSize=1", "?TeamSize=x", "?bEnableBots=true?Weather=rainy?WeatherSeed=7" };
+        int d, nogm;
+        for (d = 0; d < (int)(sizeof(duo) / sizeof(duo[0])); d++)
+            for (nogm = 0; nogm < 2; nogm++) {
+                teams_setup(2, duo[d]);
+                if (nogm) F(world, 0xf0, u8 *) = 0;
+                for (i = 0; i < NP; i++) F(tps[i], 0x490, i32) = i / 2 + 1;   /* as the stub left them */
+                set_team_calls = sort_calls = 0;
+                CHECK(sd_teams(tgs) == 7 && sort_calls == 1 && set_team_calls == 0);
+                for (i = 0; i < NP; i++) CHECK(F(tps[i], 0x490, i32) == i / 2 + 1);
+                CHECK(teams_are(2));                  /* and through the refresh: pairs, by the stub */
+            }
+    }
+    printf("ok    Duo: paired by fix 4's stub only; sd_teams leaves it alone (any Duo URL, no game mode)\n");
 
     /* Bots: team Showdown spawns 2N - 1; everything else the mode's own count. */
     for (size = 2; size <= 4; size++) {
@@ -580,7 +619,7 @@ static void test_showdown(void)
         nmessages = 0;
         start_inventory_calls = 0;
         CHECK(sd_should_end(sgm) == 0 && !*last_message("SDR|"));        /* no teams yet: no series */
-        sd_teams(sgs);
+        refresh(sgs);
         for (k = 0; k < 2 * size; k++) CHECK(F(fps[k], 0x490, i32) == k / size + 1);
         CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|S|1|0|0|"));
         CHECK(start_inventory_calls == 2 * size - 1);                   /* every bot gets the kit */
@@ -621,18 +660,18 @@ static void test_team_hud(void)
     /* Duo: the game's panel shows the one teammate; nothing more. */
     showdown_setup(4, 2, "?TeamSize=2");
     nmessages = 0;
-    sd_teams(sgs);
+    refresh(sgs);
     sd_should_end(sgm);
     CHECK(!*last_message("TMS|"));
     showdown_setup(4, 2, 0);
-    sd_teams(sgs);
+    refresh(sgs);
     sd_should_end(sgm);
     CHECK(!*last_message("TMS|"));
 
     /* Trios: you, Bot|1, Bot|2. The panel shows Bot|1 (its pawn at HUD +0x658). */
     showdown_setup(6, 2, "?TeamSize=3");
     nmessages = 0;
-    sd_teams(sgs);
+    refresh(sgs);
     sd_should_end(sgm);
     m = last_message("TMS|");
     CHECK(!strcmp(m, "TMS|2|75|50|1|Bot/1|75|50|1|Bot/2"));             /* no panel teammate yet: both */
@@ -651,7 +690,7 @@ static void test_team_hud(void)
     /* Quads: three teammates, the panel shows one. */
     showdown_setup(8, 2, "?TeamSize=4");
     nmessages = 0;
-    sd_teams(sgs);
+    refresh(sgs);
     weak_set((i32 *)(fhud + 0x658), F(fc[2], 0x408, u8 *));
     F(F(fc[3], 0x408, u8 *), 0x830, u8 *) = 0;                          /* no health component */
     sd_should_end(sgm);

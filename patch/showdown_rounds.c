@@ -29,14 +29,18 @@
  *     DONE     a fighter has 4 rounds: the stock end of match (VICTORY or
  *              DEFEAT, then the menu).
  *
- * sd_teams(gs) replaces the scoreboard refresh's call of the scoreboard sort
- *   (VA 0x140203b3d; patch_exe.py fix 4's stub does the same in pairs only,
- *   for an exe built without this module). It puts contestants in teams -
- *   SetTeamNum(ps, index / N + 1, true) over GameState.PlayerArray - then
- *   runs the sort. N is the match URL's ?TeamSize= (the GameMode's
- *   OptionsString, +0x400): in a ClassicTeams match 2-8, 2 when absent or
- *   out of range (Duo); in a Lightning match only when ?TeamSize= is 2-8
- *   (team Showdown). Every other match is left alone. Reasserted each refresh.
+ * sd_teams(gs) replaces the sort call at the end of patch_exe.py fix 4's
+ *   pairing stub (VA 0x14005ac50), so it runs right after the stub has paired
+ *   a ClassicTeams match (SetTeamNum(ps, index / 2 + 1); the stub and its
+ *   hook at the scoreboard refresh, VA 0x140203b3a, are 1.3.9's, proven in
+ *   game for Duo). It re-teams only what the stub can't: a ClassicTeams match
+ *   with ?TeamSize= 3-8 (Trios, Quads) and a Lightning match with ?TeamSize=
+ *   2-8 (team Showdown) get SetTeamNum(ps, index / N + 1, true) over
+ *   GameState.PlayerArray. N is the match URL's ?TeamSize= (the GameMode's
+ *   OptionsString, +0x400). Duo (no ?TeamSize=, or 2) and every other match
+ *   keep what the stub set, untouched. Then the sort. Each refresh.
+ *   (The first build put sd_teams on the refresh's own call, VA 0x140203b3d,
+ *   doing Duo's pairing too; in game Duo then had no teammate.)
  *
  * sd_spawn_bots(gm) replaces the GameMode's call of its bot spawner at match
  *   start (VA 0x14023330d, call 0x1402320f0). In a team Showdown match it
@@ -552,14 +556,16 @@ static i32 team_size(u8 *gm, u8 type)
 
 char sd_teams(u8 *gs)
 {
-    u8 *world, *gm = 0, **players;
+    u8 *world, *gm = 0, **players, type;
     i32 size, i, n;
     B = base();
-    if (gs) {
+    type = gs ? FIELD(gs, GS_TYPE, u8) : 0;
+    if (type == CLASSIC_TEAMS || type == LIGHTNING) {
         world = world_of(gs);
         gm = world ? FIELD(world, W_AUTH_GM, u8 *) : 0;
-        size = team_size(gm, FIELD(gs, GS_TYPE, u8));
-        if (size) {
+        size = url_team_size(gm);
+        /* Duo: fix 4's stub has paired them; only Trios/Quads and team Showdown are ours. */
+        if (size > (type == CLASSIC_TEAMS ? DUO : 1)) {
             players = FIELD(gs, GS_PLAYERS, u8 **);
             n = FIELD(gs, GS_NUM_PLAYERS, i32);
             for (i = 0; i < n; i++)
