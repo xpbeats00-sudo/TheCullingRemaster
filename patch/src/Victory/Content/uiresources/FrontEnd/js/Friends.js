@@ -308,8 +308,9 @@
     ".rc-tiers img.reached { opacity: 1; filter: none; }",
     ".rc-private { margin-top: 0.8vh; padding: 2vh 1vw; border-radius: 1.2vh; text-align: center; font-size: 0.9vw; opacity: 0.7; background: rgba(255, 255, 255, 0.06); }",
     ".rc-buttons { display: flex; justify-content: flex-end; margin-top: 2vh; }",
-    // A party invite, over any screen.
-    "#remaster-party-toast { position: absolute; left: 50%; bottom: 9vh; z-index: 70; transform: translateX(-50%); display: flex; align-items: center; padding: 1.2vh 1.2vw; border-radius: 1.6vh; white-space: nowrap; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
+    // A party invite, over any screen: top right under the player card, clear
+    // of the lobby's map vote (bottom middle).
+    "#remaster-party-toast { position: absolute; right: 2.6vw; top: 15vh; z-index: 100; display: flex; align-items: center; padding: 1.2vh 1.2vw; border-radius: 1.6vh; white-space: nowrap; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     "#remaster-party-toast .rt-text { margin-right: 1vw; font-size: 0.95vw; }",
     "#remaster-party-toast .rt-text b { color: rgba(255, 70, 60, 1); }"
   ].join("\n");
