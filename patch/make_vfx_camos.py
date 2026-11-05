@@ -15,6 +15,18 @@ mesh, given to the skin through GeoSkin (as the stock special skins do):
   filaments and stars glow and breathe; the weapon keeps its own normal map.
   The stock Crafted_Smoke_Grenade_3p_MI is the same kind of asset (a plain
   child of a PM_Herc static permutation with its own textures).
+  Over it drifts a galaxy layer: the mesh copy gains a second material slot
+  and a shell section - the body's vertices pushed SHELL_OFFSET out along
+  their normals (skeletal_mesh.add_shell) - drawn with MI_VFX_Galaxy_Mist, a
+  child of M_NecroMist (the Resurrection skull's animated translucent mist:
+  two cloud layers panning with time, tinted by its Fog Tints, opacity faded
+  by scene depth over "Fade Distance"; cooked for the GPU-skin vertex
+  factory and already working on the skull mask, a skeletal mesh). The shell
+  sits in front of the body, so a small Fade Distance keeps it opaque enough
+  to see while the clouds swirl over the glowing surface.
+- Dark Matter Drift (fallback without the shell): the Wave material with a
+  brightened Dark Matter picture scrolling slowly - it moves, but is lit
+  colour, not light.
 - Wave: a child of Chainsaw_A_MI, the only PM_Weapon_Master permutation with
   a time panner ("-Use Bow Panner-"): where GP alpha is set, base colour and
   normal are sampled at UV + (time * ChainsawSpeed, 0). Base Color is a band
@@ -31,7 +43,8 @@ packages carrying an inline shader map; none is made here.
 Skins are the weapon's stock GeoSkin skin (CompoundBow_14, Katana_15,
 FiremansAxe_15) with GeoSkin pointed at the copy and the store fields
 rewritten. Mesh copies keep every name's length, so their header and export
-offsets are byte-identical to the stock mesh.
+offsets are byte-identical to the stock mesh (Dark Matter's shell meshes
+grow: one import, one material slot, one section and its vertex data).
 
 Item IDs follow make_camos: 800000 + weapon index * 100 + camo index, camo
 indices after make_camos' 67 (VFX_FIRST). Catalog source "xp-vfx-camos"
@@ -104,7 +117,7 @@ CAMOS = [
      "Void-black metal veined with violet starlight that breathes.", list(WEAPONS)),
     ("Dark Matter Popper", "popper", (0.80, 0.20, 1.00),
      "The FUNC Popper, its glow turned to pulsing dark-matter violet.", ["CompoundBow"]),
-    ("Wave Abyss Blue", "wave", (0.05, 0.35, 1.00),
+    ("Wave Abyss Blue", "wave", (0.15, 0.62, 1.00),
      "Bands of abyss-blue light flowing along the weapon.", list(WEAPONS)),
     ("Wave Violet", "wave", (0.55, 0.10, 1.00),
      "Bands of violet light flowing along the weapon.", list(WEAPONS)),
@@ -112,9 +125,23 @@ CAMOS = [
      "Bands of toxic-green light flowing along the weapon.", list(WEAPONS)),
     ("Wave Ember", "wave", (1.00, 0.30, 0.02),
      "Bands of ember light flowing along the weapon.", list(WEAPONS)),
+    ("Dark Matter Drift", "drift", (0.55, 0.30, 1.00),
+     "A dark-matter galaxy drifting across the weapon.", list(WEAPONS)),
 ]
 WAVE_SPEED = 0.12                  # UV widths per second (ChainsawSpeed)
-DARK_PULSE = (0.2, 0.6, 6.0)       # PulseFrequency (Hz), PulseRange (exponent), Emissive Intensity
+DARK_PULSE = (0.15, 0.3, 7.0)      # PulseFrequency (Hz), PulseRange (exponent), Emissive Intensity
+DRIFT_SPEED = 0.05                 # Dark Matter Drift: UV widths per second
+# Dark Matter's galaxy layer: a shell section (the body pushed out along its
+# normals) drawn with a MIC of M_NecroMist, the Resurrection skull's animated
+# translucent mist (two panning cloud layers tinted by Fog Tint / Fog Tint_1,
+# opacity faded by scene depth over "Fade Distance" and by a Fresnel term).
+MIST_PARENT = "/Game/Character/Materials/M_NecroMist"
+MIST_MIC = WEAPONS_PKG + "MI_VFX_Galaxy_Mist"
+SHELL_OFFSET = {"CompoundBow": 0.15, "Katana": 0.12, "FiremansAxe": 0.15}   # units along the normals
+MIST_SCALARS = [("Opacity", 0.9), ("Fade Distance", 0.05), ("ExIn", 3.0), ("BRF", 0.05),
+                ("SX", 0.03), ("SY", -0.08), ("U1", 0.04), ("U2", -0.05)]
+# The two Fog Tints share a name: FName "Fog Tint" numbers 0 and 2 (shown as "Fog Tint_1").
+MIST_VECTORS = [(("Fog Tint", 0), (1.2, 0.35, 3.0, 1.0)), (("Fog Tint", 2), (0.35, 0.7, 3.5, 1.0))]
 POPPER_PULSE = (0.3, 0.8, 100.0)   # PulseFrequency, PulseRange, Glow INT (stock 0.1, 1, 100)
 
 # Release gate (make_pak.py on fix-release-pipeline): never use these.
@@ -231,9 +258,11 @@ def build_mic(template, path, parent, parent_class, guids, scalars=(), vectors=(
                  + up.fname("LinearColor") + b"\0" * 17 + struct.pack("<4f", *value))
         else:
             v = up.fname("ParameterValue") + up.fname("ObjectProperty") + struct.pack("<ii", 4, 0) + b"\0" + struct.pack("<i", value)
-        return (up.fname("ParameterName") + up.fname("NameProperty") + struct.pack("<ii", 8, 0) + b"\0" + up.fname(name)
+        name, number = name if isinstance(name, tuple) else (name, 0)       # (FName string, FName number)
+        key = name if number == 0 else "%s_%d" % (name, number - 1)
+        return (up.fname("ParameterName") + up.fname("NameProperty") + struct.pack("<ii", 8, 0) + b"\0" + up.fname(name, number)
                 + v + up.fname("ExpressionGUID") + up.fname("StructProperty") + struct.pack("<ii", 16, 0)
-                + up.fname("Guid") + b"\0" * 17 + guids.get(name, zero) + up.fname("None"))
+                + up.fname("Guid") + b"\0" * 17 + guids.get(key, zero) + up.fname("None"))
 
     def array(prop, struct_name, elems):
         elems = list(elems)
@@ -287,6 +316,70 @@ def mesh_copy(stock, old_mesh, new_mesh, old_mat, new_mat, material_class=None):
     return out
 
 
+def tags_end(up, data):
+    end = 0
+    for _, _, _, start, voff, size in iter_tags(up, data):
+        end = voff + size
+    return end + 8                           # the closing None
+
+
+def append_sort_setting(up, data):
+    """LODInfo[0].TriangleSortSettings gains a copy of its first element (one
+    entry per section)."""
+    data = bytearray(data)
+    lod_tag = next(t for t in iter_tags(up, bytes(data)) if t[0] == "LODInfo")
+    _, _, _, lod_start, lod_v, _ = lod_tag
+    assert struct.unpack_from("<i", data, lod_v)[0] == 1, "one LOD expected"
+    elem = lod_v + 4 + 49
+    tss = next(t for t in iter_tags(up, bytes(data), elem) if t[0] == "TriangleSortSettings")
+    _, _, ptype, tss_start, tss_v, _ = tss
+    assert ptype == "ArrayProperty"
+    first = tss_v + 4 + 49
+    last = first
+    for _, _, _, s, v, z in iter_tags(up, bytes(data), first):
+        last = v + z
+    element = bytes(data[first:last + 8])
+    n = len(element)
+    insert_at = tss_v + 4 + 49 + struct.unpack_from("<i", data, tss_v + 4 + 16)[0]
+    data[insert_at:insert_at] = element
+    struct.pack_into("<i", data, tss_v, struct.unpack_from("<i", data, tss_v)[0] + 1)
+    for at in (tss_start + 16, tss_v + 4 + 16, lod_v + 4 + 16, lod_start + 16):
+        struct.pack_into("<i", data, at, struct.unpack_from("<i", data, at)[0] + n)
+    return bytes(data)
+
+
+def shell_mesh(data, body_mat, shell_mat, offset):
+    """The mesh with a galaxy shell: each section drawn with body_mat gets a
+    copy pushed `offset` out along its normals, drawn with shell_mat."""
+    import skeletal_mesh
+    up = UPackage(data)
+    assert len(up.exports) == 1
+    body_obj = body_mat.rsplit("/", 1)[1]
+    imps = [struct.unpack("<iiiiiii", raw) for raw in up.imports]
+    body_index = next(-(k + 1) for k, (_, _, _, _, outer, obj, _) in enumerate(imps) if up.names[obj][0] == body_obj)
+    pkg = up.add_import("/Script/CoreUObject", "Package", 0, shell_mat)
+    shell_index = up.add_import("/Script/Engine", "MaterialInstanceConstant", pkg, shell_mat.rsplit("/", 1)[1])
+    e = up.exports[0]
+    x = e["data"]
+    mesh = skeletal_mesh.SkeletalMesh(x, tags_end(up, x))
+    assert mesh.write() == x
+    body_slots = [i for i, m in enumerate(mesh.materials) if struct.unpack_from("<i", m)[0] == body_index]
+    assert len(body_slots) == 1, body_slots
+    slot = skeletal_mesh.add_material(mesh, shell_index, like=body_slots[0])
+    lod = mesh.lods[0]
+    shells = 0
+    for si in [i for i, s in enumerate(lod.sections) if s.material == body_slots[0]]:
+        skeletal_mesh.add_shell(mesh, 0, si, slot, offset)
+        shells += 1
+    assert shells
+    out = mesh.write()
+    tags = mesh.tags
+    for _ in range(shells):
+        tags = append_sort_setting(up, tags)
+    e["data"] = tags + out[len(mesh.tags):]
+    return up.save()
+
+
 # ---- skins
 DROP = {"GeoSkin", "Roughness", "Specular", "RedMetallic", "GreenMetallic", "BlueMetallic", "RoughnessMetal",
         "NormalIntensity", "bIsPremiumPurchasable", "PremiumPurchaseCost", "StoreCategory", "bIsPurchasable",
@@ -336,7 +429,7 @@ def _periodic_grid(size):
     return np.meshgrid(v, v)
 
 
-def dark_matter_image(size=1024):
+def dark_matter_image(size=1024, gain=1.0):
     """Near-black indigo with violet/blue filaments and stars (tileable)."""
     x, y = _periodic_grid(size)
     p = 4
@@ -359,7 +452,7 @@ def dark_matter_image(size=1024):
            + ridge[..., None] * violet * 0.8 + ridge2[..., None] * blue * 0.65
            + np.clip(ridge * ridge2 * 4, 0, 1)[..., None] * white * 0.6
            + np.clip(stars, 0, 1)[..., None] * white)
-    return (np.clip(rgb, 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
+    return (np.clip(rgb * gain, 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
 
 
 def wave_image(color, size=1024, bands=6):
@@ -423,7 +516,7 @@ def main(paks_dir):
     for weapon, (skin, mesh, material) in WEAPONS.items():
         weapon_rels[weapon] = (C + "Cosmetics/WeaponSkins/%s.uasset" % skin, rel(WEAPONS_PKG + mesh), rel(WEAPONS_PKG + material))
     need = {SRGB_TEMPLATE, MASK_TEMPLATE, GP_TEMPLATE, rel(DARK_PARENT), rel(DARK_ROOT), rel(WAVE_PARENT), rel(WAVE_ROOT),
-            rel(POPPER_PARENT), rel(POPPER_MESH),
+            rel(POPPER_PARENT), rel(POPPER_MESH), rel(MIST_PARENT),
             C + "Character/Weapons/Crafted_Smoke_Grenade_3p_MI.uasset"}     # build_mic's package template
     need |= {r for t in weapon_rels.values() for r in t}
     src = find_in_paks(paks_dir, need)
@@ -435,7 +528,8 @@ def main(paks_dir):
         if os.path.exists(p):
             os.remove(p)
     for f in glob.glob(os.path.join(CONTENT, "Character", "Weapons", "X[0-9][0-9][BKF]_*.uasset")) \
-            + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "T_VFX_*.uasset")):
+            + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "T_VFX_*.uasset")) \
+            + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "MI_VFX_*.uasset")):
         os.remove(f)
 
     # textures
@@ -446,6 +540,10 @@ def main(paks_dir):
     gp = np.zeros((64, 64, 4), np.uint8)
     gp[...] = (0, 90, 0, 255)                # R metal add, G roughness, A = pan everywhere
     write(texture_path("T_VFX_Wave_GP"), texture(src, GP_TEMPLATE, "T_VFX_Wave_GP", rgba=gp, min_width=4))
+    write(texture_path("T_VFX_Dark_Matter_Drift_BC"),
+          texture(src, SRGB_TEMPLATE, "T_VFX_Dark_Matter_Drift_BC", rgb=dark_matter_image(gain=1.6)))
+    write(MIST_MIC, build_mic(template_mic, MIST_MIC, MIST_PARENT, "Material", param_guids(src[rel(MIST_PARENT)]),
+                              scalars=MIST_SCALARS, vectors=MIST_VECTORS))
     for label, kind, color, _, _ in CAMOS:
         if kind == "wave":
             name = "T_" + slug(label) + "_BC"
@@ -489,12 +587,16 @@ def main(paks_dir):
                                           ("Emissive mask", m), ("Metallic mask", m), ("Roughenss mask", m),
                                           ("Detail normal mask", m)])
             else:
+                bc = "T_VFX_Dark_Matter_Drift_BC" if kind == "drift" else "T_" + slug(label) + "_BC"
                 mic = build_mic(template_mic, new_mat, WAVE_PARENT, "MaterialInstanceConstant", wave_guids,
-                                scalars=[("ChainsawSpeed", WAVE_SPEED)],
-                                textures=[("BC", texture_path("T_" + slug(label) + "_BC")),
+                                scalars=[("ChainsawSpeed", DRIFT_SPEED if kind == "drift" else WAVE_SPEED)],
+                                textures=[("BC", texture_path(bc)),
                                           ("GP", texture_path("T_VFX_Wave_GP")), ("NM", FLAT_NORMAL), ("CM", BLACK)])
             write(new_mat, mic)
-            write(new_mesh, mesh_copy(src[mesh_rel], old_mesh, new_mesh, old_mat, new_mat))
+            mesh_data = mesh_copy(src[mesh_rel], old_mesh, new_mesh, old_mat, new_mat)
+            if kind == "dark":
+                mesh_data = shell_mesh(mesh_data, new_mat, MIST_MIC, SHELL_OFFSET[weapon])
+            write(new_mesh, mesh_data)
             geo = "%s.%s" % (new_mesh, mesh)
         write(SKINS_PKG + asset, skin_asset(src[skin_rel], asset, item_id, label, description, geo))
         records.append(asset_registry.record(SKINS_PKG + asset, "WeaponCustomizationDataAsset"))
@@ -519,7 +621,7 @@ def main(paks_dir):
 
 def previews():
     """patch/branding/vfx_camos_preview.png: the camo pictures (not renders)."""
-    tiles = [("Dark Matter", dark_matter_image(256))]
+    tiles = [("Dark Matter", dark_matter_image(256)), ("Dark Matter Drift", dark_matter_image(256, gain=1.6))]
     tiles += [(label, wave_image(color, 256)) for label, kind, color, _, _ in CAMOS if kind == "wave"]
     sheet = Image.new("RGB", (len(tiles) * 264, 280), (18, 18, 20))
     from PIL import ImageDraw
@@ -550,7 +652,7 @@ def test_pak(base_src, out_pak, records):
         root = os.path.join(stage, "src")
         mine = [os.path.relpath(p, os.path.join(HERE, "src"))
                 for p in glob.glob(os.path.join(CONTENT, "**", "*.uasset"), recursive=True)
-                if re.search(r"(_XP_VFX_|[/\\]X\d\d[BKF]_|[/\\]T_VFX_)", p)]
+                if re.search(r"(_XP_VFX_|[/\\]X\d\d[BKF]_|[/\\]T_VFX_|[/\\]MI_VFX_)", p)]
         for r in mine:
             dst = os.path.join(root, r)
             os.makedirs(os.path.dirname(dst), exist_ok=True)

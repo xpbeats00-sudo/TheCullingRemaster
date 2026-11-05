@@ -7,6 +7,12 @@
 - Mesh copies: export data identical to the stock mesh; names keep their
   length (header and export offsets unchanged) except where the material's
   class name had to be added; the body material import points at the MIC.
+- skeletal_mesh.py's layout model re-serializes every stock weapon mesh byte
+  for byte; Dark Matter's shell meshes keep the stock data as a prefix and
+  add one material slot (MI_VFX_Galaxy_Mist), one shell section mirroring the
+  body section, and its vertices pushed SHELL_OFFSET along the normals, with
+  vertex/weight/import-map/adjacency counts and the LODInfo sort entries in
+  step.
 - MICs: no static permutation (they render with the parent's cooked shaders);
   every overridden parameter is a parameter expression of the root Material;
   the shader-map owner is cooked for the GPU-skin vertex factory; on Windows
@@ -94,7 +100,7 @@ def generated_files():
     for d, _, names in os.walk(vfx.CONTENT):
         for n in names:
             p = os.path.join(d, n)
-            if re.search(r"(_XP_VFX_|^X\d\d[BKF]_|^T_VFX_)", n):
+            if re.search(r"(_XP_VFX_|^X\d\d[BKF]_|^T_VFX_|^MI_VFX_)", n):
                 out[os.path.relpath(p, root).replace(os.sep, "/")] = open(p, "rb").read()
     return out
 
@@ -126,9 +132,10 @@ def _disassembler():
     return disasm
 
 
-def base_pass_shaders(data, disasm):
+def base_pass_shaders(data, disasm, translucent=False):
     """Disassembly of the GBuffer (5 render target) ps_5_0 shaders in a
-    material package (each shader's code is zlib-compressed DXBC)."""
+    material package (each shader's code is zlib-compressed DXBC); with
+    translucent, the single-target ps_5_0 shaders that sample textures."""
     for m in re.finditer(b"\x78[\x01\x5e\x9c\xda]", data):
         try:
             raw = zlib.decompressobj().decompress(data[m.start():m.start() + 4000000])
@@ -138,11 +145,15 @@ def base_pass_shaders(data, disasm):
         if j < 0:
             continue
         t = disasm(raw[j:j + struct.unpack_from("<I", raw, j + 24)[0]])
-        if t and re.search(r"^ps_5_0", t, re.M) and "SV_Target                4" in t:
+        if not t or not re.search(r"^ps_5_0", t, re.M):
+            continue
+        if translucent and "SV_Target                1" not in t and "sample" in t:
+            yield t
+        elif not translucent and "SV_Target                4" in t:
             yield t
 
 
-TIME = "cb0[127]"          # View.GameTime in these 4.15 shaders (pulse/panner inputs)
+TIME = re.compile(r"cb[01]\[127\]")   # View.GameTime (View is cb0 in base-pass, cb1 in translucent shaders)
 REG = re.compile(r"\br(\d+)\.([xyzw]+)")
 
 
@@ -156,7 +167,7 @@ def time_moves_uv(t):
         op, args = ln.split(None, 1)
         parts = [a.strip() for a in re.split(r",\s*(?![^()]*\))", args)]
         dst, srcs = parts[0], parts[1:]
-        hot = lambda s: TIME in s or any(("r" + m.group(1), c) in taint for m in REG.finditer(s) for c in m.group(2))  # noqa: E731
+        hot = lambda s: bool(TIME.search(s)) or any(("r" + m.group(1), c) in taint for m in REG.finditer(s) for c in m.group(2))  # noqa: E731
         if op.startswith("sample") and srcs and hot(srcs[0]):
             return True
         tainted = any(hot(s) for s in srcs)
@@ -205,6 +216,87 @@ def root_material(stock, gen, path):
         path = imps[-imps[-parent - 1][2] - 1][3]
 
 
+def mesh_parts(data):
+    import skeletal_mesh
+    up = UPackage(data)
+    x = up.exports[0]["data"]
+    return up, skeletal_mesh.SkeletalMesh(x, vfx.tags_end(up, x))
+
+
+def check_stock_round_trip(stock):
+    """skeletal_mesh's layout model reproduces every stock weapon mesh."""
+    n = bad = 0
+    for rel in sorted(stock.index):
+        if not rel.startswith(vfx.C + "Character/Weapons/") or not rel.endswith(".uasset"):
+            continue
+        data = stock.get(rel)
+        if b"SkeletalMesh" not in data:
+            continue
+        up = UPackage(data)
+        if exports(up).get(rel.rsplit("/", 1)[1][:-len(".uasset")]) != "SkeletalMesh":
+            continue
+        n += 1
+        try:
+            _, mesh = mesh_parts(data)
+            bad += mesh.write() != up.exports[0]["data"]
+        except Exception:
+            bad += 1
+    check(n > 50 and bad == 0, "skeletal_mesh round-trips every stock weapon mesh byte for byte (%d meshes, %d bad)" % (n, bad))
+    print("ok    skeletal_mesh round-trips %d stock weapon meshes byte for byte" % n)
+
+
+def check_shell_mesh(rel, data, stock):
+    """Dark Matter: the stock mesh plus one galaxy-shell section per body
+    section, everything else unchanged."""
+    import numpy as np
+    weapon = next(w for w, l in vfx.WEAPON_LETTER.items() if re.search(r"/X\d\d%s_" % l, rel))
+    up, mesh = mesh_parts(data)
+    sup, smesh = mesh_parts(stock.get(vfx.rel(vfx.WEAPONS_PKG + vfx.WEAPONS[weapon][1])))
+    check(mesh.write() == up.exports[0]["data"], "%s: re-serializes byte for byte" % rel)
+    check(mesh.head == smesh.head and mesh.skeleton == smesh.skeleton and mesh.tail == smesh.tail,
+          "%s: bounds, skeleton and trailing data = stock" % rel)
+    imps = imports(up)
+    slot_obj = [imps[-struct.unpack_from("<i", m)[0] - 1][3] for m in mesh.materials]
+    check(slot_obj[-1] == vfx.MIST_MIC.rsplit("/", 1)[1] and len(slot_obj) == len(smesh.materials) + 1
+          and [m[4:] for m in mesh.materials[:-1]] == [m[4:] for m in smesh.materials],
+          "%s: one added material slot -> %s (%s)" % (rel, vfx.MIST_MIC, slot_obj))
+    lod, slod = mesh.lods[0], smesh.lods[0]
+    n0 = slod.num_vertices
+    body = [i for i, s in enumerate(slod.sections) if s.material == 0]
+    shells = lod.sections[len(slod.sections):]
+    check(len(shells) == len(body) == 1, "%s: one shell section per body section" % rel)
+    check(lod.vertices[:len(slod.vertices)] == slod.vertices and lod.indices[:len(slod.indices)] == slod.indices
+          and lod.weights[:len(slod.weights)] == slod.weights and lod.adjacency[:len(slod.adjacency)] == slod.adjacency
+          and lod.import_map[:n0] == slod.import_map and lod.active_bones == slod.active_bones
+          and lod.required_bones == slod.required_bones, "%s: stock vertex/index/weight data kept as the prefix" % rel)
+    for b, sh in zip(body, shells):
+        src = slod.sections[b]
+        check(sh.material == len(smesh.materials) and sh.base_vertex == n0 and sh.num_vertices == src.num_vertices
+              and sh.num_triangles == src.num_triangles and sh.bone_map == src.bone_map
+              and sh.base_index == len(slod.indices) // slod.index_size and sh.cast_shadow == 0,
+              "%s: shell section mirrors section %d" % (rel, b))
+        nv = lod.num_vertices
+        idx = np.frombuffer(lod.indices, "<u2")
+        tri = idx[sh.base_index:sh.base_index + 3 * sh.num_triangles]
+        check(nv < 65536 and tri.min() >= n0 and tri.max() < nv, "%s: shell indices address the shell vertices" % rel)
+        check(len(lod.adjacency) == 4 * len(lod.indices) and lod.weights_count == nv and len(lod.import_map) == nv
+              and len(lod.vertices) == 24 * nv, "%s: vertex, weight, import-map and adjacency counts agree" % rel)
+        vb = np.frombuffer(lod.vertices, np.uint8).reshape(-1, 24)
+        pos = vb[:, 8:20].copy().view("<f4").reshape(-1, 3)
+        d = np.linalg.norm(pos[n0:n0 + src.num_vertices] - pos[src.base_vertex:src.base_vertex + src.num_vertices], axis=1)
+        same = (vb[n0:n0 + src.num_vertices, :8] == vb[src.base_vertex:src.base_vertex + src.num_vertices, :8]).all()
+        off = vfx.SHELL_OFFSET[weapon]
+        check(same and abs(d.min() - off) < 0.02 and abs(d.max() - off) < 0.02,
+              "%s: shell = body pushed %.2f along the normals (%.3f..%.3f)" % (rel, off, d.min(), d.max()))
+    from uasset import Package
+    from uasset_tree import Tree
+    pkg = Package(data)
+    e = pkg.exports[0]
+    props = Tree(pkg).props(e["offset"], e["offset"] + e["size"])
+    check(len(props["LODInfo"][0]["TriangleSortSettings"]) == len(lod.sections),
+          "%s: LODInfo has a triangle-sort entry per section" % rel)
+
+
 def main(paks_dir):
     stock = Stock(paks_dir)
     gen = generated_files()
@@ -213,13 +305,14 @@ def main(paks_dir):
     disasm = _disassembler()
 
     skins = {vfx.rel(vfx.SKINS_PKG + asset): (ci, camo, weapon, asset, tid) for ci, camo, weapon, asset, tid in rows}
-    check(len(skins) == 16, "16 VFX skins planned (%d)" % len(skins))
+    check(len(skins) == 19, "19 VFX skins planned (%d)" % len(skins))
     check(set(skins) <= set(gen), "every planned skin was generated")
     meshes = [r for r in gen if re.search(r"/X\d\d[BKF]_", r) and b"SkeletalMesh" in gen[r]]
-    mics = [r for r in gen if re.search(r"/X\d\d[BKF]_", r) and r not in meshes]
+    mics = [r for r in gen if re.search(r"/(X\d\d[BKF]|MI_VFX)_", r) and r not in meshes]
     textures = [r for r in gen if "/T_VFX_" in r]
-    check(len(meshes) == 16 and len(mics) == 16 and len(textures) == 7,
-          "16 meshes, 16 MICs, 7 textures (%d, %d, %d)" % (len(meshes), len(mics), len(textures)))
+    check(len(meshes) == 19 and len(mics) == 20 and len(textures) == 8,
+          "19 meshes, 20 MICs, 8 textures (%d, %d, %d)" % (len(meshes), len(mics), len(textures)))
+    check_stock_round_trip(stock)
 
     for rel, data in sorted(gen.items()):
         check_package(rel, data, stock, gen)
@@ -235,10 +328,10 @@ def main(paks_dir):
         check("bHasStaticPermutationResource" not in tags, "%s has no static permutation" % rel)
         parent_path = imports(up)[-imports(up)[-struct.unpack("<i", tags["Parent"])[0] - 1][2] - 1][3]
         root, owner = root_material(stock, gen, parent_path)
-        params = {n for n, _ in expression_params(root)}
+        params = set(expression_params(root))                 # {(FName string, FName number)}
         for arr in ("ScalarParameterValues", "VectorParameterValues", "TextureParameterValues"):
             for f in struct_array(up, up.exports[0]["data"], arr):
-                n, _ = name_value(up, f["ParameterName"])
+                n = name_value(up, f["ParameterName"])
                 check(n in params, "%s: %s is a parameter of the root material" % (rel, n))
                 check(f["ExpressionGUID"] != b"\0" * 16, "%s: %s has its expression GUID" % (rel, n))
         check(b"bUsedWithSkeletalMesh" in root, "%s: root material is used with skeletal meshes" % rel)
@@ -247,17 +340,22 @@ def main(paks_dir):
 
     if disasm:
         for parent, owner in sorted(shader_owners.items()):
-            ps = list(base_pass_shaders(owner, disasm))
-            timed = [t for t in ps if TIME in t]
+            ps = list(base_pass_shaders(owner, disasm, translucent=parent == vfx.MIST_PARENT))
+            timed = [t for t in ps if TIME.search(t)]
             check(ps and timed, "%s: base-pass shaders read the game time (%d of %d)" % (parent, len(timed), len(ps)))
             if parent == vfx.WAVE_PARENT:
                 check(all(time_moves_uv(t) for t in ps), "%s: every base-pass shader pans a texture by time" % parent)
+            if parent == vfx.MIST_PARENT:
+                check(all(time_moves_uv(t) for t in ps), "%s: every translucent colour shader pans its clouds by time" % parent)
             print("ok    %s: %d base-pass shaders, %d time-driven, %d panning"
                   % (parent.rsplit("/", 1)[1], len(ps), len(timed), sum(time_moves_uv(t) for t in ps)))
     else:
         print("skip  shader disassembly (d3dcompiler_47 not available)")
 
     for rel in meshes:
+        if re.search(r"/X67[BKF]_", rel):
+            check_shell_mesh(rel, gen[rel], stock)
+            continue
         new = UPackage(gen[rel])
         new_path = "/Game/" + rel[len(vfx.C):-len(".uasset")]
         popper = "/X68B_" in rel
