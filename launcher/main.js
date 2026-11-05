@@ -547,6 +547,10 @@ function registerIpc() {
       throw Object.assign(e, { op: e.op || "play" });
     }
     await game.launch(settings.gamePath, app.getPath("logs"));
+    // Load-time measurement (patch/measure_loading.py): PLAY, then the game's
+    // own start in Func.Client.log, and how long the game ran.
+    playedAt = Date.now();
+    log("play", { release: sync.installedVersion(settings.gamePath) });
     const presence = watchGame();
     // With Discord presence on, "close on launch" hides the window and the
     // launcher leaves when the game does (the presence needs a process).
@@ -575,12 +579,15 @@ function registerIpc() {
 // is gone, or never appeared within GAME_START_MS (lib/status.js).
 const GAME_POLL_MS = 10000, GAME_START_MS = 3 * 60 * 1000;
 let presence = null;
+let playedAt = 0;
 const gameWatch = status.createGameWatch({
   isRunning: () => game.isRunning(),
   pollMs: GAME_POLL_MS,
   startMs: GAME_START_MS,
   onChange: () => send("state-changed"),
   onExit: () => {
+    if (playedAt) log("game-exit", { seconds: Math.round((Date.now() - playedAt) / 1000) });
+    playedAt = 0;
     if (presence) presence.stop();
     if (settings.closeOnLaunch && win && !win.isVisible()) setTimeout(() => app.quit(), 500);
   }

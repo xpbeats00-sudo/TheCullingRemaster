@@ -322,6 +322,13 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_d
                                os.path.join(HERE, "src"), os.path.join(paks, PAK)])
     finally:
         make_server_config.main(LOCAL)
+    # make_pak.py refused test content before packing; pak_report.py checks the
+    # pak that was written as well (a second reader of the same rule), and a
+    # hit stops the release (rebuild patch/src with patch/build_release.py).
+    import pak_report
+    found = pak_report.diagnostics(pak_report.inventory(os.path.join(paks, PAK)))
+    if found:
+        raise ReleaseError("diagnostic content in the pak: %s" % ", ".join("%s (%s)" % f for f in found[:10]))
     servers = [{"id": "xplab", "name": "The Culling Remaster", "region": "USA",
                 "api": base + "/api", "status": base + "/health"}]
     with open(os.path.join(out, "servers.json"), "w") as f:
