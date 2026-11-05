@@ -44,6 +44,7 @@
 - A launcher update an antivirus blocks is reported instead of crashing the launcher, and the "Updating launcher" card goes away after a failed update. Offline starts no longer reset the limit on update tries.
 - Settings with an empty server list or a bad update address fall back to the defaults; the window buttons always work.
 - The window fits screens smaller than 1280x760.
+- Electron 45 (from 33), with electron-builder 26 and @electron/fuses 2. The saved sign-in now uses safeStorage's asynchronous API (the synchronous one is gone in Electron 46); sign-ins saved by older launchers still load. Copy diagnostics waits for the clipboard write. The exe also refuses an app.asar that doesn't match the hash embedded at build time, and the build fails if a newer Electron adds a fuse nobody has decided on.
 
 ## Launcher 1.3.0 (not yet published)
 
