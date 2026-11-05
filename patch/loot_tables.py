@@ -25,7 +25,7 @@ from collections import OrderedDict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from build_catalog import pak_entries, read_entry  # noqa: E402
+from build_catalog import pak_entries, read_entry, stock_paks  # noqa: E402
 from uasset import Package  # noqa: E402
 from uasset_tree import Tree, clean  # noqa: E402
 

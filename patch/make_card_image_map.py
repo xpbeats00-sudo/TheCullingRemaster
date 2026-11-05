@@ -16,7 +16,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import make_camos  # noqa: E402
-from build_catalog import pak_entries  # noqa: E402
+from build_catalog import pak_entries, stock_paks  # noqa: E402
 from patch_assets import find_in_paks  # noqa: E402
 from ue_package import UPackage  # noqa: E402
 

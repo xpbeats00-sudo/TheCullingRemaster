@@ -37,7 +37,7 @@ sys.path.insert(0, HERE)
 import asset_registry  # noqa: E402
 import cooked_texture  # noqa: E402
 import iwi  # noqa: E402
-from build_catalog import pak_entries  # noqa: E402
+from build_catalog import pak_entries, stock_paks  # noqa: E402
 from build_menu_arenas import encode_tag  # noqa: E402
 from patch_assets import find_in_paks  # noqa: E402
 from ue_names import name_hashes  # noqa: E402

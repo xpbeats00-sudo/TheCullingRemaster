@@ -189,7 +189,7 @@ def patch_skin(path, geo, bc):
 
 
 def mesh_paths(paks_dir):
-    from build_catalog import pak_entries
+    from build_catalog import pak_entries, stock_paks
     found = {}
     wanted = {m.lower(): m for m in ANIMATED.values()}
     for pk in stock_paks(paks_dir):
