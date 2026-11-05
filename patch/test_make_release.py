@@ -178,16 +178,12 @@ try:
     def links():
         """release files link the install's, but what the release changes is a copy or written new"""
         import patch_exe as P
-        exe = bytearray(P.CAP_AT + 16)                     # a stand-in exe (test_patch_exe.py)
-        exe[P.CAP_AT:P.CAP_AT + 5] = bytes.fromhex("b810000000")
-        exe[P.SHA_GATE_AT:P.SHA_GATE_AT + 7] = P.SHA_GATE
-        exe[P.SHA_GATE_AT + 7:P.SHA_GATE_AT + 13] = P.SHA_JUMP
-        exe[P.TRAIN_JUMP_AT:P.TRAIN_JUMP_AT + 2] = P.TRAIN_JUMP
-        exe[P.TRAIN_CALL_AT:P.TRAIN_CALL_AT + len(P.TRAIN_CALL)] = P.TRAIN_CALL
-        exe[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
-        exe[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] = P.DUO_HOOK
-        exe[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
-        touch(game, mr.GAME_EXE, bytes(exe))
+        from exe_stand_ins import full_stand_in
+        stand = os.path.join(tmp, "stand-in.exe")         # every fix 1-8 applies to it (exe_stand_ins.py)
+        full_stand_in(stand)
+        exe = open(stand, "rb").read()
+        os.remove(stand)
+        touch(game, mr.GAME_EXE, exe)
         touch(game, mr.SETTINGS_README_PATH, b"the install's own readme")
         release = os.path.join(tmp, "release")
         mr.link_game(game, release, mr.game_files(game))
@@ -196,7 +192,8 @@ try:
         assert same("Victory/Content/Movies/m0.mp4"), "an unchanged file is a hard link"
         assert not same(mr.GAME_EXE), "Victory.exe is a copy"
         assert open(at(game, mr.GAME_EXE), "rb").read() == bytes(exe), "patching changed the install's exe"
-        assert P.check(at(release, mr.GAME_EXE))["slots"], "the release's exe is patched"
+        fixes = P.check(at(release, mr.GAME_EXE))
+        assert all(fixes[key] for key, _ in P.FIXES) and fixes["cap"] == 24, ("the release's exe has every fix", fixes)
         assert not same(mr.SETTINGS_README_PATH), "the readme the release writes is its own file"
         assert open(at(game, mr.SETTINGS_README_PATH), "rb").read() == b"the install's own readme"
         assert open(at(release, mr.SETTINGS_README_PATH), "rb").read() == mr.SETTINGS_README.encode("ascii")

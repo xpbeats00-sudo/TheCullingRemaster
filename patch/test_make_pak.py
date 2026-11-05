@@ -30,10 +30,21 @@ try:
     W = "Victory/Content/Character/Weapons/"
     put(src, "Victory/Content/uiresources/hud/js/Screens/EndOfMatch.js", b'console.log("XPAnimate");')
     put(src, "Victory/Content/Cosmetics/WeaponSkins/IceAxe_XP_Frost_Plasma.uasset", b"\0plain camo skin\0")
+    # Released camos whose names come close: the VFX camos (Dark Matter, Wave:
+    # <Weapon>_XP_VFX_*) and Necro Mist (a MIC of M_NecroMist), and packages
+    # that reference them, as ASCII and UTF-16.
+    S = "Victory/Content/Cosmetics/WeaponSkins/"
+    put(src, S + "Katana_XP_VFX_Dark_Matter.uasset", b"\0/Game/Character/Weapons/Katana_XP_VFX_Dark_Matter_Drift\0")
+    put(src, S + "CompoundBow_XP_VFX_Dark_Matter_Popper.uasset", b"\0x\0")
+    put(src, S + "FiremansAxe_XP_VFX_Wave_Toxic_Green.uasset",
+        "/Game/Character/Weapons/FiremansAxe_XP_VFX_Wave_Toxic_Green".encode("utf-16le"))
+    put(src, W + "MI_Katana_XP_Necro_Mist_Ice_White.uasset", b"\0/Game/Character/Materials/M_NecroMist\0")
+    put(src, W + "Camo_XP_VFX_Wave_Ember.uasset", b"\0Camo_XP_VFX_Wave_Ember\0")
+    assert make_pak.test_content(src) == [], make_pak.test_content(src)
     make_pak.main(src, out)
     names = sorted(e[1] for e in pak_entries(out))
-    assert len(names) == 2 and not os.path.exists(out + ".new"), names
-    print("ok    clean content packs (EndOfMatch.js's \"XPAnimate\" is not test content)")
+    assert len(names) == 7 and not os.path.exists(out + ".new"), names
+    print("ok    clean content packs (EndOfMatch.js's \"XPAnimate\", the *_XP_VFX_* and Necro Mist camos are not test content)")
 
     put(src, W + "AutoBow_A_XPAnim_MI.uasset", b"x")
     put(src, W + "IceAxe_A_XPTest.uasset", b"x")
@@ -60,7 +71,7 @@ try:
     print("ok    make_pak refuses to pack them and leaves the old pak alone")
 
     make_pak.main(src, out, allow_test_content=True)
-    assert len(list(pak_entries(out))) == 8
+    assert len(list(pak_entries(out))) == 13
     print("ok    --allow-test-content packs them (local diagnostics builds)")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)

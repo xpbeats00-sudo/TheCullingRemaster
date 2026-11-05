@@ -136,8 +136,8 @@ def check_exe(release):
         fixes = patch_exe.verify(exe)
     except ValueError as e:
         raise ReleaseError("the release's Victory.exe: %s" % e)
-    print("Victory.exe: cap %d, SHA-1 crash fix, StartTraining URL slots, Duo team pairing; SHA-256 %s"
-          % (fixes["cap"], patch_exe.PATCHED_SHA256))
+    print("Victory.exe: cap %d, %s; SHA-256 %s"
+          % (fixes["cap"], ", ".join(name for _key, name in patch_exe.FIXES), patch_exe.PATCHED_SHA256))
 
 
 def game_files(game):

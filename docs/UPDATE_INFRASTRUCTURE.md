@@ -86,8 +86,10 @@ python C:\Culling\patch\build_release.py 1.4.0 --game C:\Culling\TheCulling --ca
    - the game dir ships fewer than 60 files or 4 GB;
    - the game dir lacks a stock pak, `Victory.exe`, `Func.Launcher.exe`, `Func.Client.dll` or `pakchunk99-WindowsClient_P.pak`;
    - the consistency gate fails;
-   - the patched `Victory.exe` lacks a `patch_exe.py` fix (cap 24, SHA-1 fix, StartTraining URL slots, Duo team pairing) or isn't byte for byte `PATCHED_SHA256`;
+   - the patched `Victory.exe` lacks a `patch_exe.py` fix 1-8 (cap 24, SHA-1 fix, StartTraining URL slots, Duo team pairing, Showdown rounds module, big scoreboards, Duo team win, Chokening kill credit) or isn't byte for byte `PATCHED_SHA256`;
    - `patch\src` holds test content (`make_pak.py`).
+
+   `PATCHED_SHA256` (and `STOCK_SHA256`) are pinned in `patch\patch_exe.py`. Any change to a fix or to the native module (`showdown_rounds.c` rebuilt into `showdown_rounds_blob.py`) changes the patched exe, so recompute the pin with `python patch\patch_exe.py --hash C:\Culling\TheCulling\Victory\Binaries\Win64\Victory.exe` (it patches a temporary copy and prints the SHA-256) and update it in the same commit. `python patch\test_patch_exe.py <stock Victory.exe>` fails until the pin matches.
 
    It writes:
    - `C:\Culling\releases\1.4.0\publish\`: the signed `manifest.json`, with a `build` entry (commit, branch, dirty flag, gate result, exe SHA-256);
