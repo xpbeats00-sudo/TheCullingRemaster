@@ -2493,6 +2493,8 @@ function OnSocketConnectionClosed()
   Friends.InGroup = false;
   Friends.IAmTheLeader = false;
   delete ClientwebData.AuthToken;
+  // Remaster: an open friends panel says it is offline (Friends.js).
+  if (window.RemasterFriends && window.RemasterFriends.disconnected) window.RemasterFriends.disconnected();
   if (RECONNECT_AUTOMATICALLY) {
     setTimeout(ConnectWebsocketIfNeeded, 30000);
   }

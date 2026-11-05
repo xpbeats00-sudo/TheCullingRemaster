@@ -374,6 +374,13 @@
     return root;
   }
 
+  // No connection to the server, and not trying one right now (ClientWeb.js
+  // retries every 30 s): the list would never arrive, or would be stale.
+  function offline() {
+    if (typeof IsOnline != "function" || IsOnline()) return false;
+    return !(typeof socketConnection != "undefined" && socketConnection);
+  }
+
   function myName() {
     if (data && data.you) return data.you;
     return (typeof PlayerProfileData != "undefined" && PlayerProfileData.Nickname) ? String(PlayerProfileData.Nickname) : "You";
@@ -440,8 +447,9 @@
     var top = box.scrollTop;
     box.textContent = "";
     panel.querySelector(".rf-you").textContent = "Signed in as " + myName();
-    if (!data) {
-      box.appendChild(el("div", "rf-hint", unavailable || "Connecting..."));
+    if (!data || offline()) {
+      box.appendChild(el("div", "rf-hint", offline() ? "Offline — reconnect to see friends." : unavailable || "Connecting..."));
+      if (window.RemasterOverlay) RemasterOverlay.refresh(panel);
       return;
     }
     var max = data.maxParty || 4;
@@ -766,7 +774,8 @@
   }
 
   window.RemasterFriends = { open: open, close: close, showCard: showCard, on: on,
-    connected: function () { emit("friends-get"); } };
+    connected: function () { emit("friends-get"); },
+    disconnected: renderPanel };
 
   // The footer's Invite button and the main menu's FRIENDS item open the panel.
   window.OnInvitePressed = open;
