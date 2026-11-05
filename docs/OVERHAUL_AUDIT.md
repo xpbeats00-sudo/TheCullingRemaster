@@ -54,7 +54,7 @@ In progress (branch `fix-release-pipeline`): full releases by default with the g
 
 - **Live server setting:** `CULLING_REQUIRE_ACCOUNT` should be 1 on the VPS now that the account launcher is out (otherwise anyone can log in as any Steam ID).
 - **Showdown:** the rival picks its own random weapons instead of the round's kit; no round timer/overtime; items dropped on death stay between rounds.
-- **Custom match:** START needs two players and match settings aren't applied.
+- **Custom match:** fixed on branch `custom-match` (START alone; the map and all 17 settings applied with `?mods=`; Join explains custom matches are local). Not yet played in game.
 - **Prison:** Jungle2 has 16 starts while the cap is 24; the number actually placed needs measuring in game.
 - **Ranked seasons:** no rollover yet (Season 1 ends 2027-02-01).
 - **Launcher:** Electron 33 is old; the new "Repair needed" and Retry screens are unit-tested only.

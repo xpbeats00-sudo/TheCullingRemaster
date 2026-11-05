@@ -9,6 +9,10 @@
 - Jungle's "Grab your Airdrop." toast is stock again in every mode (it was changed for all modes).
 - Server: the HUD reports each round (`POST /api/showdown/round`, by round number, counted once); the match result pays the series once with its own economy (250 XP + 250 per round won + 750 for the series; 40 credits + 20 per round won + 120 for the series; one game on the career, a win only for the series, at most a kill per round won, damage capped at 200 a round), instead of a full 16-player match per round. Queuing Showdown leaves any lobby still searching. Series are kept in `data/showdown-series.json` across restarts.
 
+**CUSTOM matches work**
+- PLAY > CUSTOM > Create: pick the map (Island or Prison) and the stock CUSTOM MATCH SETTINGS (crate, barrel, pylon and building loot counts, extra crate and open locker chances, health stations, recycler time), then START, alone. The match is played on your PC like Solo, with those settings applied by the game itself (`?mods=`; all 17 work, see docs/GAME_MODE_LOOT_CONFIGURATION.md). Results count as Custom.
+- Join explains that custom matches are played on your PC and to invite friends to a party instead. The lobby code is gone from the CUSTOM screen, and leaving the screen leaves the lobby. Needs the server update (`lobby-set-mods`, `custom:<map>:<mods>`) and the menu rebuilt (`make_branding.py --menu-only` for the CUSTOM screen).
+
 **Leaderboard**
 - A LEADERBOARD item on the main menu opens the global leaderboard: the top 50 players on Ranked (this season's rating and tier), Wins, Kills, K/D (10 matches or more), Showdown series won and Time played, by account username. Your own row is highlighted, with your position even outside the top 50; a row opens that player's card. Needs the server update (`remaster-leaderboard-get`). See docs/LEADERBOARD.md.
 
