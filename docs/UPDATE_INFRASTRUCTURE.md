@@ -42,32 +42,132 @@ From this version, `tools/make_manifest.js` publishes each file once, as `object
 - **Key loss or rotation:** a new key needs a new launcher build carrying the new public key. Old launchers then refuse new releases until players update the launcher, so **back the private key up offline**.
 - **Better later:** keep the key on a hardware token or in a signing service, and add a second key so the next launcher can trust two.
 
-## Building a release
+## The release recipe
 
-On the build PC:
+Order matters: **the client release first, then the server update.** The server's `server/data/catalog.json` sells what it lists; a server updated before the client would sell items the live client can't load. So the server is updated only after the new client release is live.
+
+All paths below are absolute. The build PC's clone is `C:\Culling` and the stock game `C:\Culling\TheCulling` (read-only input: no step writes to it).
+
+### 1. Build the client release (build PC)
 
 ```
-python patch/make_release.py https://xplab.shop:8443 <version> --full ../TheCulling
+cd C:\Culling
+git status                       (clean, on the commit to release)
+python C:\Culling\patch\build_release.py 1.4.0 --game C:\Culling\TheCulling --camos C:\Culling\Camos --cards C:\Culling\CallingCards --skip-showdown-tile
 ```
 
-1. Points the menus and HUD at the server, packs the Remaster patch, then restores the local setting.
-2. With `--full`, hard-links the whole game install in, leaving out this PC's Steam identity and name, the client DLLs the launcher makes, the replaced patch and Steam's install script.
-3. `make_manifest.js` hashes, deduplicates into `objects/` and signs, writing to `releases/<version>/publish/`.
+`patch/build_release.py` runs these steps and stops at the first failure:
 
-## Publishing (needs the VPS)
+1. **Preflight:** checks that these exist, and that the git tree is clean:
+   - the install: absolute path, stock pakchunk paks, the stock Steam `Victory.exe`;
+   - `--camos` and `--cards`;
+   - the branding art in `C:\Culling\patch\branding`: `remaster_logo_source.png`, `xp_mask_source.png`, `download_creepster\`, `ranked\source\*.webp`.
+2. **Leftovers:** deletes test and diagnostic files (`*_XPAnim*`, `Camo_XP_Anim_*`, `*XPTest*`) from `patch\src`.
+3. **Staging:** a temp folder with only the stock `pakchunk*-WindowsClient.pak` (hard links) and the stock `FrontEnd.html`. The generators also skip `*_P.pak` patch paks on their own (`build_catalog.stock_paks`).
+4. **Generators**, in this order:
+   - `build_catalog.py` (only with `--catalog`);
+   - `make_airdrop_unlocks.py`, `patch_assets.py`, `make_loading_bar.py` (DefaultGame.ini only);
+   - `make_branding.py --skip-intro`, then `make_branding.py --menu-only`;
+   - `make_night_sky.py`, `make_night_cube.py`, `make_moon.py`, `make_meteors.py`, `make_sky_fx.py`, `build_menu_arenas.py`;
+   - `make_showdown_tile.py` (skipped with `--skip-showdown-tile`: its source screenshot isn't in the repo or the branding folder);
+   - `make_camos.py`, `make_eye_skins.py`, `make_calling_cards.py`, `make_ranked.py`, `make_card_image_map.py`, `make_showdown.py`, `extract_func_anims.py`.
+5. **Release consistency gate** (`patch/test_release_consistency.py --paks <stage>`). It checks:
+   - item IDs are unique;
+   - `patch\registry\{camos,eye_skins,calling_cards,ranked}.bin` are present and list exactly the catalog items of their source;
+   - every catalog item's asset is in the stock paks or `patch\src`;
+   - there is no test content;
+   - `DefaultGame.ini`, `FrontEnd.html` and `hud.html` equal what their generators make.
+6. **Tests:** every `patch\test_*.py`, every `deploy\*.test.js` and the launcher's `npm test`.
+7. **`patch/make_release.py https://xplab.shop:8443 1.4.0 --full C:\Culling\TheCulling`.** It refuses, and builds nothing, when:
+   - the version isn't newer than the live one. The live version comes from `https://xplab.shop:8443/remaster/manifest.json`, or from `C:\Culling\releases\LATEST` when offline;
+   - `C:\Culling\releases\1.4.0` already exists (`--overwrite` rebuilds an unpublished one);
+   - the git tree is dirty (`--allow-dirty` overrides this, and the override is recorded);
+   - the game dir isn't absolute or isn't an install;
+   - the game dir ships fewer than 60 files or 4 GB;
+   - the game dir lacks a stock pak, `Victory.exe`, `Func.Launcher.exe`, `Func.Client.dll` or `pakchunk99-WindowsClient_P.pak`;
+   - the consistency gate fails;
+   - the patched `Victory.exe` lacks a `patch_exe.py` fix (cap 24, SHA-1 fix, StartTraining URL slots, Duo team pairing) or isn't byte for byte `PATCHED_SHA256`;
+   - `patch\src` holds test content (`make_pak.py`).
 
-On the VPS, over Remote Desktop with the build PC's C: drive shared, run `Publish Release.bat <version>`. That runs `deploy/publish_release.ps1`:
+   It writes:
+   - `C:\Culling\releases\1.4.0\publish\`: the signed `manifest.json`, with a `build` entry (commit, branch, dirty flag, gate result, exe SHA-256);
+   - `build.json` and `build-details.json` next to it;
+   - `C:\Culling\releases\LATEST`.
+
+The generators rewrite tracked files: `server\data\catalog.json`, `server\data\showdown.json` and the generated `.js` in `patch\src`. If any of them changed, `make_release.py` refuses the dirty tree. Review the diff and commit it, then finish with `--skip-generators`, which reruns only the gate, the tests and `make_release.py`:
+
+```
+git add -A
+git commit -m "Generated data for 1.4.0"
+python C:\Culling\patch\build_release.py 1.4.0 --game C:\Culling\TheCulling --camos C:\Culling\Camos --cards C:\Culling\CallingCards --skip-showdown-tile --skip-generators
+```
+
+**Pak-only releases** (`make_release.py ... --pak-only`) have to be asked for. Publishing one over a full release would remove the game from every launcher, so the publish refuses it unless `-AllowRemovals` is given.
+
+**Test builds** never touch `C:\Culling\releases`:
+
+```
+python C:\Culling\patch\make_release.py <server> <version> --full C:\Culling\TheCulling --out <temp folder> --key <throwaway key> --no-setup [--skip-gate]
+```
+
+The publish refuses a manifest whose gate was skipped.
+
+**Diagnostics** (`patch\diagnostics\make_animated_camos.py`, `make_camo_tests.py`) are never part of a release. `make_pak.py` refuses what they write unless `--allow-test-content` is given (local diagnostics paks only).
+
+#### What a full release leaves out of the install
+
+| Left out | Why |
+|---|---|
+| `steam_settings\force_steamid.txt`, `force_account_name.txt` | This PC's Steam identity and name. The launcher writes each player's own. |
+| `Func.Client.Local.dll`, `Func.Client.Online.dll` | The launcher makes them from `Func.Client.dll`. |
+| `Victory\Content\Paks\LocalServer-WindowsClient_P.pak` | The patch this release replaces. |
+| `InstallScript.vdf` | Steam's install script (EasyAntiCheat, unused). |
+| `Victory\Content\Paks\Victory\` (3,482 files, 344 MB) | A loose extraction of the paks: 3,480 byte-size copies of files inside the pakchunks (3,474 Wwise banks, plus config), a differing `DefaultInput.ini` and `DefaultEngine.ini.original`. The game reads Wwise banks from `Content/WwiseAudio` and config from `Victory/Config`, both inside the pakchunks. Nothing reads this folder. |
+| `Victory\Content\Movies\LoadingBar.mp4` (2.6 MB) | `make_loading_bar.py`'s movie, not in use. The loading screen plays no movie; the only startup movie is `LoadingScreen.mp4`. |
+| `Engine\...\Steamv136\Win64\generate_interfaces_file.exe` | Goldberg's tool that writes `steam_interfaces.txt`. Nothing loads it. |
+| any `*.original` | Backups of edited config. |
+
+**Kept, though first listed as dead weight:** `Victory\Binaries\Win64\pakchunk99-WindowsClient_P.pak`. `Func.Launcher.exe` refuses to start without it next to the client DLL, and `Func.Client.dll` mounts it.
+
+A full release from `C:\Culling\TheCulling` ships 73 files, 5.1 GB. The first release built this way removes the 3,484 left-out files from players' installs, so its publish needs `-AllowRemovals`. Check the plan's "removed" list first.
+
+### 2. Publish the client (VPS)
+
+On the VPS, over Remote Desktop with the build PC's C: drive shared, run from the clone:
+
+```
+"Publish Release.bat" 1.4.0
+"Publish Release.bat" 1.4.0 -AllowRemovals
+```
+
+Use the second form only when step 2 below lists removals you expect. Either runs `deploy/publish_release.ps1 -Release \\tsclient\C\Culling\releases\1.4.0\publish`:
 
 1. **Signature check** with the launcher's key. An unsigned or altered release is refused.
-2. **`deploy/stage_objects.js`**, for each object:
+2. **The plan** (`deploy/stage_objects.js --plan`): what changes against the live release and what will upload. It **refuses**:
+   - a release with no files;
+   - a release whose `build.gate` isn't `passed` (a test build);
+   - a release that drops files the live release has, unless `-AllowRemovals`. Launchers delete every file a release no longer lists.
+3. **`deploy/stage_objects.js`** (same refusals), for each object:
    - already present: reused;
    - in the old `files/` layout with the right hash: hard-linked, so republishing 1.1.0 as objects uploads nothing;
    - otherwise: copied from the build PC and checked against its SHA-256.
 
-   Objects are never overwritten. (Tested by `deploy/stage_objects.test.js`.)
-3. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
-4. **The setup** is copied to the website's download folder, which the website deploy keeps.
-5. **Checks:** the public manifest version and the setup's size.
+   Objects are never overwritten. (Tested by `deploy/stage_objects.test.js` and `deploy/publish.test.js`.)
+4. **The setup** is copied to the website's download folder from the staged setup object.
+5. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
+6. **Checks** over HTTPS (`deploy/check_published.js`).
+
+On the build PC, objects in `releases\<v>\publish\objects` are hard links only of release files. Those are themselves links of the read-only install, or files written fresh for the release. The launcher setup from `launcher\dist` is always copied, and an object that no longer matches its name is replaced (`launcher/tools/make_manifest.js`, tested by `deploy/make_manifest.test.js`).
+
+### 3. Then update the server (VPS)
+
+Only after step 2 checks out, and only with the release's commit (its `build.commit`) on the branch the VPS clone pulls, run from the clone:
+
+```
+"Update Culling Server.bat"
+```
+
+It pulls the code and `server\data\catalog.json` and reinstalls the service. If the release adds no items, the order doesn't matter. If it does, a server updated first would sell items the live client lacks.
 
 ## Rolling back a release
 
