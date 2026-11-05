@@ -2479,7 +2479,14 @@ function OnSocketConnectionClosed()
     // don't care--probably it's already closed
   }
 
+  // Remaster: the search ends with the connection. The lobby pill
+  // (MatchLobby.js) goes with it, and says why.
+  var bWasInRemasterLobby = window.RemasterLobby && window.RemasterLobby.isShown && window.RemasterLobby.isShown();
   Matchmaking.SetMatchmaking(false);
+  StoppedMatchmaking();
+  if (bWasInRemasterLobby && window.RemasterLobby.notice) {
+    window.RemasterLobby.notice("Connection lost — search cancelled");
+  }
 
   LobbyData.SetIsInLobby(false);
   LobbyData.MatchIsStarting = false;

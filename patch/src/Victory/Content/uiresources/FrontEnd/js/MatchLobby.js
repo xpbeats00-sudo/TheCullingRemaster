@@ -77,6 +77,8 @@
     "#remaster-lobby .rl-row.more { background: rgba(18, 14, 16, 0.75); border: 0; }",
     "#remaster-lobby .rl-row.empty .rl-name { font: 0.85vw Sucrose-Regular, Arial, sans-serif; opacity: 0.55; letter-spacing: 0.1vw; text-transform: uppercase; }",
     "#remaster-lobby .rl-row.joined { animation: rl-in 0.35s ease-out; }",
+    "#remaster-lobby-notice { position: absolute; top: 1.8vh; left: 50%; z-index: 40; transform: translateX(-50%); padding: 1vh 1.4vw; border-radius: 4vh; white-space: nowrap; font: 0.9vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; color: rgba(255, 120, 110, 1); background: rgba(10, 6, 8, 0.88); box-shadow: 0 0 0 1px rgba(255, 70, 60, 0.5), 0 0.6vh 2vh rgba(0, 0, 0, 0.5); pointer-events: none; }",
+    "#remaster-lobby-notice.hidden { display: none; }",
     "@keyframes rl-in { from { opacity: 0; transform: translateX(1.5vw); } to { opacity: 1; transform: none; } }"
   ].join("\n");
 
@@ -349,7 +351,24 @@
     if (ticker) { clearInterval(ticker); ticker = null; }
   }
 
-  window.RemasterLobby = { show: render, hide: hide };
+  // A short line where the search pill was (e.g. the connection dropped).
+  var noticeEl = null, noticeTimer = null;
+  function notice(text) {
+    build();
+    if (!noticeEl) {
+      noticeEl = el("div", "rl-notice hidden");
+      noticeEl.id = "remaster-lobby-notice";
+      document.body.appendChild(noticeEl);
+    }
+    noticeEl.textContent = text;
+    noticeEl.className = "rl-notice";
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(function () { noticeEl.className = "rl-notice hidden"; }, 6000);
+  }
+
+  function isShown() { return !!panel && panel.className !== "hidden"; }
+
+  window.RemasterLobby = { show: render, hide: hide, notice: notice, isShown: isShown };
 
   // The stock queue widget (QUEUING / PLAYERS QUEUED / ELAPSED TIME / CANCEL
   // SEARCH) never shows: this lobby's search pill replaces it. Hidden from the
