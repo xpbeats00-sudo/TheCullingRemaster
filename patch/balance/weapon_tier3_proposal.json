@@ -1,0 +1,14 @@
+{
+ "status": "PROPOSED - NOT APPLIED. Awaiting approval of the numbers. To apply: copy these changes into weapon_balance.json (or run make_weapon_balance.py --table balance/weapon_tier3_proposal.json), rebuild the patch pak, and run the in-game checks in docs/WEAPON_TIER_3_BALANCE.md.",
+ "basis": "docs/WEAPON_TIER_3_BALANCE.md, 'Tier 3 analysis'. Damage, speed, timing, stamina, reach and block are on the tier curve for every Tier 3 weapon; the one numeric outlier is the Tier 3 spears' armor shred (WeaponConfig.PierceValueMin/Max): the Survival Spear has the Tier 4 Trident's 5-12 and the Yari the Tier 2 Pike's 4-9.",
+ "changes": [
+  {"weapon": "WeapSurvivalSpear", "export": "CDO", "property": "WeaponConfig.PierceValueMin", "from": 5.0, "to": 4.5,
+   "reason": "Tier 3 spear armor shred: the Survival Spear has the Tier 4 Trident's 5-12. Both Tier 3 spears move to 4.5-10.5, midway between the best Tier 2 spear (Pike 4-9) and Tier 4 (Trident 5-12); the Tier 3 spears' average (4.5-10.5) is unchanged, so the tier is neither buffed nor nerfed."},
+  {"weapon": "WeapSurvivalSpear", "export": "CDO", "property": "WeaponConfig.PierceValueMax", "from": 12.0, "to": 10.5,
+   "reason": "As PierceValueMin: Tier 3 shred 4.5-10.5, below Tier 4's 5-12."},
+  {"weapon": "WeapYari", "export": "CDO", "property": "WeaponConfig.PierceValueMin", "from": 4.0, "to": 4.5,
+   "reason": "Tier 3 spear armor shred: the Yari has the Tier 2 Pike's 4-9, so it gains nothing over Tier 2. Moves to the shared Tier 3 band 4.5-10.5 (above Pike 4-9, below Trident 5-12)."},
+  {"weapon": "WeapYari", "export": "CDO", "property": "WeaponConfig.PierceValueMax", "from": 9.0, "to": 10.5,
+   "reason": "As PierceValueMin: Tier 3 shred 4.5-10.5, above Tier 2's 4-9."}
+ ]
+}

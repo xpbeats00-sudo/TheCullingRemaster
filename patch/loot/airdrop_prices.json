@@ -1,0 +1,448 @@
+{
+ "source": "patch/make_airdrop_prices.py, from the game's stock AirDropPackages",
+ "property": "ActivityResourceCost",
+ "factor": "3/4",
+ "rounding": "nearest integer, halves up: (3 * stock + 2) // 4",
+ "airdrops": [
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_Archer.uasset",
+   "export": "Airdrop_Archer",
+   "name": "Archer",
+   "itemId": 140102,
+   "enabled": true,
+   "random": false,
+   "stock": 85,
+   "new": 64
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_Cyclops.uasset",
+   "export": "Airdrop_Cyclops",
+   "name": "Cyclops",
+   "itemId": 140111,
+   "enabled": true,
+   "random": false,
+   "stock": 135,
+   "new": 101
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_DemonHunter.uasset",
+   "export": "Airdrop_DemonHunter",
+   "name": "Demon Hunter",
+   "itemId": 140112,
+   "enabled": true,
+   "random": false,
+   "stock": 70,
+   "new": 53
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_HawksEye.uasset",
+   "export": "Airdrop_HawksEye",
+   "name": "Hawks Eye",
+   "itemId": 140115,
+   "enabled": true,
+   "random": false,
+   "stock": 100,
+   "new": 75
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_Polecat.uasset",
+   "export": "Airdrop_Polecat",
+   "name": "Polecat",
+   "itemId": 140126,
+   "enabled": true,
+   "random": false,
+   "stock": 130,
+   "new": 98
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_TheImp.uasset",
+   "export": "Airdrop_TheImp",
+   "name": "The Imp",
+   "itemId": 140138,
+   "enabled": true,
+   "random": false,
+   "stock": 105,
+   "new": 79
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_Viking.uasset",
+   "export": "Airdrop_Viking",
+   "name": "Viking",
+   "itemId": 140142,
+   "enabled": true,
+   "random": false,
+   "stock": 80,
+   "new": 60
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/AirDrop_zRandom.uasset",
+   "export": "AirDrop_zRandom",
+   "name": "Surprise Me!",
+   "itemId": 140144,
+   "enabled": true,
+   "random": true,
+   "stock": null,
+   "new": null
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Addict.uasset",
+   "export": "Airdrop_Addict",
+   "name": "Addict",
+   "itemId": 140101,
+   "enabled": true,
+   "random": false,
+   "stock": 125,
+   "new": 94
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_BaitCrate.uasset",
+   "export": "Airdrop_BaitCrate",
+   "name": "Bait Crate",
+   "itemId": 140103,
+   "enabled": true,
+   "random": false,
+   "stock": 70,
+   "new": 53
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Bandito.uasset",
+   "export": "Airdrop_Bandito",
+   "name": "Bandito",
+   "itemId": 140104,
+   "enabled": true,
+   "random": false,
+   "stock": 175,
+   "new": 131
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_BoarHunter.uasset",
+   "export": "Airdrop_BoarHunter",
+   "name": "Boar Hunter",
+   "itemId": 140105,
+   "enabled": true,
+   "random": false,
+   "stock": 115,
+   "new": 86
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_CarJacker.uasset",
+   "export": "Airdrop_CarJacker",
+   "name": "Car Jacker",
+   "itemId": 140106,
+   "enabled": true,
+   "random": false,
+   "stock": 70,
+   "new": 53
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Chef.uasset",
+   "export": "Airdrop_Chef",
+   "name": "Chef",
+   "itemId": 140107,
+   "enabled": true,
+   "random": false,
+   "stock": 85,
+   "new": 64
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_ChimneySweep.uasset",
+   "export": "Airdrop_ChimneySweep",
+   "name": "Chimney Sweep",
+   "itemId": 140108,
+   "enabled": true,
+   "random": false,
+   "stock": 85,
+   "new": 64
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Climber.uasset",
+   "export": "Airdrop_Climber",
+   "name": "Climber",
+   "itemId": 140109,
+   "enabled": true,
+   "random": false,
+   "stock": 80,
+   "new": 60
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Commando.uasset",
+   "export": "Airdrop_Commando",
+   "name": "Commando",
+   "itemId": 140110,
+   "enabled": true,
+   "random": false,
+   "stock": 155,
+   "new": 116
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Dwarf.uasset",
+   "export": "Airdrop_Dwarf",
+   "name": "Dwarf",
+   "itemId": 140113,
+   "enabled": true,
+   "random": false,
+   "stock": 155,
+   "new": 116
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Guerilla.uasset",
+   "export": "Airdrop_Guerilla",
+   "name": "Guerilla",
+   "itemId": 140114,
+   "enabled": true,
+   "random": false,
+   "stock": 80,
+   "new": 60
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Hoodlum.uasset",
+   "export": "Airdrop_Hoodlum",
+   "name": "Hoodlum",
+   "itemId": 140116,
+   "enabled": true,
+   "random": false,
+   "stock": 115,
+   "new": 86
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Hunter.uasset",
+   "export": "Airdrop_Hunter",
+   "name": "Hunter",
+   "itemId": 140117,
+   "enabled": true,
+   "random": false,
+   "stock": 175,
+   "new": 131
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Javelineer.uasset",
+   "export": "Airdrop_Javelineer",
+   "name": "Javelineer",
+   "itemId": 140118,
+   "enabled": true,
+   "random": false,
+   "stock": 75,
+   "new": 56
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Juggler.uasset",
+   "export": "Airdrop_Juggler",
+   "name": "Juggler",
+   "itemId": 140119,
+   "enabled": true,
+   "random": false,
+   "stock": 120,
+   "new": 90
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Lizzie.uasset",
+   "export": "Airdrop_Lizzie",
+   "name": "Lizzie",
+   "itemId": 140120,
+   "enabled": true,
+   "random": false,
+   "stock": 110,
+   "new": 83
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_LumberJack.uasset",
+   "export": "Airdrop_LumberJack",
+   "name": "Lumber Jack",
+   "itemId": 140121,
+   "enabled": true,
+   "random": false,
+   "stock": 150,
+   "new": 113
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Medic.uasset",
+   "export": "Airdrop_Medic",
+   "name": "Medic",
+   "itemId": 140122,
+   "enabled": true,
+   "random": false,
+   "stock": 140,
+   "new": 105
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Ninja.uasset",
+   "export": "Airdrop_Ninja",
+   "name": "Ninja",
+   "itemId": 140123,
+   "enabled": true,
+   "random": false,
+   "stock": 130,
+   "new": 98
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Pirate.uasset",
+   "export": "Airdrop_Pirate",
+   "name": "Pirate",
+   "itemId": 140124,
+   "enabled": true,
+   "random": false,
+   "stock": 145,
+   "new": 109
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Plumber.uasset",
+   "export": "Airdrop_Plumber",
+   "name": "Plumber",
+   "itemId": 140125,
+   "enabled": true,
+   "random": false,
+   "stock": 105,
+   "new": 79
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Police.uasset",
+   "export": "Airdrop_Police",
+   "name": "Police",
+   "itemId": 140127,
+   "enabled": true,
+   "random": false,
+   "stock": 185,
+   "new": 139
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Pothead.uasset",
+   "export": "Airdrop_Pothead",
+   "name": "Pothead",
+   "itemId": 140128,
+   "enabled": true,
+   "random": false,
+   "stock": 95,
+   "new": 71
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Sapper.uasset",
+   "export": "Airdrop_Sapper",
+   "name": "Sapper",
+   "itemId": 140129,
+   "enabled": true,
+   "random": false,
+   "stock": 205,
+   "new": 154
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_SelfDefense.uasset",
+   "export": "Airdrop_SelfDefense",
+   "name": "Self Defense",
+   "itemId": 140130,
+   "enabled": true,
+   "random": false,
+   "stock": 80,
+   "new": 60
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Slugger.uasset",
+   "export": "Airdrop_Slugger",
+   "name": "Slugger",
+   "itemId": 140131,
+   "enabled": true,
+   "random": false,
+   "stock": 80,
+   "new": 60
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Smuggler.uasset",
+   "export": "Airdrop_Smuggler",
+   "name": "Smuggler",
+   "itemId": 140132,
+   "enabled": true,
+   "random": false,
+   "stock": 75,
+   "new": 56
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Sniper.uasset",
+   "export": "Airdrop_Sniper",
+   "name": "Sniper",
+   "itemId": 140133,
+   "enabled": true,
+   "random": false,
+   "stock": 175,
+   "new": 131
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Stalker.uasset",
+   "export": "Airdrop_Stalker",
+   "name": "Stalker",
+   "itemId": 140134,
+   "enabled": true,
+   "random": false,
+   "stock": 95,
+   "new": 71
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Survivalist.uasset",
+   "export": "Airdrop_Survivalist",
+   "name": "Survivalist",
+   "itemId": 140135,
+   "enabled": true,
+   "random": false,
+   "stock": 140,
+   "new": 105
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Swat.uasset",
+   "export": "Airdrop_Swat",
+   "name": "Swat",
+   "itemId": 140136,
+   "enabled": true,
+   "random": false,
+   "stock": 200,
+   "new": 150
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_SwissGuard.uasset",
+   "export": "Airdrop_SwissGuard",
+   "name": "Swiss Guard",
+   "itemId": 140137,
+   "enabled": true,
+   "random": false,
+   "stock": 130,
+   "new": 98
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Thief.uasset",
+   "export": "Airdrop_Thief",
+   "name": "Thief",
+   "itemId": 140139,
+   "enabled": true,
+   "random": false,
+   "stock": 90,
+   "new": 68
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Tough.uasset",
+   "export": "Airdrop_Tough",
+   "name": "Tough",
+   "itemId": 140140,
+   "enabled": true,
+   "random": false,
+   "stock": 145,
+   "new": 109
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_Trapper.uasset",
+   "export": "Airdrop_Trapper",
+   "name": "Trapper",
+   "itemId": 140141,
+   "enabled": true,
+   "random": false,
+   "stock": 85,
+   "new": 64
+  },
+  {
+   "asset": "Victory/Content/AirDropPackages/Airdrop_WitchDoctor.uasset",
+   "export": "Airdrop_WitchDoctor",
+   "name": "Witch Doctor",
+   "itemId": 140143,
+   "enabled": false,
+   "random": false,
+   "stock": 85,
+   "new": 64
+  }
+ ]
+}
