@@ -134,6 +134,16 @@
     return "Not on this board yet.";
   }
 
+  // No row of yours at all: the server lists account players only, and its
+  // boards are recomputed every few minutes, so a new account isn't on them
+  // yet. The friends push says whether you have an account (Friends.js).
+  function notOnBoard() {
+    var account = window.RemasterFriends && window.RemasterFriends.account ? window.RemasterFriends.account() : null;
+    if (account === false) return "Sign in with your account to appear on the leaderboard.";
+    if (account) return "You're not on the leaderboard yet. It updates every few minutes.";
+    return "You're not on the leaderboard yet.";
+  }
+
   function row(id, e, mine, unlisted) {
     var r = el("div", "lb-row" + (mine ? " me" : "") + (e.position && e.position <= 3 ? " p" + e.position : ""));
     r.style.backgroundImage = cardImage(e.cardID);
@@ -195,7 +205,7 @@
     // Your own row, pinned under the list.
     yours.appendChild(el("div", "lb-label", "You"));
     if (b.you) yours.appendChild(row(board, b.you, true, !b.you.position));
-    else yours.appendChild(el("div", "lb-hint", "Sign in with your account to appear on the leaderboard."));
+    else yours.appendChild(el("div", "lb-hint", notOnBoard()));
     box.scrollTop = 0;
     if (mine && mine.offsetTop > box.clientHeight) box.scrollTop = mine.offsetTop - box.clientHeight / 2;
   }

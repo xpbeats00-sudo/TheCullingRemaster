@@ -321,6 +321,7 @@
   var message = { text: "", ok: false };
   var removing = null;        // a friend whose Remove was clicked once
   var unavailable = null;     // why there is no friends list (no account)
+  var noAccount = false;      // the server said this player has no account
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -747,6 +748,7 @@
     if (r.action === "player-card") { if (pendingCard) renderCard(pendingCard, false); return; }
     if (r.action === "friends-get") {
       unavailable = r.error ? ERRORS[r.error] || "Friends are unavailable right now." : null;
+      noAccount = r.error === "no-account";
       return renderPanel();
     }
     if (r.error) return say(ERRORS[r.error] || "That didn't work.");
@@ -775,7 +777,9 @@
 
   window.RemasterFriends = { open: open, close: close, showCard: showCard, on: on,
     connected: function () { emit("friends-get"); },
-    disconnected: renderPanel };
+    disconnected: renderPanel,
+    // Your account username from the server; false: no account; null: not known yet.
+    account: function () { return data ? data.you || false : (noAccount ? false : null); } };
 
   // The footer's Invite button and the main menu's FRIENDS item open the panel.
   window.OnInvitePressed = open;
