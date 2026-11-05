@@ -104,6 +104,11 @@ def doc(rows):
            "| Server (`server/data/catalog.json`) | airdrops are owned or unlocked, never bought: no price | - (checked by `server/test/airdrop_prices.test.js`) |",
            "| `patch/loot/loot_tables.json`, `docs/LOOT_TABLE_REFERENCE.md` | `funcCost` (now the new price) and `stockFuncCost` | yes |", "",
            "Surprise Me! (`AirDrop_zRandom`) stores no price: it gives a random kit from the others and costs what that kit costs.", "",
+           "The game's tip \"The Bait Crate Airdrop can be called for free\" (FrontEnd.json) disagrees with the stock data, which "
+           "stores 70 for it; that is the stock game's, unchanged here (it has no number to update).", "",
+           "**Build**: `patch/src` isn't in git, so run `python patch/make_airdrop_prices.py <Paks dir>` on the build machine "
+           "before `make_release.py`; the release pak then carries the 43 patched packages. "
+           "`python patch/test_airdrop_prices.py <Paks dir>` checks them.", "",
            "## Every airdrop", "",
            "| Airdrop | Asset | ItemID | Stock FUNC | x 0.75 | New FUNC | Note |", "|---|---|---:|---:|---:|---:|---|"]
     for r in sorted(rows, key=lambda r: r["name"].lower()):

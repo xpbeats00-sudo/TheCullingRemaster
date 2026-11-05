@@ -17,6 +17,10 @@ to the nearest whole FUNC, halves rounding up (integer form: `(3 * stock + 2) //
 
 Surprise Me! (`AirDrop_zRandom`) stores no price: it gives a random kit from the others and costs what that kit costs.
 
+The game's tip "The Bait Crate Airdrop can be called for free" (FrontEnd.json) disagrees with the stock data, which stores 70 for it; that is the stock game's, unchanged here (it has no number to update).
+
+**Build**: `patch/src` isn't in git, so run `python patch/make_airdrop_prices.py <Paks dir>` on the build machine before `make_release.py`; the release pak then carries the 43 patched packages. `python patch/test_airdrop_prices.py <Paks dir>` checks them.
+
 ## Every airdrop
 
 | Airdrop | Asset | ItemID | Stock FUNC | x 0.75 | New FUNC | Note |
@@ -66,4 +70,4 @@ Surprise Me! (`AirDrop_zRandom`) stores no price: it gives a random kit from the
 | Viking | `AirDrop_Viking.uasset` | 140142 | 80 | 60 | 60 |  |
 | Witch Doctor | `Airdrop_WitchDoctor.uasset` | 140143 | 85 | 63.75 | 64 | disabled in the game (bEnabled false) |
 
-43 priced airdrops; total 5030 FUNC -> 3777 FUNC (75.09% of stock; rounding moves each one by under 0.5 FUNC).
+43 priced airdrops; total 5030 FUNC -> 3777 FUNC (75.09% of stock; rounding moves each one by at most 0.5 FUNC).
