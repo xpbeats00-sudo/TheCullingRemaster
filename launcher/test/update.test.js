@@ -381,6 +381,13 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(sync.installedVersion(r), "1");
     });
 
+    await test("a game folder at a drive root works", async () => {
+      const drive = path.parse(tmp).root;                // "C:\" on Windows, "/" elsewhere
+      assert.strictEqual(sync.targetPath(drive, "Victory/Binaries/Win64/Victory.exe"), path.join(drive, "Victory", "Binaries", "Win64", "Victory.exe"));
+      assert.throws(() => sync.targetPath(drive, "../x"), sync.SyncError);
+      assert.throws(() => sync.targetPath(drive, ".remaster/x"), sync.SyncError);
+    });
+
     await test("versions compare numerically", async () => {
       assert.strictEqual(sync.compareVersions("1.10.0", "1.9.9"), 1);
       assert.strictEqual(sync.compareVersions("1.1", "1.1.0"), 0);

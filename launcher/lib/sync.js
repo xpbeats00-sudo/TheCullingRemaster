@@ -104,7 +104,9 @@ function targetPath(gameRoot, rel) {
   }
   const root = path.resolve(gameRoot);
   const full = path.resolve(root, ...parts);
-  if (!full.startsWith(root + path.sep)) throw new SyncError("path escapes the game folder: " + rel);
+  // A drive root ("D:\") already ends in a separator.
+  const base = root.endsWith(path.sep) ? root : root + path.sep;
+  if (!full.startsWith(base)) throw new SyncError("path escapes the game folder: " + rel);
   return full;
 }
 
