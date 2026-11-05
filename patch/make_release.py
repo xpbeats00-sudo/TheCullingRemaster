@@ -374,6 +374,7 @@ if __name__ == "__main__":
     ap.add_argument("--key", help="release signing key (default: make_manifest.js's, CULLING_RELEASE_KEY or the real key)")
     ap.add_argument("--overwrite", action="store_true", help="rebuild a version whose folder exists (never a published one)")
     a = ap.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)        # in order with node's output
     try:
         main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only, a.allow_dirty, a.skip_gate, a.key, a.overwrite)
     except ReleaseError as e:
