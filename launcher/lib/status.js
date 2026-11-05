@@ -62,4 +62,10 @@ function createGameWatch({ isRunning, onChange = () => {}, onExit = () => {}, po
   return { start, stop, get running() { return running; } };
 }
 
-module.exports = { playBlocker, createGameWatch, STEAM_ACCOUNT };
+// What a finished sync tells the window: what apply() did, and for a Repair
+// what the check found (the plan's report). Read before the plan is reset.
+function syncOutcome(result, todo, repair) {
+  return { synced: result, repaired: repair ? (todo && todo.report) || null : null };
+}
+
+module.exports = { playBlocker, createGameWatch, syncOutcome, STEAM_ACCOUNT };

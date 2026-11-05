@@ -396,8 +396,10 @@ function registerIpc() {
         log
       });
       log("synced", { version: manifest.version, files: r.files, bytes: r.bytes, seconds: r.seconds, retries: r.retries });
+      // The Repair report is read before the plan is cleared.
+      const outcome = status.syncOutcome(r, todo, repair);
       todo = [];
-      return Object.assign(state(), { synced: r, repaired: repair ? todo.report || null : null });
+      return Object.assign(state(), outcome);
     } catch (e) {
       if (!(e instanceof sync.SyncPaused)) {
         log("sync-error", { kind: e.kind, error: e.message });

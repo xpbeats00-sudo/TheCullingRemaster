@@ -71,5 +71,19 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.strictEqual(await game.isRunning({ platform: "linux" }), false);
   });
 
+  await test("a Repair returns what its check found", async () => {
+    const todo = [{ path: "Victory/a.pak" }];
+    Object.defineProperty(todo, "report", { value: { ok: 3, missing: 0, changed: 1, staged: 0 }, enumerable: false });
+    const r = { files: 1, bytes: 10, seconds: 1, retries: 0, kept: 1 };
+    assert.deepStrictEqual(status.syncOutcome(r, todo, true), { synced: r, repaired: { ok: 3, missing: 0, changed: 1, staged: 0 } });
+    assert.deepStrictEqual(status.syncOutcome(r, todo, false), { synced: r, repaired: null });
+    assert.deepStrictEqual(status.syncOutcome(r, [], true), { synced: r, repaired: null });
+    // The main process reads it before clearing the plan.
+    const main = require("fs").readFileSync(require("path").join(__dirname, "..", "main.js"), "utf8");
+    const at = main.indexOf("status.syncOutcome(r, todo, repair)");
+    assert.ok(at > 0, "the sync handler uses syncOutcome");
+    assert.ok(!main.slice(main.lastIndexOf("sync.apply(", at), at).includes("todo = []"), "the plan isn't cleared before its report is read");
+  });
+
   console.log("all %d status tests passed", passed);
 })().catch((e) => { console.error("FAIL", e.stack || e.message); process.exitCode = 1; });
