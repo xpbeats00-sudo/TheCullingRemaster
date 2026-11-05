@@ -146,7 +146,8 @@ CAMOS = [
      "A dark-matter galaxy drifting across the weapon.", ALL),
 ]
 WAVE_SPEED = 0.12                  # UV widths per second (ChainsawSpeed)
-DARK_PULSE = (0.15, 0.3, 7.0)      # PulseFrequency (Hz), PulseRange (exponent), Emissive Intensity
+DARK_PULSE = (0.15, 0.3, 2.0)      # PulseFrequency (Hz), PulseRange (exponent), Emissive Intensity
+# (7.0 read as a washed-out pink-white neon in game; 2.0 keeps the indigo base dark and the filaments violet/blue)
 DRIFT_SPEED = 0.05                 # Dark Matter Drift: UV widths per second
 # Dark Matter's galaxy layer: a shell section (the body pushed out along its
 # normals) drawn with a MIC of M_NecroMist, the Resurrection skull's animated
@@ -155,10 +156,12 @@ DRIFT_SPEED = 0.05                 # Dark Matter Drift: UV widths per second
 MIST_PARENT = "/Game/Character/Materials/M_NecroMist"
 MIST_MIC = WEAPONS_PKG + "MI_VFX_Galaxy_Mist"
 SHELL_SCALE, SHELL_MIN, SHELL_MAX = 0.0014, 0.08, 0.2   # shell offset = longest bounds half-extent x scale
-MIST_SCALARS = [("Opacity", 0.9), ("Fade Distance", 0.05), ("ExIn", 3.0), ("BRF", 0.05),
+# Subtle: drifting violet-blue clouds over a dark weapon, not a white glow (was Opacity 0.9,
+# tints (1.2, 0.35, 3.0) / (0.35, 0.7, 3.5) and the stock near multiplier Mult1 3).
+MIST_SCALARS = [("Opacity", 0.35), ("Fade Distance", 0.05), ("ExIn", 3.0), ("BRF", 0.05), ("Mult1", 1.0), ("Mult2", 1.0),
                 ("SX", 0.03), ("SY", -0.08), ("U1", 0.04), ("U2", -0.05)]
 # The two Fog Tints share a name: FName "Fog Tint" numbers 0 and 2 (shown as "Fog Tint_1").
-MIST_VECTORS = [(("Fog Tint", 0), (1.2, 0.35, 3.0, 1.0)), (("Fog Tint", 2), (0.35, 0.7, 3.5, 1.0))]
+MIST_VECTORS = [(("Fog Tint", 0), (0.30, 0.08, 0.75, 1.0)), (("Fog Tint", 2), (0.06, 0.16, 0.80, 1.0))]
 POPPER_PULSE = (0.3, 0.8, 100.0)   # PulseFrequency, PulseRange, Glow INT (stock 0.1, 1, 100)
 
 # Release gate (make_pak.py on fix-release-pipeline): never use these.
