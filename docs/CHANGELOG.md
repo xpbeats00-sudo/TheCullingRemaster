@@ -2,6 +2,10 @@
 
 ## Game (next release)
 
+**No more getting stuck in trees**
+- American Elm and European Linden (the trees on both Jungle and Prison) had trunk collision that stopped about 2 m up, where the trunk forks, and marked unwalkable: a player who ran or jumped into one could land on top of it inside the crown and not get out. Their trunk collision now goes on up into the crown (same footprint, so bots and the navmesh are unchanged): the tree is a solid trunk you bump into (`patch/make_tree_collision.py`).
+- A safety net for anything else like it: if you are stuck for 2 seconds while pushing a direction - hanging on something you can't stand on, or inside the world's geometry - you are put back where you last walked (or the nearest free spot) and told "You were stuck: moved to a free spot". Never in the pods, while dead or spectating, using or crafting, on a ladder or swimming; at most once every 20 s. Needs the patched exe (patch_exe.py fix 10, in the native module). Not yet checked in a match.
+
 **Airdrops cost 25% less FUNC**
 - Every airdrop's FUNC price is its stock price x 0.75, rounded to the nearest whole FUNC (halves up): Archer 85 -> 64, Sapper 205 -> 154, Bait Crate 70 -> 53. The full before/after table is in `docs/AIRDROP_PRICES.md`. The price is the airdrop package's `ActivityResourceCost` (patched by `patch/make_airdrop_prices.py`); the HUD meter and the menu's Airdrop screen show what the game sends, so they follow it. Surprise Me! has no price of its own (it costs what the kit it rolls costs). Not yet checked in a match.
 

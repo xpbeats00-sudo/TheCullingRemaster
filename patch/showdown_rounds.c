@@ -90,6 +90,12 @@
  *   wounded character is the user or the user's teammate (TeamNumber > 0 and
  *   equal: Duo, Trios, Quads), who keep the stock "no instigator".
  *
+ * Every second sd_should_end also runs, in every mode, the weather
+ * (weather.c, off without ?Weather=) and the stuck-player safety net
+ * (unstick.c: the local player stuck on a perch it can't stand on, or inside
+ * geometry, for 2 s while pushing a direction goes back to where it last
+ * walked, or the nearest free spot, through AActor::K2_TeleportTo).
+ *
  * HUD messages go through AVictoryPlayerHUD::ShowGameMessage, which the HUD
  * page receives as the ShowGameMessage event (ShowdownHud.js takes the "SDR|"
  * ones, hud.js the "TMS|" ones; neither is shown):
@@ -885,6 +891,7 @@ u8 *sd_gas_instigator(u8 *wound)
 }
 
 #include "weather.c"            /* weather over a match (weather_tick) */
+#include "unstick.c"            /* the stuck-player safety net (unstick_tick) */
 
 char sd_should_end(u8 *gm)
 {
@@ -894,6 +901,7 @@ char sd_should_end(u8 *gm)
     u16 x;
     B = base();
     weather_tick(gm);
+    unstick_tick(gm);
     if (C.n) sweep();
     if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) {
         if ((world = world_of(gm)) != 0) {

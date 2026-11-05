@@ -126,7 +126,9 @@ def blob_checks():
             # the Chokening's user (fix 8)
             0x1119150, 0x2494D0, 0x302980, 0x69C2A0,
             # team sizes (fix 9): SetTeamNum, the scoreboard sort, the bot spawner, teammates' status
-            0x24E7E0, 0x243C80, 0x2320F0, 0x262D20, 0x2634C0, 0x28EE40, 0x28F9C0}
+            0x24E7E0, 0x243C80, 0x2320F0, 0x262D20, 0x2634C0, 0x28EE40, 0x28F9C0,
+            # stuck players (fix 10): K2_TeleportTo, CapsuleOverlapComponents, AShooterCharacter::IsAlive
+            0x111FAE0, 0x13A7C30, 0x26E0D0}
     assert want <= rvas, sorted(hex(x) for x in want - rvas)
     # The rival asks the player's pawn for the kit with the Showdown perk's bits.
     import make_showdown
@@ -312,12 +314,12 @@ try:
           "the stub's sort call leads to sd_teams, the bot spawner to sd_spawn_bots; the first fix 9 build "
           "and older builds are upgraded; without the module the stub sorts itself; foreign calls refused")
 
-    # check() reads only; verify() wants every fix 1-9 and the patched Steam exe's bytes.
+    # check() reads only; verify() wants every fix 1-10 and the patched Steam exe's bytes.
     fresh = os.path.join(tmp, "Fresh.exe")
     stand_in(fresh)
     before = open(fresh, "rb").read()
     none = {"cap": 16, "sha1": False, "slots": False, "duoteam": False, "rounds": False, "weather": False,
-            "scoreboard": False, "duowin": False, "chokening": False, "teams": False}
+            "scoreboard": False, "duowin": False, "chokening": False, "teams": False, "unstick": False}
     assert P.check(fresh) == none, P.check(fresh)
     assert open(fresh, "rb").read() == before, "check() changed the file"
     try:
@@ -325,7 +327,7 @@ try:
         raise AssertionError("an unpatched exe verified")
     except ValueError as e:
         for want in ("contestant cap 24 (has 16)", "SHA-1", "StartTraining", "Duo team pairing", "Showdown rounds",
-                     "weather", "big scoreboards", "Duo team win", "Chokening", "team sizes"):
+                     "weather", "big scoreboards", "Duo team win", "Chokening", "team sizes", "stuck-player"):
             assert want in str(e), (want, e)
     # Fixes 1-4 and 6 without the native module (5, 7, 8, 9): not a release exe.
     assert P.check(exe) == dict(none, cap=24, sha1=True, slots=True, duoteam=True, scoreboard=True), P.check(exe)
@@ -333,7 +335,8 @@ try:
         P.verify(exe)
         raise AssertionError("an exe without the native module verified")
     except ValueError as e:
-        assert all(w in str(e) for w in ("Showdown rounds", "Duo team win", "Chokening", "team sizes")), e
+        assert all(w in str(e) for w in ("Showdown rounds", "Duo team win", "Chokening", "team sizes",
+                                         "stuck-player")), e
         assert "SHA-1" not in str(e) and "scoreboards" not in str(e), e
     full = os.path.join(tmp, "Full.exe")
     full_stand_in(full)
@@ -361,7 +364,7 @@ try:
     except ValueError as e:
         assert "isn't the patched Steam exe" in str(e), e
     os.remove(full)
-    print("ok    check() reports fixes 1-9 without writing; verify() wants all nine and the patched exe's SHA-256")
+    print("ok    check() reports fixes 1-10 without writing; verify() wants all ten and the patched exe's SHA-256")
 
     # Patching never writes through a hard link (a release's files are links of the install).
     install = os.path.join(tmp, "Install.exe")

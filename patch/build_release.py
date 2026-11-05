@@ -19,6 +19,7 @@ Steps (each one's output is shown; the first failure stops the build):
        make_airdrop_prices.py     airdrop prices 25% off (the cooked AirDropPackages)
        patch_assets.py            gameplay tuning, bot names
        make_bot_ai.py             bot AI tier (default Experienced)
+       make_tree_collision.py     Elm / Linden trunk collision up into the crown (stuck in trees)
        make_weapon_balance.py     weapon stats from patch/balance/weapon_balance.json (empty: stock)
        make_loading_bar.py        write_config only: DefaultGame.ini
        make_branding.py           logos, font, FrontEnd.html, loading screens (--skip-intro:
@@ -111,6 +112,7 @@ def generators(a, stage, frontend):
         g("make_airdrop_prices.py", stage),
         g("patch_assets.py", stage),
         g("make_bot_ai.py", stage),
+        g("make_tree_collision.py", stage),
         g("make_weapon_balance.py", stage),
         g("make_loading_bar.py", a.game, stage),
         g("make_branding.py", a.game, frontend, stage, "--skip-intro"),
@@ -152,10 +154,12 @@ def tests(a, stage):
         p("test_vfx_camos.py", stage),
         p("test_custom_match.py", stage), n("test_showdown_hud.js"), n("test_team_hud.js"), n("test_hud_layout.js"),
         p("test_airdrop_prices.py", stage), p("test_weapon_balance.py", stage), p("test_bot_ai.py", stage),
-        p("test_weather.py", stage), p("test_measure_loading.py"), p("test_netplay_check.py", exe),
-        # The native module (fixes 5, 7-9 and the weather) compiled and run against fake game
+        p("test_weather.py", stage), p("test_tree_collision.py", stage), p("test_measure_loading.py"),
+        p("test_netplay_check.py", exe),
+        # The native module (fixes 5, 7-10 and the weather) compiled and run against fake game
         # objects: these need the Visual Studio C++ tools, as build_showdown_rounds.py does.
         p("build_showdown_rounds.py", "--check"), p("test_native_module.py"), p("test_weather_native.py", exe),
+        p("test_unstick_native.py", exe),
         d("stage_objects.test.js"), d("publish.test.js"), d("make_manifest.test.js"),
         ("launcher: npm test", [NPM, "test"], os.path.join(ROOT, "launcher")),
     ]

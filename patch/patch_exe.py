@@ -147,13 +147,26 @@
    teammate panel shows one teammate; in Trios and Quads the module reports
    the others to the HUD page once a second ("TMS|", hud.js).
 
+10. Stuck players (module of fix 5, no new bytes in the stock code): the
+   slot-282 function also runs, once a second in every mode, a safety net for
+   the local player (unstick.c). A pawn stuck for 2 s while its player pushes
+   a direction - Falling but not moving (perched on something it can't stand
+   on, like the stock American Elm's trunk tops inside its crown;
+   make_tree_collision.py takes that perch away) or Walking with its capsule
+   inside something that blocks pawns - goes back to where it last walked (or
+   the nearest free spot around it, at most 110 units out), checked free with
+   UKismetSystemLibrary::CapsuleOverlapComponents (0x1413a7c30) and moved with
+   AActor::K2_TeleportTo (0x14111fae0, the engine's teleport with its own
+   encroachment check). Never in the first 20 s, when dead, spectating, using
+   or crafting, on a ladder or swimming; once per 20 s; ?Unstick=0 turns it off.
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it. The file is rewritten through a
 temporary file swapped in whole (os.replace): writing it in place would also
 rewrite every hard link of it (a release's files are hard links of the install).
 
 check(path) only reads: which fixes the exe has. verify(path) is what
-make_release.py asserts on the exe it ships: every fix (1-9), and exactly the
+make_release.py asserts on the exe it ships: every fix (1-10), and exactly the
 bytes of the stock Steam exe (STOCK_SHA256) with these fixes (PATCHED_SHA256).
 PATCHED_SHA256 changes whenever a fix or the native module (showdown_rounds.c,
 showdown_rounds_blob.py) changes: recompute it with
@@ -221,10 +234,10 @@ SCORE_STUB = bytes.fromhex(
 SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 
 # The Steam build of Victory.exe this patch is for, and the same exe with every
-# fix (1-9, the native module as showdown_rounds_blob.py has it) at the default
+# fix (1-10, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "1b53c5273fd5d629d29d4717b37611e0514e18609cc475266172fec0ca847b1d"
+PATCHED_SHA256 = "f1fc1bf65c79021af9a5b1cb8666da136003dfb3ec31f1ccc6cbeaaa6b07ba93"
 
 
 def _cap(data, path, contestants):
@@ -487,15 +500,17 @@ FIXES = (("sha1", "the SHA-1 crash fix (2)"),
          ("scoreboard", "the big scoreboards (6)"),
          ("duowin", "the Duo team win (7)"),
          ("chokening", "the Chokening kill credit (8)"),
-         ("teams", "the team sizes (9)"))
+         ("teams", "the team sizes (9)"),
+         ("unstick", "the stuck-player safety net in the module (10)"))
 
 
 def check(path):
     """Which fixes the exe has, without changing it: {"cap": contestants,
     "sha1", "slots", "duoteam", "rounds", "weather", "scoreboard", "duowin",
-    "chokening", "teams": bool}. "duowin" (fix 7) and "weather" are code in
-    the native module behind slot 282 and its hooks, so they are there exactly
-    when the current module is (this build's blob, which includes weather.c).
+    "chokening", "teams", "unstick": bool}. "duowin" (fix 7), "weather" and
+    "unstick" (fix 10) are code in the native module behind slot 282 and its
+    hooks, so they are there exactly when the current module is (this build's
+    blob, which includes weather.c and unstick.c).
     "duoteam" (fix 4) is the pairing stub in place, with the refresh hook as
     patch() leaves it (stock for the module's fix 9 to take, or calling the
     stub without the module). Raises ValueError for an exe this patch isn't for."""
@@ -511,11 +526,12 @@ def check(path):
             "scoreboard": not _duoscore(bytearray(data), path),
             "duowin": m["rounds"],
             "chokening": m["chokening"],
-            "teams": m["teams"]}
+            "teams": m["teams"],
+            "unstick": m["rounds"]}
 
 
 def verify(path, contestants=MAX):
-    """Raises ValueError unless the exe has every fix 1-9 (cap = contestants)
+    """Raises ValueError unless the exe has every fix 1-10 (cap = contestants)
     and, at the default cap, is byte for byte the patched Steam exe."""
     fixes = check(path)
     missing = [] if fixes["cap"] == contestants else ["contestant cap %d (has %d) (1)" % (contestants, fixes["cap"])]
@@ -588,4 +604,5 @@ if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
     print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds, "
-          "big scoreboards, team win, Chokening kills, team sizes%s" % (sys.argv[1], n, "" if changed else " (already)"))
+          "big scoreboards, team win, Chokening kills, team sizes, stuck players%s"
+          % (sys.argv[1], n, "" if changed else " (already)"))
