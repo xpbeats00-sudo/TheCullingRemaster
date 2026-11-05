@@ -47,13 +47,8 @@ class MatchLobbies {
   join(queue, member, prefer) {
     this.leave(member.id);
     member.vote = this.validMap(prefer) ? prefer : null;
-    let lobby = this.open.get(queue);
-    if (!lobby) {
-      lobby = { id: this.nextId++, queue, state: "searching", members: new Map(), createdAt: this.now(),
-        startAt: null, timer: null, maxPlayers: this.maxFor(queue), map: null };
-      this.open.set(queue, lobby);
-      lobby.timer = this.setTimer(() => this.countdown(lobby), this.options.gatherMs);
-    }
+    member.party = member.party || null;
+    const lobby = this.open.get(queue) || this.openLobby(queue);
     lobby.members.set(member.id, member);
     this.byMember.set(member.id, lobby);
     if (lobby.members.size >= lobby.maxPlayers) this.countdown(lobby);
@@ -61,15 +56,44 @@ class MatchLobbies {
     return lobby;
   }
 
-  // A party joins together: everyone into one lobby, the open one if it has
-  // room for them all (it starts counting down otherwise and they open the
-  // next). `prefer` is everyone's first map vote.
-  joinGroup(queue, members, prefer) {
+  // A party joins together: everyone into one lobby at once, the open one if
+  // it has room for them all (it starts counting down otherwise and they open
+  // the next). Each member is marked with `party` (the party's id), so the
+  // party can be found, cancelled and started as one. `prefer` is everyone's
+  // first map vote.
+  joinGroup(queue, members, prefer, party = null) {
     for (const m of members) this.leave(m.id);
-    const open = this.open.get(queue);
-    if (open && open.members.size + members.length > open.maxPlayers) this.countdown(open);
-    let lobby = null;
-    for (const m of members) lobby = this.join(queue, m, prefer);
+    let lobby = this.open.get(queue);
+    if (lobby && lobby.members.size + members.length > lobby.maxPlayers) { this.countdown(lobby); lobby = null; }
+    if (!lobby) lobby = this.openLobby(queue);
+    const vote = this.validMap(prefer) ? prefer : null;
+    for (const m of members) {
+      m.vote = vote;
+      m.party = party;
+      lobby.members.set(m.id, m);
+      this.byMember.set(m.id, lobby);
+    }
+    if (lobby.members.size >= lobby.maxPlayers) this.countdown(lobby);
+    else this.broadcast(lobby);
+    return lobby;
+  }
+
+  // The lobby a player is waiting in (searching or counting down), or null.
+  lobbyOf(id) { return this.byMember.get(id) || null; }
+
+  // The members of `party` waiting in a lobby (ids), [] when it isn't queued.
+  partyMembers(party) {
+    const out = [];
+    if (!party) return out;
+    for (const [id, lobby] of this.byMember) if (lobby.members.get(id).party === party) out.push(id);
+    return out;
+  }
+
+  openLobby(queue) {
+    const lobby = { id: this.nextId++, queue, state: "searching", members: new Map(), createdAt: this.now(),
+      startAt: null, timer: null, maxPlayers: this.maxFor(queue), map: null };
+    this.open.set(queue, lobby);
+    lobby.timer = this.setTimer(() => this.countdown(lobby), this.options.gatherMs);
     return lobby;
   }
 
@@ -139,11 +163,16 @@ class MatchLobbies {
   // What a member's menu shows.
   view(lobby) {
     const now = this.now();
+    // Party members are numbered by party (1, 2, ...) so menus can group
+    // them; no party ids or player ids go out.
+    const groups = new Map();
+    for (const m of lobby.members.values()) if (m.party && !groups.has(m.party)) groups.set(m.party, groups.size + 1);
     return {
       id: lobby.id,
       queue: lobby.queue,
       state: lobby.state,
-      players: [...lobby.members.values()].map((m) => Object.assign(this.describe(m), this.options.maps ? { vote: m.vote } : {})),
+      players: [...lobby.members.values()].map((m) => Object.assign(this.describe(m), this.options.maps ? { vote: m.vote } : {},
+        { party: m.party ? groups.get(m.party) : null })),
       maxPlayers: lobby.maxPlayers,
       searchingMs: now - lobby.createdAt,
       startsInMs: lobby.state === "starting" ? Math.max(0, lobby.startAt - now) : null,

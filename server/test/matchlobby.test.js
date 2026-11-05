@@ -150,6 +150,26 @@ function setup(options = {}) {
   });
 
   // On the real server (gather 300 ms, countdown 100 ms in tests).
+  await test("a party joins in one step, marked as a party: one broadcast each, grouped without ids", () => {
+    const { lobbies, sent, started, time } = setup({ maxPlayers: 4, maps: ["jungle", "prison"] });
+    lobbies.join("coop2", { id: "solo" });
+    sent.length = 0;
+    const lobby = lobbies.joinGroup("coop2", [{ id: "lead" }, { id: "mate" }], "prison", "party-1");
+    assert.strictEqual(lobbies.lobbyOf("lead"), lobby);
+    assert.strictEqual(lobbies.lobbyOf("mate"), lobby);
+    assert.strictEqual(lobbies.lobbyOf("solo"), lobby, "with the player already searching");
+    assert.deepStrictEqual(lobbies.partyMembers("party-1").sort(), ["lead", "mate"]);
+    assert.deepStrictEqual(lobbies.partyMembers("nope"), []);
+    assert.deepStrictEqual(sent.map((x) => x.to).sort(), ["lead", "mate", "solo"], "one update each, not one per member joining");
+    const view = sent[0].payload;
+    assert.deepStrictEqual(view.players.map((p) => [p.name, p.party]), [["solo", null], ["lead", 1], ["mate", 1]]);
+    assert.ok(!JSON.stringify(view).includes("party-1"), "no party id goes out");
+    assert.strictEqual(view.players[1].vote, "prison");
+    time.advance(20000);
+    assert.deepStrictEqual(started[0].players, ["solo", "lead", "mate"]);
+    assert.strictEqual(lobbies.lobbyOf("lead"), null, "out of the lobby once started");
+  });
+
   const srv = startServer(8141);
   const sockets = [];
   try {
