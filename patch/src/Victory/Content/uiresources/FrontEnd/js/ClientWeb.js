@@ -1386,6 +1386,7 @@ function BindClientwebEvents(deferred) {
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
+      if (window.RemasterLobby && window.RemasterLobby.joining) window.RemasterLobby.joining(Matchmaking.LastQueue);
   });
   socketConnection.on("leave-mm-ack", function () {
       console.log("Server confirms we left the matchmaking queue.");
@@ -2428,6 +2429,8 @@ function DoQueueMatchmaking(GameType, ticket, userid)
         Matchmaking.LeaveRequested = false;
         Matchmaking.SetMatchmaking(true);
         Matchmaking.MatchmakingState = "QUEUING";
+        // Remaster: the lobby pill shows "Joining" until the server's lobby arrives (MatchLobby.js).
+        if (window.RemasterLobby && window.RemasterLobby.joining) window.RemasterLobby.joining(GameType);
         var authType = GetAuthType();
 
         if(authType == "steam")//in this case we want the provider on the front of the id, by default steam doesnt do it
