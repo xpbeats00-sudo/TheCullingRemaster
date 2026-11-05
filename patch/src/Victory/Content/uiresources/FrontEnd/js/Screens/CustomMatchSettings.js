@@ -440,6 +440,21 @@
     PushModal.RemasterCustomJoin = true;
   }
 
+  // The stock screen shows the owner's options (map, SETTINGS, START) only
+  // from a calling card image lookup's answer; show them on every lobby-update
+  // (updateLobbyData, called by ClientWeb.js), so they never depend on it.
+  if (typeof updateLobbyData == "function" && !updateLobbyData.RemasterOwnerOptions) {
+    var stockUpdateLobbyData = updateLobbyData;
+    updateLobbyData = function () {
+      var result = stockUpdateLobbyData.apply(this, arguments);
+      if (typeof CustomScreen == "function" && typeof CustomScreen.CheckForLobbyOwner == "function") {
+        CustomScreen.CheckForLobbyOwner();
+      }
+      return result;
+    };
+    updateLobbyData.RemasterOwnerOptions = true;
+  }
+
   if (typeof CustomScreen == "function" && CustomScreen.prototype && !CustomScreen.prototype.RemasterLeaveOnClose) {
     var stockOnClosed = CustomScreen.prototype.OnClosed;
     CustomScreen.prototype.OnClosed = function () {

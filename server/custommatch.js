@@ -80,4 +80,34 @@ function gameServer(name, mods) {
   return "custom:" + mapIndex(name) + ":" + encode(mods);
 }
 
-module.exports = { MODS, MAP_NAMES, MAP_KEYS, DEFAULT_MAP, JOIN_REFUSED, defaults, mapName, mapIndex, cleanMods, encode, gameServer };
+// A calling card ID as the menu sends it (GetLocalPlayerCullingCardID: digits).
+function cardID(raw, fallback) {
+  const s = typeof raw === "number" ? String(raw) : raw;
+  return typeof s === "string" && /^\d{1,10}$/.test(s) ? s : String(fallback || 0);
+}
+
+// The lobby as the stock CUSTOM screen reads it (Custom.js updateLobbyData).
+// Each member needs userData: without it the screen lists nobody, and it only
+// shows the owner's options (map, SETTINGS, START) once a member's calling card
+// image has been looked up. `card` is the server's lobbyCard() of the owner;
+// `cullingcard` is the card the menu says it shows.
+function lobby(code, owner, card, cullingcard, map) {
+  return {
+    code,
+    owner,
+    mapName: mapName(map),
+    members: [{
+      user: owner,
+      team: 0,
+      userData: {
+        userID: owner,
+        userName: String(card && card.name || "Player").slice(0, 40),
+        stats: { level: card && Number.isInteger(card.level) ? card.level : 1, rank: card && card.rank ? card.rank : "" },
+        cullingcard: cardID(cullingcard, card && card.cardID)
+      }
+    }],
+    mods: defaults()
+  };
+}
+
+module.exports = { MODS, MAP_NAMES, lobby, cardID, MAP_KEYS, DEFAULT_MAP, JOIN_REFUSED, defaults, mapName, mapIndex, cleanMods, encode, gameServer };
