@@ -6,7 +6,7 @@
 // window.launcher API from preload.js.
 "use strict";
 
-const { app, BrowserWindow, ipcMain, dialog, shell, net, Menu, clipboard, safeStorage } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, net, Menu, clipboard, safeStorage, screen } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -45,11 +45,10 @@ function send(channel, payload) {
 }
 
 function createWindow() {
-  win = new BrowserWindow({
-    width: 1280,
-    height: 760,
-    minWidth: 1100,
-    minHeight: 660,
+  // Never bigger than the screen it opens on (a small laptop, 150% scaling).
+  let workArea = null;
+  try { workArea = screen.getPrimaryDisplay().workAreaSize; } catch { /* the designed size */ }
+  win = new BrowserWindow(Object.assign(status.windowSize(workArea), {
     frame: false,
     backgroundColor: "#050307",
     show: false,
@@ -63,7 +62,7 @@ function createWindow() {
       // No DevTools in the shipped app (no menu either: no reload shortcuts).
       devTools: !app.isPackaged
     }
-  });
+  }));
   // Pages never navigate away or open windows; links go through openLink.
   win.webContents.on("will-navigate", (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

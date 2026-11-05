@@ -68,4 +68,15 @@ function syncOutcome(result, todo, repair) {
   return { synced: result, repaired: repair ? (todo && todo.report) || null : null };
 }
 
-module.exports = { playBlocker, createGameWatch, syncOutcome, STEAM_ACCOUNT };
+// The window's size on a screen whose work area (without the taskbar) is
+// { width, height }: the designed size, or the whole work area on a smaller
+// screen; the minimum size never exceeds it either.
+const WINDOW = { width: 1280, height: 760, minWidth: 1100, minHeight: 660 };
+function windowSize(workArea) {
+  const w = workArea && workArea.width > 0 ? Math.floor(workArea.width) : WINDOW.width;
+  const h = workArea && workArea.height > 0 ? Math.floor(workArea.height) : WINDOW.height;
+  const width = Math.min(WINDOW.width, w), height = Math.min(WINDOW.height, h);
+  return { width, height, minWidth: Math.min(WINDOW.minWidth, width), minHeight: Math.min(WINDOW.minHeight, height) };
+}
+
+module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, STEAM_ACCOUNT };

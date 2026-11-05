@@ -85,5 +85,13 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.ok(!main.slice(main.lastIndexOf("sync.apply(", at), at).includes("todo = []"), "the plan isn't cleared before its report is read");
   });
 
+  await test("the window fits the screen's work area", async () => {
+    assert.deepStrictEqual(status.windowSize({ width: 1920, height: 1040 }), { width: 1280, height: 760, minWidth: 1100, minHeight: 660 });
+    // 1366x768 at 125% scaling: a 1093x582 work area.
+    assert.deepStrictEqual(status.windowSize({ width: 1093, height: 582 }), { width: 1093, height: 582, minWidth: 1093, minHeight: 582 });
+    assert.deepStrictEqual(status.windowSize({ width: 1200, height: 700 }), { width: 1200, height: 700, minWidth: 1100, minHeight: 660 });
+    assert.deepStrictEqual(status.windowSize(null), { width: 1280, height: 760, minWidth: 1100, minHeight: 660 }, "no screen info: the designed size");
+  });
+
   console.log("all %d status tests passed", passed);
 })().catch((e) => { console.error("FAIL", e.stack || e.message); process.exitCode = 1; });
