@@ -310,6 +310,8 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 }
 .status-game { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 0 22px 0 var(--gutter); }
 .status-game > div { min-width: 0; }
+.status-game .status-retry { flex: none; font-size: 12px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; border: 1px solid var(--panel-line); }
+.status-game .status-retry[hidden] { display: none; }
 .status-game strong { display: block; font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-game span { display: block; font-size: 12px; letter-spacing: 0.06em; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-icon { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--ok); position: relative; flex: none; }

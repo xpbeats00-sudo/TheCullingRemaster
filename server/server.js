@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { ShowdownSeries } = require('./showdown');
+const { ShowdownSeries, seriesPayout } = require('./showdown');
 const http = require('http');
 const crypto = require('crypto');
 const express = require('express');
@@ -39,17 +39,24 @@ const MAPS = { jungle: 0, prison: 1 };
 // has 24 player starts. Prison has 16, and whether more than 16 spawn there
 // hasn't been measured, so it is scored as 16 (never more than it has).
 const FIELD_BY_MAP = { jungle: 24, prison: 16 };
-// Showdown (patch/make_showdown.py): you against one bot in the Jungle centre
+// Showdown (patch/make_showdown.py): you against one rival in the Jungle centre
 // arena. No lobby or map vote; the menu starts it from "showdown:<format>".
-// Rounds: first to 4 (ShowdownSeries). A round can be won fast, so its result
-// needs 15 s, not the 2 minutes of a normal match. The round's kit (the same
-// for both sides) comes from data/showdown.json, written by make_showdown.py.
+// Rounds: first to 4 (ShowdownSeries), all in one match with the patched exe
+// (patch/showdown_rounds.c): the HUD reports each round (/api/showdown/round)
+// and the match result that ends the series pays for the series once
+// (seriesPayout: its own economy, not a full match per round). A series can be
+// over fast, so its result needs 15 s, not the 2 minutes of a normal match. The
+// kits (the same for both sides; the game picks the round's) come from
+// data/showdown.json, written by make_showdown.py.
 const SHOWDOWN = { queue: 'showdown', map: 'arena', format: '1v1', field: 2, roundsToWin: 4,
   minSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_SECONDS || '15', 10) };
-let showdownKit = null;
-try { showdownKit = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'showdown.json'), 'utf8')).kit || null; } catch (e) { showdownKit = null; }
-const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin });
-const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, format: SHOWDOWN.format });
+let showdownKit = null, showdownKits = null;
+try {
+  const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'showdown.json'), 'utf8'));
+  showdownKit = data.kit || null;
+  showdownKits = Array.isArray(data.kits) && data.kits.length ? data.kits : null;
+} catch (e) { showdownKit = null; showdownKits = null; }
+const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, kits: showdownKits, format: SHOWDOWN.format });
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
@@ -57,6 +64,7 @@ const { createMetrics, metricsAllowed } = require('./metrics');
 const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
 const { Friends } = require('./friends');
+const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
 
 // How often changed profiles / sessions are written (at most once per this
@@ -197,6 +205,9 @@ function seasonClamp(p) {
 // A win (or a ranked placement) needs the match to have run this long: the
 // ticket starts when the match is sent, so an instant "victory" is refused.
 const MIN_MATCH_SECONDS = parseInt(process.env.CULLING_MIN_MATCH_SECONDS || '120', 10);
+// The menu logging in again this long after a match started means that match
+// is over: a ticket still open then had no result (quit or crash).
+const ABANDON_GRACE_MS = parseInt(process.env.CULLING_ABANDON_GRACE_MS || '60000', 10);
 
 // ---------------------------------------------------------------- profiles
 
@@ -302,8 +313,17 @@ const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
   saveDelayMs: SAVE_DELAY_MS,
   onSaveError: (e) => { metrics.error('save'); log('saving sessions failed:', e.message); }
 });
-const tickets = new MatchTickets();
+const tickets = new MatchTickets(Date.now, path.join(DATA_DIR, 'tickets.json'), {
+  saveDelayMs: SAVE_DELAY_MS,
+  onSaveError: (e) => { metrics.error('save'); log('saving match tickets failed:', e.message); }
+});
+// Showdown series (showdown.js), in data/showdown-series.json so a restart
+// mid-series keeps the score.
+const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin, file: path.join(DATA_DIR, 'showdown-series.json'),
+  saveDelayMs: SAVE_DELAY_MS, onSaveError: (e) => { metrics.error('save'); log('saving showdown series failed:', e.message); } });
 // Friends (friends.json) and parties (memory); see friends.js.
+// Recent activity for the launcher: matches today, players this week.
+const activity = new Activity(Date.now, path.join(DATA_DIR, 'activity.json'));
 const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
   saveDelayMs: SAVE_DELAY_MS,
   onSaveError: (e) => { metrics.error('save'); log('saving friends failed:', e.message); }
@@ -341,7 +361,7 @@ const socketIp = (socket) => clientIp(socket.handshake.address, socket.handshake
 
 function normalizeUserID(raw) {
   let id = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
-  if (!id) id = 'steam:76561198000000000';
+  if (!id) return '';
   if (!id.includes(':')) id = 'steam:' + id;
   return id;
 }
@@ -489,19 +509,24 @@ function matchXP(r) {
 // found by address when needed).
 app.post('/api/matchresult', (req, res) => {
   const body = bodyObject(req);
-  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req) });
+  // Players sharing an address are told apart by the in-game name the HUD
+  // sends (their Remaster account name).
+  const nick = typeof body.nickname === 'string' ? body.nickname.trim().toLowerCase() : '';
+  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req),
+    pick: nick ? (t) => String(usernameOf(t.userID) || '').toLowerCase() === nick : null });
   if (claim.error) {
     log('match result rejected', claim.error, requestIp(req));
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
+  activity.match(userID);
+  if (claim.ticket.map === SHOWDOWN.map) return showdownMatchResult(res, claim, body, userID);
   const p = getProfile(userID);
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
   // Infinity/NaN credits or XP into profiles.json.
   const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
   // Too short to be a real match: no win, and ranked counts it as last place.
-  const showdown = claim.ticket.map === SHOWDOWN.map;
-  const tooShort = claim.elapsed < (showdown ? SHOWDOWN.minSeconds : MIN_MATCH_SECONDS);
+  const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const field = matchField(claim.ticket.map, body.cap);
   const r = {
     victory: !tooShort && (body.victory === true || body.victory === 'true'),
@@ -517,8 +542,13 @@ app.post('/api/matchresult', (req, res) => {
   const credits = matchCredits(r);
   p.cullCredits += credits;
   let rankedResult = null;
-  if (p.ranked && p.ranked.pending) {
-    const placement = tooShort ? field : r.victory ? 1 : parseInt(body.placement, 10);
+  // Only the result of the ranked match itself scores it: a Solo, Duo or
+  // Showdown result never finishes a ranked match left pending.
+  if (p.ranked && p.ranked.pending && claim.ticket.ranked && p.ranked.pending.id === claim.ticket.ranked) {
+    const reported = parseInt(body.placement, 10);
+    // Within the field: a map whose contestants outnumber its field (or a
+    // malformed rank) still scores, as last place at worst.
+    const placement = tooShort ? field : r.victory ? 1 : Math.min(field, Math.max(1, Number.isFinite(reported) ? reported : field));
     if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
     const out = ranked.finishMatch(p, { matchId: body.matchId, placement, field, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
       Date.now(), rankedGrant(p));
@@ -543,6 +573,16 @@ app.post('/api/matchresult', (req, res) => {
   s.totalDamage += Math.round(r.damage);
   s.minutesAlive += Math.round(r.timeAlive / 60);
   s.funcEarned += r.func;
+  const mode = claim.ticket.mode || (showdown ? SHOWDOWN.queue : 'ffa');
+  if (mode !== SHOWDOWN.queue) {
+    if (!p.modes || typeof p.modes !== 'object') p.modes = {};
+    const m = p.modes[mode] || (p.modes[mode] = { played: 0, wins: 0, kills: 0, damage: 0, minutesAlive: 0 });
+    m.played += 1;
+    m.wins += r.victory ? 1 : 0;
+    m.kills += r.kills;
+    m.damage += Math.round(r.damage);
+    m.minutesAlive += Math.round(r.timeAlive / 60);
+  }
   p.lastMatch = Object.assign({ at: Date.now(), xpEarned: earned }, r);
   saveProfiles();
   log('match result', userID, JSON.stringify(r), `+${earned} XP (${startXP} -> ${s.xp}), +${credits} credits`);
@@ -550,24 +590,106 @@ app.post('/api/matchresult', (req, res) => {
   if (socket) sendPlayer(socket, p);
   // A new level can unlock airdrops: the menu gets them without a restart.
   if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
-  let showdownResult = null;
-  if (showdown) {
-    const series = showdowns.recordRound(userID, r.victory);
-    if (series && series.over) recordShowdown(userID, series.won);
-    if (series) {
-      showdownResult = showdownState(series.over ? 'over' : 'round-over', series);
-      log('showdown round', userID, series.round, r.victory ? 'won' : 'lost', series.wins + '-' + series.losses, series.over ? (series.won ? 'VICTORY' : 'defeat') : '');
-    }
+  setPresence(userID, 'menu');
+  res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: null });
+});
+
+// The match result of a Showdown match: the end of the series (the patched
+// exe plays every round in the match; this result names the round it ends,
+// which counts if the HUD's round report hasn't already). The series pays
+// once, when it is over: seriesPayout's XP and credits, one game on the
+// career, a win only for the series. Older builds play one round per match:
+// the round counts here and the series pays when its last round does.
+function showdownMatchResult(res, claim, body, userID) {
+  const p = getProfile(userID);
+  const victory = claim.elapsed >= SHOWDOWN.minSeconds && (body.victory === true || body.victory === 'true');
+  const round = parseInt(body.showdownRound, 10);
+  const before = showdowns.current(userID);
+  let view = null;
+  if (before && before.inMatch && Number.isInteger(round) && round > 0) {
+    view = showdowns.recordInMatch(userID, round, victory ? 'W' : 'L');
+  } else if (before && !before.inMatch) {
+    view = showdowns.recordRound(userID, victory);
+  }
+  const s = showdowns.last(userID);
+  if (s && s.inMatch && !s.over) showdowns.leave(userID);   // the match ended, so did the series
+  if (s) view = showdowns.view(s);
+  const paid = showdowns.claimPayout(userID);
+  const startXP = p.stats.xp;
+  const st = p.stats;
+  let earned = 0, credits = 0;
+  if (paid) {
+    const r = seriesPayout(paid, { kills: body.kills, damage: body.damage, timeAlive: body.timeAlive,
+      maxTime: Math.min(4 * 3600, claim.elapsed + 30) });
+    earned = r.xp;
+    credits = r.credits;
+    p.cullCredits += credits;
+    st.xp = Math.min(seasonXPCap(), st.xp + earned);
+    const level = Math.min(SEASON.maxLevel, levelForXP(st.xp) || st.level);
+    const levelled = Boolean(level && level !== st.level);
+    if (levelled) { log('level', userID, st.level, '->', level); st.level = level; }
+    st.gamesPlayed += 1;
+    st.kills += r.kills;
+    st.wins += r.victory ? 1 : 0;
+    st.totalDamage += Math.round(r.damage);
+    st.minutesAlive += Math.round(r.timeAlive / 60);
+    p.lastMatch = { at: Date.now(), xpEarned: earned, victory: r.victory, kills: r.kills, damage: r.damage,
+      timeAlive: r.timeAlive, func: 0, showdown: { wins: paid.wins, losses: paid.losses } };
+    if (showdowns.markRecorded(userID)) recordShowdown(userID, paid.won);
+    saveProfiles();
+    log('showdown series paid', userID, paid.wins + '-' + paid.losses, paid.won ? 'VICTORY' : 'defeat',
+      '+' + earned + ' XP, +' + credits + ' credits');
+    const socket = socketsByUser.get(userID);
+    if (socket) sendPlayer(socket, p);
+    if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
+  } else if (view) {
+    log('showdown round', userID, view.round, victory ? 'won' : 'lost', view.wins + '-' + view.losses);
   }
   setPresence(userID, 'menu');
-  res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: showdownResult });
+  res.json({ startXP, xpEarned: earned, stats: st, credits, ranked: null,
+    showdown: view ? showdownState(view.over ? 'over' : 'round-over', view) : null });
+}
+
+// A round of the in-match series, from the HUD as the game ends it (result
+// "W" you, "L" the rival, "D" no one). Only the next round counts, once.
+app.post('/api/showdown/round', (req, res) => {
+  const body = bodyObject(req);
+  const ticket = showdownTicket(req, body.nickname);
+  if (!ticket || ticket.map !== SHOWDOWN.map) return res.status(409).json({ error: 'no-showdown' });
+  const userID = ticket.userID;
+  const round = parseInt(body.round, 10);
+  const result = typeof body.result === 'string' ? body.result.toUpperCase() : '';
+  const view = showdowns.recordInMatch(userID, round, result);
+  if (view) {
+    log('showdown round', userID, round, result, view.wins + '-' + view.losses, view.over ? (view.won ? 'VICTORY' : 'defeat') : '');
+    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won);
+    setPresence(userID, 'match', { mode: SHOWDOWN.queue, round: view.round });
+  }
+  const s = showdowns.last(userID);
+  res.json({ counted: Boolean(view), series: s ? showdowns.view(s) : null });
 });
 
 // Showdown: the HUD asks which round this match is and what the kit holds
 // (the pre-round panel). Only for a Showdown match that is being played.
+// The Showdown match a HUD request is about: by token, else the one Showdown
+// ticket from its address, else (players sharing an address) the one whose
+// account name the HUD sends.
+function showdownTicket(req, nickname) {
+  const userID = userFromRequest(req);
+  if (userID) return tickets.peek({ userID });
+  const ip = requestIp(req);
+  const mine = [...tickets.open.values()].filter((t) => t.ip === ip && t.map === SHOWDOWN.map);
+  if (mine.length <= 1) return mine[0] || null;
+  const nick = typeof nickname === 'string' ? nickname.trim().toLowerCase() : '';
+  const named = nick ? mine.filter((t) => String(usernameOf(t.userID) || '').toLowerCase() === nick) : [];
+  return named.length === 1 ? named[0] : null;
+}
+
 app.get('/api/showdown', (req, res) => {
-  const ticket = tickets.peek({ userID: userFromRequest(req), ip: requestIp(req) });
-  if (!ticket || ticket.map !== SHOWDOWN.map) return res.json({ active: false });
+  const ticket = showdownTicket(req, req.query && req.query.nickname);
+  // The kits either way: on a shared address the ticket can't be told apart,
+  // and the HUD then runs the series from the game's own round messages.
+  if (!ticket || ticket.map !== SHOWDOWN.map) return res.json({ active: false, kit: showdownKit, kits: showdownKits });
   const series = showdowns.current(ticket.userID);
   res.json(Object.assign({ active: Boolean(series) }, showdownState('round', series ? showdowns.view(series) : null)));
 });
@@ -670,6 +792,7 @@ app.post('/api/account/register', asyncRoute(async (req, res) => {
     do userID = acc.randomSteamID(); while (hasProfile(userID) || accounts.ownsUserID(userID));
   }
   accounts.create({ username, email, userID, password: hash });
+  rememberAccountIp(accounts.get(key), ip);
   leaderboard.changed();
   getProfile(userID);
   const token = accounts.issueToken(key);
@@ -677,13 +800,30 @@ app.post('/api/account/register', asyncRoute(async (req, res) => {
   res.json({ token, username, userID, claimed });
 }));
 
+// The last few addresses an account signed in from, hashed (accounts.hashIp).
+const KNOWN_IPS = 5;
+function accountKnowsIp(a, ip) {
+  return Boolean(a && Array.isArray(a.knownIps) && a.knownIps.includes(accounts.hashIp(ip)));
+}
+function rememberAccountIp(a, ip) {
+  if (!a) return;
+  const h = accounts.hashIp(ip);
+  a.knownIps = [h].concat((Array.isArray(a.knownIps) ? a.knownIps : []).filter((x) => x !== h)).slice(0, KNOWN_IPS);
+  accounts.save();
+}
+
 app.post('/api/account/login', asyncRoute(async (req, res) => {
   const body = bodyObject(req);
   const ip = requestIp(req);
   const key = acc.usernameKey(body.username);
   // Every attempt counts against the limits; a right password is given back.
   if (!allowLoginIp(ip)) return res.status(429).json({ error: 'too-many-attempts' });
-  if (key && !allowLoginUser(key)) { allowLoginIp.refund(ip); return res.status(429).json({ error: 'too-many-attempts' }); }
+  // The per-username limit stops guessing spread over many addresses, but the
+  // addresses the player has signed in from before (kept hashed) are exempt,
+  // so someone else's wrong guesses can't lock the player out.
+  const known = key && accountKnowsIp(accounts.get(key), ip);
+  const userCounted = Boolean(key && !known);
+  if (userCounted && !allowLoginUser(key)) { allowLoginIp.refund(ip); return res.status(429).json({ error: 'too-many-attempts' }); }
   const password = body.password;
   // No account can have a malformed name or an over-long password: no hash needed.
   if (!key || typeof password !== 'string' || password.length > 128) return res.status(401).json({ error: 'wrong-credentials' });
@@ -692,7 +832,8 @@ app.post('/api/account/login', asyncRoute(async (req, res) => {
   const ok = await acc.verifyPassword(password, a ? a.password : await acc.dummyPasswordHash());
   if (!ok || !a) return res.status(401).json({ error: 'wrong-credentials' });
   allowLoginIp.refund(ip);
-  allowLoginUser.refund(key);
+  if (userCounted) allowLoginUser.refund(key);
+  rememberAccountIp(a, ip);
   a.lastLoginAt = Date.now();
   const token = accounts.issueToken(key);
   res.json({ token, username: a.username, userID: a.userID });
@@ -817,15 +958,16 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
   const password = acc.randomPassword(16);
   accounts.setPassword(key, await acc.hashPassword(password));
   const revoked = accounts.revokeAll(key);
-  // Signed out everywhere, and the game can't log in on an old grant either.
+  // Signed out everywhere, and the game can't log in on an old grant or session either.
   accounts.revokeGrant(a.userID);
-  log('password reset for', a.userID, '(' + revoked + ' tokens revoked)');
+  const sessionsRevoked = sessions.revokeUser(a.userID);
+  log('password reset for', a.userID, '(' + revoked + ' tokens, ' + sessionsRevoked + ' game sessions revoked)');
   res.json({ username: a.username, password, revokedTokens: revoked });
 }));
 
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
-app.get(['/health', '/api/health'], (req, res) => res.json({ ok: true, users: socketsByUser.size }));
+app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: true, users: socketsByUser.size }, activity.summary())));
 
 app.get('/api/ranked', (req, res) => {
   const userID = userFromRequest(req);
@@ -920,13 +1062,15 @@ if (process.env.CULLING_DEBUG_TRANSPORT) {
 }
 
 function emptyLeaderboard(p) {
-  const side = () => ({
+  // Solo side: every mode but Duo; coop side: Duo (p.modes, from match results).
+  const duo = (p.modes && p.modes.coop2) || { wins: 0, kills: 0 };
+  const side = (wins, kills) => ({
     topWins: [], topKills: [], topTenMatches: [],
     tier4TopTen: [], tier3TopTen: [], tier2TopTen: [], tier1TopTen: [], tier0TopTen: [],
     currentSeasonTier: {}, currentSeasonScore: 0,
-    currentSeasonWins: p.stats.wins, currentSeasonKills: p.stats.kills
+    currentSeasonWins: wins, currentSeasonKills: kills
   });
-  return { solo: side(), coop: side() };
+  return { solo: side(Math.max(0, p.stats.wins - duo.wins), Math.max(0, p.stats.kills - duo.kills)), coop: side(duo.wins, duo.kills) };
 }
 
 // ---------------------------------------------------------------- ranked
@@ -1020,12 +1164,20 @@ function lobbyQueue(raw) {
 
 function startLocalMatch(socket, queue) {
   const { mode, map } = lobbyQueue(queue);
+  const q = queueName(queue);           // cleaned: a malformed name is 'ffa'
+  if (/^ranked/.test(q) && /coop2/.test(q)) {
+    // Ranked Duo isn't a mode (yet): say so rather than start Ranked Solo.
+    socket.emit('join-mm-fail', { reason: 'queue-unavailable' });
+    return;
+  }
   socket.emit('join-mm-ack');
   if (mode === SHOWDOWN.queue) {
+    // Out of any lobby still searching: its match-ready would land mid-series.
+    lobbies.leave(socket.userID);
+    // The whole series is this match. One left unfinished is forfeited first.
     const before = showdowns.current(socket.userID);
-    const series = showdowns.startRound(socket.userID);
-    // A round left unplayed can end the series before this one starts.
-    if (before && before.over) recordShowdown(socket.userID, before.won);
+    const { series, left } = showdowns.startSeries(socket.userID);
+    if (left && before && before.recorded === false) { before.recorded = true; recordShowdown(socket.userID, false); }
     socket.emit('remaster-showdown', showdownState('round', series));
     setPresence(socket.userID, 'match', { mode: SHOWDOWN.queue, round: series.round });
     return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map);
@@ -1038,6 +1190,8 @@ function startLocalMatch(socket, queue) {
     for (const id of p.members) {
       const s = socketsByUser.get(id);
       if (id === socket.userID || !s || !s.connected || presenceState(id) === 'match') continue;
+      // Duo is played in pairs: the leader and one party member.
+      if (mode === 'coop2' && group.length >= 2) break;
       group.push({ id, socket: s });
       s.emit('join-mm-group');
     }
@@ -1056,14 +1210,22 @@ function launchMatch(socket, queue, map) {
   // starts it from "duo:<map>".
   const duo = lobbyQueue(queue).mode === 'coop2';
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
-  tickets.start(socket.userID, socketIp(socket), { map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle' });
+  let rankedId = null;
   if (String(queue).startsWith('ranked')) {
-    const p = getProfile(socket.userID || normalizeUserID());
+    const p = getProfile(socket.userID);
     const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
     if (abandoned) log('ranked abandoned', abandoned.matchId, abandoned.ratingBefore, '->', abandoned.ratingAfter);
     log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
+    rankedId = match.id;
     saveProfiles();
   }
+  // The ticket says which match this is: its map, its mode, and the ranked
+  // match it scores (only that ranked match is finished by its result).
+  tickets.start(socket.userID, socketIp(socket), {
+    map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle',
+    mode: showdown ? SHOWDOWN.queue : lobbyQueue(queue).mode,
+    ranked: rankedId
+  });
   if (!showdown) setPresence(socket.userID, 'match', { mode: lobbyQueue(queue).mode });
   log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
   socket.emit('match-ready', {
@@ -1082,16 +1244,16 @@ function matchField(map, cap) {
   return Math.min(reported, ranked.CONFIG.maxField, FIELD_BY_MAP[map] || ranked.CONFIG.field);
 }
 
-// Back in the menu after a Showdown round: the next round, or the final score
-// (once).
-function sendShowdown(socket) {
-  const s = showdowns.last(socket.userID);
-  if (!s || s.inRound) return;
-  if (!s.over) return socket.emit('remaster-showdown', showdownState('next', showdowns.view(s)));
-  if (!s.announced) {
-    s.announced = true;
-    socket.emit('remaster-showdown', showdownState('over', showdowns.view(s)));
-  }
+// Back in the menu after a Showdown match: the final score, once. A series
+// still unfinished from before this login (the player quit the match, or an
+// older build's series between rounds) is a forfeit; one queued since the
+// login is being played. Nothing ever starts a round by itself.
+function sendShowdown(socket, loginAt) {
+  const s = showdowns.current(socket.userID) || showdowns.last(socket.userID);
+  if (!s) return;
+  if (!s.over && s.startedAt >= loginAt) return;
+  if (!s.over && showdowns.leave(socket.userID) && showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false);
+  if (s.over && showdowns.markAnnounced(socket.userID)) socket.emit('remaster-showdown', showdownState('over', showdowns.view(s)));
 }
 
 // ---------------------------------------------------------------- friends, parties, player cards
@@ -1099,6 +1261,7 @@ function sendShowdown(socket) {
 // What each player is doing, for their friends: menu, searching, lobby or
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
+const MATCH_PRESENCE_MS = 45 * 60 * 1000;
 const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning' };
 
 function usernameOf(userID) {
@@ -1126,7 +1289,10 @@ function setPresence(userID, state, extra = {}) {
 function statusOf(userID) {
   const s = socketsByUser.get(userID);
   const st = presence.get(userID);
-  const playing = tickets.peek({ userID });
+  const open = tickets.peek({ userID });
+  // A match runs 25 minutes at most: an older open ticket (alt-F4, crash) no
+  // longer shows the player as "In match".
+  const playing = open && Date.now() - open.startedAt < MATCH_PRESENCE_MS ? open : null;
   let state = 'offline';
   if (st && st.state === 'match' && playing) state = 'match';
   else if (s && s.connected) state = st ? st.state : 'menu';
@@ -1297,6 +1463,7 @@ io.on('connection', (socket) => {
     clearTimeout(socket.loginTimer);
     socket.userID = userID;
     socketsByUser.set(userID, socket);
+    activity.seen(userID);
     const p = getProfile(userID);
     log('socket login', userID);
 
@@ -1310,9 +1477,15 @@ io.on('connection', (socket) => {
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);
-    later(() => sendShowdown(socket), 1500);
-    friends.seen(userID);
-    if (presenceState(userID) !== 'match') presence.delete(userID);   // back in the menu
+    const loginAt = Date.now();
+    later(() => sendShowdown(socket, loginAt), 1500);
+    if (usernameOf(userID)) friends.seen(userID);
+    // The menu logging in means the game is back in the menu: a match the HUD
+    // never reported (a crash) no longer keeps the player "In match", so a
+    // party leader's queue includes them again. The ticket stays claimable.
+    presence.delete(userID);
+    const dropped = tickets.abandon(userID, ABANDON_GRACE_MS);
+    if (dropped) log('match ended without a result', userID, dropped.mode || '', Math.round((Date.now() - dropped.startedAt) / 1000) + ' s');
     notifyFriends(userID);
   });
 
@@ -1336,7 +1509,7 @@ io.on('connection', (socket) => {
   on('showdown-leave', () => {
     const series = showdowns.leave(socket.userID);
     if (series) {
-      recordShowdown(socket.userID, false);
+      if (showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false);
       socket.emit('remaster-showdown', showdownState('left', series));
     }
   });
@@ -1349,7 +1522,12 @@ io.on('connection', (socket) => {
     // Card IDs are item type IDs (the game sends a number or a numeric string).
     const id = msg && msg.cardID;
     const ok = (typeof id === 'number' && Number.isSafeInteger(id) && id >= 0) || (typeof id === 'string' && /^\d{1,12}$/.test(id));
-    getProfile(socket.userID).cardID = ok ? id : 0;
+    const p = getProfile(socket.userID);
+    // Only a card the player owns (ranked reward cards included once earned).
+    const item = ok ? catalogByTid.get(Number(id)) : null;
+    const owned = item && !NOT_OWNABLE.has(item.class) && levelReached(p, item) && (!isCustom(item) || ownsItem(p, item));
+    if (ok && Number(id) !== 0 && !owned) log('set-card refused (not owned)', socket.userID, id);
+    p.cardID = ok && (Number(id) === 0 || owned) ? id : 0;
     saveProfiles();
   });
   on('get-cards', (msg) => {
@@ -1367,7 +1545,7 @@ io.on('connection', (socket) => {
   // The game only asks for owned items now and then, so push them whenever
   // the catalog has (re)loaded as well.
   const sendEntitlements = () => socket.emit('entitlements-response',
-    entitlements(getProfile(socket.userID || normalizeUserID())));
+    entitlements(getProfile(socket.userID)));
   on('get-entitlements', sendEntitlements);
   on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {
@@ -1383,8 +1561,13 @@ io.on('connection', (socket) => {
   on('purchase-entitlement', (msg) => {
     const typeId = parseInt(msg && msg.entitlementID, 10);
     const item = catalogByTid.get(typeId);
-    const p = getProfile(socket.userID || normalizeUserID());
-    if (item && item.rankedReward && !p.owned.includes(typeId)) {
+    const p = getProfile(socket.userID);
+    // Nothing to buy: an unknown ID, currency or a crate is never "bought".
+    if (!item || NOT_OWNABLE.has(item.class)) {
+      socket.emit('purchase-fail', { reason: 'unknown-item' });
+      return;
+    }
+    if (item.rankedReward && !p.owned.includes(typeId)) {
       socket.emit('purchase-fail', { reason: 'ranked-reward' });
       return;
     }
@@ -1416,7 +1599,7 @@ io.on('connection', (socket) => {
   on('purchase-item-authenticated', () => socket.emit('purchase-item-authenticated-fail', { message: 'The store is not available on the local server.' }));
 
   on('player-leaderboard-request', () => {
-    const p = getProfile(socket.userID || normalizeUserID());
+    const p = getProfile(socket.userID);
     socket.emit('player-leaderboard-response', { data: emptyLeaderboard(p) });
   });
   on('get-season-summary', (msg) => {
@@ -1525,8 +1708,9 @@ io.on('connection', (socket) => {
   });
   on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   on('lobby-start-match', () => {
+    if (!socket.lobby) return socket.emit('lobby-update-fail', {});
     const map = socket.lobby && /prison|jungle2/i.test(socket.lobby.mapName) ? 1 : 0;
-    tickets.start(socket.userID, socket.ip);
+    tickets.start(socket.userID, socket.ip, { map: map ? 'prison' : 'jungle', mode: 'custom' });
     socket.emit('match-ready', { gameServer: 'offline:' + map, nonce: 'x', serverNonce: 'x' });
   });
 
@@ -1539,8 +1723,10 @@ io.on('connection', (socket) => {
     if (socket.userID && socketsByUser.get(socket.userID) === socket) {
       lobbies.leave(socket.userID);
       socketsByUser.delete(socket.userID);
-      friends.seen(socket.userID);
+      if (usernameOf(socket.userID)) friends.seen(socket.userID);
       notifyFriends(socket.userID);
+      // Offline with no match running: nothing to remember about them.
+      if (!tickets.peek({ userID: socket.userID })) presence.delete(socket.userID);
     }
   });
 });
@@ -1554,8 +1740,11 @@ const BLANK_PROFILE = { stats: { wins: 0, kills: 0, level: 1, rank: 0 }, cardID:
 function flushAll(why) {
   const wroteProfiles = profileStore.flushSync();
   const wroteSessions = sessions.flushSync();
+  tickets.flushSync();
+  showdowns.flushSync();
   const wroteAccounts = accounts.flushSync();
   friends.flushSync();
+  activity.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {
     log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
       .filter(Boolean).join(', '));

@@ -43,8 +43,23 @@ const CONFIG = {
   maxRating: 1399,
   historyLength: 50,
   processedLength: 100,    // match IDs remembered against duplicate results
-  season: { id: 'S1', name: 'Season 1', start: '2026-11-01T00:00:00Z', end: '2027-02-01T00:00:00Z' }
+  // Season 1; the seasons after it follow back to back with the same length
+  // (seasonAt). CONFIG.season is always the current one.
+  firstSeason: { id: 'S1', name: 'Season 1', start: '2026-11-01T00:00:00Z', end: '2027-02-01T00:00:00Z' },
+  pastSeasonsKept: 12
 };
+
+// The season running at `now`: Season 1, then Season 2, 3, ... each as long
+// as Season 1, starting when the one before ends.
+function seasonAt(now = Date.now()) {
+  const first = CONFIG.firstSeason;
+  const start = Date.parse(first.start), end = Date.parse(first.end), length = end - start;
+  const n = now < end ? 0 : Math.floor((now - end) / length) + 1;
+  if (n === 0) return first;
+  const s = end + (n - 1) * length;
+  return { id: 'S' + (n + 1), name: 'Season ' + (n + 1), start: new Date(s).toISOString(), end: new Date(s + length).toISOString() };
+}
+Object.defineProperty(CONFIG, 'season', { get: () => seasonAt(Date.now()), enumerable: true });
 
 const TIERS = [
   { name: 'Scrapper', min: 0, identity: 'Prove you belong.' },
@@ -119,9 +134,26 @@ function ratingChange(rating, placement, order, k) {
   return k * sum / order.length;
 }
 
+// A new season: last season's record is kept in r.past, rating and MMR are
+// softly reset toward the start (MMR keeps half its distance, so matchmaking
+// still knows roughly how good the player is), and the tiers start over.
+// Rewards already earned stay owned (they live in the profile's owned list).
+function rollover(r, season) {
+  if (r.matches > 0) {
+    r.past = [{ season: r.season, rating: r.rating, peakRating: r.peakRating, peakTier: r.peakTier,
+      matches: r.matches, wins: r.wins }].concat(Array.isArray(r.past) ? r.past : []).slice(0, CONFIG.pastSeasonsKept);
+  }
+  const fresh = blank();
+  fresh.season = season.id;
+  fresh.mmr = Math.round(CONFIG.startRating + (Math.min(r.mmr || CONFIG.startRating, CONFIG.maxRating) - CONFIG.startRating) / 2);
+  fresh.past = r.past;
+  for (const k of Object.keys(r)) delete r[k];
+  Object.assign(r, fresh);
+}
+
 function blank() {
   return {
-    season: CONFIG.season.id,
+    season: seasonAt().id,
     rating: CONFIG.startRating,
     mmr: CONFIG.startRating,
     matches: 0,
@@ -135,9 +167,11 @@ function blank() {
   };
 }
 
-function ensure(profile) {
+function ensure(profile, now = Date.now()) {
   if (!profile.ranked) profile.ranked = blank();
   const r = profile.ranked;
+  const season = seasonAt(now);
+  if (r.season !== season.id) rollover(r, season);
   // Profiles from before the season caps (or imported): brought within them.
   if (r.rating > CONFIG.maxRating) r.rating = CONFIG.maxRating;
   if (r.mmr > CONFIG.maxRating) r.mmr = CONFIG.maxRating;
@@ -211,7 +245,7 @@ function apply(r, match, result, now, grant) {
 
 // Starts a ranked match; an unfinished earlier one counts as last place.
 function startMatch(profile, now = Date.now(), grant) {
-  const r = ensure(profile);
+  const r = ensure(profile, now);
   let abandoned = null;
   if (r.pending) {
     abandoned = apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant);
@@ -229,7 +263,7 @@ function startMatch(profile, now = Date.now(), grant) {
 // Applies the result of the pending match. Same match ID twice: the first
 // result stands. Invalid results are rejected without changing anything.
 function finishMatch(profile, result, now = Date.now(), grant) {
-  const r = ensure(profile);
+  const r = ensure(profile, now);
   if (result.matchId && Object.prototype.hasOwnProperty.call(r.processed, result.matchId)) {
     const entry = r.history.find((h) => h.matchId === result.matchId) || { matchId: result.matchId };
     return { entry, duplicate: true };
@@ -246,12 +280,13 @@ function finishMatch(profile, result, now = Date.now(), grant) {
 }
 
 function summary(profile, now = Date.now()) {
-  const r = ensure(profile);
+  const r = ensure(profile, now);
   const tier = tierFor(r.rating);
-  const end = Date.parse(CONFIG.season.end);
+  const season = seasonAt(now);
+  const end = Date.parse(season.end);
   return {
     localTestMode: true,
-    season: { id: CONFIG.season.id, name: CONFIG.season.name, end: CONFIG.season.end,
+    season: { id: season.id, name: season.name, end: season.end,
       daysLeft: Math.max(0, Math.ceil((end - now) / 86400000)) },
     rating: r.rating,
     tier,
@@ -265,4 +300,4 @@ function summary(profile, now = Date.now()) {
   };
 }
 
-module.exports = { CONFIG, TIERS, tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, summary };
+module.exports = { CONFIG, TIERS, tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, summary, seasonAt };

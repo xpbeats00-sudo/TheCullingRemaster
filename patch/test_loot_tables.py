@@ -20,7 +20,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOOT = json.load(open(os.path.join(HERE, "loot", "loot_tables.json")))
-KIT = json.load(open(os.path.join(HERE, "..", "server", "data", "showdown.json")))["kit"]
+SHOWDOWN = json.load(open(os.path.join(HERE, "..", "server", "data", "showdown.json")))
+KIT = SHOWDOWN["kit"]
+KITS = SHOWDOWN["kits"]
 DRAWS = 200000
 passed = 0
 
@@ -94,7 +96,7 @@ try:
 except ValueError:
     ok("a list with no weight fails safely")
 
-for i in KIT["items"]:
+for i in KIT["items"] + [i for k in KITS for i in k["items"]]:
     assert i["autoEquip"] == (i["category"] == "armor"), i
 assert any(i["category"] == "armor" for i in KIT["items"]), "the kit should show the armor rule"
 ok("Showdown kit %s: only armor auto-equips (%s)" % (KIT["name"], ", ".join("%s%s" % (i["name"], " [auto]" if i["autoEquip"] else "") for i in KIT["items"])))
@@ -134,7 +136,15 @@ for o in range(1, len(body) - 4):
         cls = pawn.imports[-v - 1]
         if cls.endswith("_C") and not cls.startswith("Default__") and bit and bits & bit:
             given.append(cls)
-assert set(given) == {i["id"] for i in KIT["items"]}, (bits, given)
-ok("the Showdown perk (bits %d) spawns everyone with exactly the kit, no airdrops: %s" % (bits, ", ".join(sorted(set(given)))))
+assert set(given) == {i["id"] for k in KITS for i in k["items"]}, (bits, given)
+ok("the Showdown perk (bits %d) spawns everyone with the kits' items, no airdrops: %s" % (bits, ", ".join(sorted(set(given)))))
+
+# Kit k's weapon is what bit 32's switch adds for RandomIntegerInRange(0, 6) == k
+# (the patched exe sets that value to the round's kit). The switch compares
+# the value with 0..6 (EX_IntConst after NotEqual_IntInt) and jumps to the
+# class it adds when equal.
+from make_showdown import ROTATION  # noqa: E402
+assert [k["items"][0]["id"] for k in KITS] == ROTATION
+ok("%d kits, one Tier 3 weapon each, the same armor and boost: %s" % (len(KITS), ", ".join(k["name"] for k in KITS)))
 
 print("all %d loot table tests passed" % passed)

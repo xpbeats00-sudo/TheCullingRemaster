@@ -35,5 +35,260 @@
     "inInventory": true
    }
   ]
- }
+ },
+ "kits": [
+  {
+   "id": "showdown-0",
+   "name": "Tomahawk kit",
+   "items": [
+    {
+     "id": "WeapTomahawk_C",
+     "name": "Tomahawk",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Axe",
+     "icon": "WeapTomahawk",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  },
+  {
+   "id": "showdown-1",
+   "name": "Survival Axe kit",
+   "items": [
+    {
+     "id": "WeapSurvivalAxe_C",
+     "name": "Survival Axe",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Axe",
+     "icon": "WeapSurvivalAxe",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  },
+  {
+   "id": "showdown-2",
+   "name": "Tactical Machete kit",
+   "items": [
+    {
+     "id": "WeapTacticalMachete_C",
+     "name": "Tactical Machete",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Blade",
+     "icon": "WeapTacticalMachete",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  },
+  {
+   "id": "showdown-3",
+   "name": "Bowie Knife kit",
+   "items": [
+    {
+     "id": "WeapBowieKnife_C",
+     "name": "Bowie Knife",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Blade",
+     "icon": "WeapBowieKnife",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  },
+  {
+   "id": "showdown-4",
+   "name": "Baseball Bat kit",
+   "items": [
+    {
+     "id": "WeapBaseballBat_C",
+     "name": "Baseball Bat",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Bludgeon",
+     "icon": "WeapBaseballBat",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  },
+  {
+   "id": "showdown-5",
+   "name": "Pipe Wrench kit",
+   "items": [
+    {
+     "id": "WeapPipeWrench_C",
+     "name": "Pipe Wrench",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Bludgeon",
+     "icon": "WeapPipeWrench",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  },
+  {
+   "id": "showdown-6",
+   "name": "Yari kit",
+   "items": [
+    {
+     "id": "WeapYari_C",
+     "name": "Yari",
+     "category": "melee",
+     "tier": 3,
+     "description": "Tier 3 Spear",
+     "icon": "WeapYari",
+     "autoEquip": false,
+     "inInventory": true
+    },
+    {
+     "id": "BodyArmor_C",
+     "name": "Tactical Body Armor",
+     "category": "armor",
+     "tier": null,
+     "description": "Absorbs 50% of incoming damage, destroyed after it receives 30 points of damage",
+     "icon": "BodyArmor",
+     "autoEquip": true,
+     "inInventory": true
+    },
+    {
+     "id": "MuscleManMilk_C",
+     "name": "Muscle Man Milk",
+     "category": "muscle_milk",
+     "tier": null,
+     "description": "Increases melee damage dealt by 15% for 2 minutes",
+     "icon": "MuscleManMilk",
+     "autoEquip": false,
+     "inInventory": true
+    }
+   ]
+  }
+ ],
+ "roundsPerKit": 2
 }

@@ -59,7 +59,10 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
 
     await test("a cap above the most any build has counts as 24", async () => {
       const { r } = await ranked("jungle", { placement: 30, cap: 999 });
-      assert.strictEqual(r.ranked, null, "placement 30 of 24 is refused");
+      // A rank beyond the field is scored as last place, not dropped (a
+      // dropped result left the match pending, later counted as abandoned).
+      assert.strictEqual(r.ranked.entry.field, 24);
+      assert.strictEqual(r.ranked.entry.placement, 24, "placement 30 of 24 counts as 24th");
     });
 
     console.log("all %d field tests passed", passed);

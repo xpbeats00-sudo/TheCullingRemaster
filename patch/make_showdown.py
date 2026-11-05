@@ -11,9 +11,17 @@ build, so this assembles it from what the game already has:
   ground. The game's own starting items: perks add to the player stat
   SpawnWithWeapon, and PlayerPawn's GetSpawnWithWeaponClasses gives one item
   per bit (1 Man Tracker, 2 Backpack, 4 Satchel, 8 Body Armor, 16 Alarm Gun,
-  32 a random Tier 1 melee weapon). No selectable perk uses bit 4 or 32 (only
-  the removed, disabled Perk_JumpStart had 32), so bit 4 becomes BOOST and
-  bit 32 always MELEE. A Showdown-only perk (a copy of Perk_JumpStart at a
+  32 a random Tier 1 melee weapon: RandomIntegerInRange(0, 6) picks one of
+  seven). No selectable perk uses bit 4 or 32 (only the removed, disabled
+  Perk_JumpStart had 32), so bit 4 becomes BOOST and the seven bit-32
+  weapons become the seven Tier 3 weapons of ROTATION. In a Showdown match
+  the patched exe (patch_exe.py, showdown_rounds.c) makes that one
+  RandomIntegerInRange(0, 6) return the round's kit, the same for both
+  fighters: the kit changes every 2 rounds, from a random first kit.
+  The rival's pawn (BasicBot) has no GetSpawnWithWeaponClasses and spawns
+  with its own random loadout; the patched exe clears it and gives the rival
+  the player's kit (the same armor, put on, the boost and the round's weapon)
+  at the start and after every round's reset. A Showdown-only perk (a copy of Perk_JumpStart at a
   new path, so it isn't in the asset registry or the perk menu) grants
   32 + 8 + 4, and the mode forces it on everyone (OverridenPerks, in place of
   Backpacker), bots included (bEnableBotPerks). Body armor a player spawns with puts itself on
@@ -24,9 +32,13 @@ build, so this assembles it from what the game already has:
   move into the arena, on opposite sides facing the middle; the other six are
   retagged so they're never picked.
 - Messages: the Lightning branch of the gas manager shows "Open Your
-  Airdrop" at match start and Jungle's level script a "Grab your Airdrop."
-  help toast; with no airdrop they mislead, so they say what to do instead
-  (same length: they are string constants in compiled script).
+  Airdrop" at match start; with no airdrop it misleads, so it says what to do
+  instead (same length: a string constant in compiled script). Jungle's level
+  script also toasts "Grab your Airdrop." - in every mode on Jungle, so it
+  stays stock; the Showdown HUD's panel says what to do.
+- Rounds: the whole series (first to 4) is one match: the patched exe ends a
+  round when a fighter is down, blacks the screen out, respawns both at the
+  arena starts with the next kit and tells the HUD (ShowdownHud.js).
 - Start: the server answers "showdown:1v1" and ClientWeb.js calls the
   menu's StartTraining(URL): the patched exe opens a URL given in place of a
   slot name like a Solo match (patch_exe.py). No DefaultGame.ini slot is
@@ -57,15 +69,22 @@ SOURCE_PERK = "Victory/Content/Perks/Removed/Perk_JumpStart.uasset"
 PERK = "Victory/Content/Perks/Showdown/Perk_Showdown.uasset"
 PERK_OBJECT = "Perk_JumpStart"          # the copy keeps its export's name
 # The kit both sides spawn with: (item class, its package, the bit that gives it).
-MELEE = ("WeapTomahawk_C", "/Game/Blueprints/Weapons/WeapTomahawk", 32)
+WEAPONS = "/Game/Blueprints/Weapons/"
+MELEE = ("WeapTomahawk_C", WEAPONS + "WeapTomahawk", 32)     # kit 0's weapon
 BOOST = ("MuscleManMilk_C", "/Game/Blueprints/Items/MuscleManMilk", 4)
 ARMOR = ("BodyArmor_C", "/Game/Blueprints/Items/BodyArmor", 8)        # stock bit
 KIT = [MELEE, ARMOR, BOOST]
 KIT_NAME = "Showdown kit"
+# Bit 32's weapon by kit (0-6: RandomIntegerInRange(0, 6), which the patched
+# exe sets to the round's kit): the loot tables' Tier 3 melee weapons.
+ROTATION = ["WeapTomahawk_C", "WeapSurvivalAxe_C", "WeapTacticalMachete_C", "WeapBowieKnife_C",
+            "WeapBaseballBat_C", "WeapPipeWrench_C", "WeapYari_C"]
+ROUNDS_PER_KIT = 2                      # showdown_rounds.c kit_for()
 # What bits 4 and 32 give in the stock game (replaced in GetSpawnWithWeaponClasses).
 STOCK_BIT4 = ["Satchel_C"]
-STOCK_BIT32 = ["WeapTonfa_C", "WeapHammer_C", "WeapPitchfork_C", "WeapCampHatchet_C",
-               "WeapBrassKnuckles_C", "WeapMachete_C", "WeapTantoKnife_C"]
+# Bit 32's switch on RandomIntegerInRange(0, 6): the class each value adds.
+STOCK_BIT32 = ["WeapBrassKnuckles_C", "WeapCampHatchet_C", "WeapPitchfork_C", "WeapHammer_C",
+               "WeapTonfa_C", "WeapMachete_C", "WeapTantoKnife_C"]
 LOOT = os.path.join(HERE, "loot", "loot_tables.json")
 SERVER_KIT = os.path.join(HERE, "..", "server", "data", "showdown.json")
 NEVER = 1000000                         # airdrop stage times past any round
@@ -81,7 +100,6 @@ PHASES = "Victory/Content/Blueprints/Environment/MatchPhaseManager_BP.uasset"
 # (old, new): same length, each the whole of a script string constant.
 TEXTS = {
     PHASES: [("Open Your Airdrop", "Drink Up & Fight!")],      # Lightning branch only
-    JUNGLE: [("Grab your Airdrop.", "Ready up and fight")],    # help toast
 }
 
 
@@ -207,14 +225,15 @@ def no_airdrops(up, export):
 
 
 def pawn(data):
-    """GetSpawnWithWeaponClasses: bit 4 gives BOOST, bit 32 always MELEE."""
+    """GetSpawnWithWeaponClasses: bit 4 gives BOOST, bit 32 ROTATION[kit]."""
     up = UPackage(data)
     swaps = {}
-    for item, package, _bit in (MELEE, BOOST):
+    pairs = [(BOOST[0], BOOST[1], stock) for stock in STOCK_BIT4]
+    pairs += [(item, WEAPONS + item[:-2], stock) for item, stock in zip(ROTATION, STOCK_BIT32)]
+    for item, package, stock in pairs:
         pkg = up.add_import("/Script/CoreUObject", "Package", 0, package)
         cls = up.add_import("/Script/Engine", "BlueprintGeneratedClass", pkg, item)
-        for stock in (STOCK_BIT32 if item == MELEE[0] else STOCK_BIT4):
-            swaps[import_index(up, stock)] = cls
+        swaps[import_index(up, stock)] = cls
     i = up.find_export("GetSpawnWithWeaponClasses") - 1
     body = bytearray(up.exports[i]["data"])
     count = {}
@@ -266,15 +285,22 @@ def retext(rel, data):
 
 
 def server_kit():
-    """The kit's contents for the server and the HUD, from the loot tables."""
+    """The kits' contents for the server and the HUD, from the loot tables:
+    kit k is ROTATION[k] with the armor and the boost."""
     loot = json.load(open(LOOT))
-    items = []
-    for item, _package, _bit in KIT:
+
+    def entry(item):
         info = loot["items"][item]
-        items.append({"id": item, "name": info["name"], "category": info["category"], "tier": info["tier"],
-                      "description": info["description"], "icon": item[:-2] if item.endswith("_C") else item,
-                      "autoEquip": info["category"] == "armor", "inInventory": True})
-    out = {"source": "patch/make_showdown.py", "kit": {"id": "showdown", "name": KIT_NAME, "items": items}}
+        return {"id": item, "name": info["name"], "category": info["category"], "tier": info["tier"],
+                "description": info["description"], "icon": item[:-2] if item.endswith("_C") else item,
+                "autoEquip": info["category"] == "armor", "inInventory": True}
+
+    kits = []
+    for k, weapon in enumerate(ROTATION):
+        items = [entry(weapon)] + [entry(item) for item, _package, _bit in KIT if item != MELEE[0]]
+        kits.append({"id": "showdown-%d" % k, "name": "%s kit" % loot["items"][weapon]["name"], "items": items})
+    out = {"source": "patch/make_showdown.py", "kit": dict(kits[0], id="showdown", name=KIT_NAME),
+           "kits": kits, "roundsPerKit": ROUNDS_PER_KIT}
     with open(SERVER_KIT, "w", newline="\n") as f:
         json.dump(out, f, indent=1)
         f.write("\n")
@@ -328,8 +354,8 @@ def main(paks_dir):
     data = open(tuned, "rb").read()
     open(tuned, "wb").write(retext(PHASES, data))
     print("showdown:", PHASES)
-    kit = server_kit()["kit"]
-    print("showdown kit: %s (%s)" % (kit["name"], ", ".join(i["name"] for i in kit["items"])))
+    for kit in server_kit()["kits"]:
+        print("showdown kit: %s (%s)" % (kit["name"], ", ".join(i["name"] for i in kit["items"])))
 
 
 if __name__ == "__main__":

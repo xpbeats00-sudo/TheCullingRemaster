@@ -8,7 +8,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawn, execFileSync } = require("child_process");
+const { spawn, execFile, execFileSync } = require("child_process");
+const { missingFolder } = require("./errors");
 
 const WIN64 = ["Victory", "Binaries", "Win64"];
 const GAME_EXE = "Victory.exe";
@@ -30,9 +31,14 @@ function defaultInstallDir() {
 
 // ok: the game is there. installable: nothing is there yet (missing or empty
 // folder, or a partial install Game Sync started), so Game Sync can install
-// the whole game into it.
-function check(root) {
+// the whole game into it. missing: the folder is gone (its drive isn't
+// there, or opts.expectInstalled says the game was installed there): not a
+// place to install into but something to reconnect or choose again.
+function check(root, opts = {}) {
   if (!root) return { ok: false, installable: false, reason: "No game folder chosen" };
+  if (!fs.existsSync(root) && (opts.expectInstalled || !fs.existsSync(path.parse(path.resolve(root)).root))) {
+    return { ok: false, installable: false, missing: true, reason: missingFolder(root) };
+  }
   if (fs.existsSync(path.join(win64(root), GAME_EXE))) {
     return {
       ok: true,
@@ -116,6 +122,29 @@ function detect(libraries = steamLibraries()) {
   return null;
 }
 
+// A folder that belongs to Steam: inside a Steam library's steamapps folder,
+// or next to Steam's manifest for The Culling (appmanifest_437220.acf). A
+// release installed there would replace Steam's own files (its Steam API
+// among them), so the launcher only uses such a folder when it already
+// manages it (a .remaster folder in it), as at start-up.
+function isSteamFolder(folder) {
+  let full = path.resolve(folder);
+  if (fs.existsSync(path.join(full, STATE_DIR))) return false;
+  try { full = fs.realpathSync.native(full); } catch { /* doesn't exist yet */ }
+  if (full.split(/[\\/]+/).some((p) => p.toLowerCase() === "steamapps")) return true;
+  // The folder, or its parent or grandparent (steamapps\common\<game>), next
+  // to Steam's manifest for the game.
+  const acf = "appmanifest_" + APP_ID + ".acf";
+  for (let dir = full, i = 0; i < 3; i++, dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, acf))) return true;
+    if (path.dirname(dir) === dir) break;
+  }
+  return false;
+}
+
+const STEAM_FOLDER = "That folder is Steam's copy of The Culling (or inside a Steam library): installing there would replace Steam's files. " +
+  "Choose another folder, for example an empty one in your user folder";
+
 // Start the game; resolves once the Func launcher process has spawned.
 function launch(root, logDir) {
   const status = check(root);
@@ -132,20 +161,26 @@ function launch(root, logDir) {
       stdio: "ignore",
       env: Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1" })
     });
-    child.once("error", reject);
+    // An antivirus or app control blocking it: op "launch" (lib/errors.js).
+    child.once("error", (e) => reject(Object.assign(e, { op: "launch" })));
     child.once("spawn", () => { child.unref(); resolve(); });
   });
 }
 
 // Whether The Culling is running (its files are locked while it does).
-function isRunning() {
-  if (process.platform !== "win32") return false;
-  try {
-    const out = execFileSync("tasklist", ["/FI", "IMAGENAME eq " + GAME_EXE, "/NH"], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-    return out.toLowerCase().includes(GAME_EXE.toLowerCase());
-  } catch {
-    return false;
-  }
+// Resolves true or false; asks tasklist without blocking the launcher, which
+// polls this while the game runs. A failed check counts as not running.
+function isRunning({ execFileImpl = execFile, platform = process.platform } = {}) {
+  if (platform !== "win32") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      execFileImpl("tasklist", ["/FI", "IMAGENAME eq " + GAME_EXE, "/NH"], { encoding: "utf8", windowsHide: true, timeout: 15000 }, (err, out) => {
+        resolve(!err && String(out || "").toLowerCase().includes(GAME_EXE.toLowerCase()));
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 // A game folder inside `dir` (the launcher's own install folder, which its
@@ -155,4 +190,5 @@ function inside(child, dir) {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-module.exports = { check, detect, launch, steamLibraries, win64, defaultInstallDir, installTarget, isRunning, inside, INSTALL_NAME };
+module.exports = { check, detect, launch, steamLibraries, win64, defaultInstallDir, installTarget, isRunning, inside, isSteamFolder,
+  INSTALL_NAME, STEAM_FOLDER };

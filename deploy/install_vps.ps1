@@ -22,9 +22,8 @@ param(
     [int]$LocalPort = 8100,
     [string]$SsrRoot = 'C:\ssr',
     # 1: the game can only log in through an account (the launcher's PLAY); 0: any game can log in, as before.
-    # Left out, the service keeps its current setting (0 on the first install with accounts), so an ordinary
-    # update never locks players out. Turn it on only once the launcher with accounts is published:
-    # deploy\install_vps.ps1 -RequireAccount 1 (docs\ACCOUNTS.md, rollout order).
+    # Left out, accounts are required: the launcher with accounts (1.3.0) is published, and without it anyone
+    # could log in as any Steam ID. -RequireAccount 0 turns it off explicitly (docs\ACCOUNTS.md).
     [ValidateSet(-1, 0, 1)][int]$RequireAccount = -1
 )
 $ErrorActionPreference = 'Stop'
@@ -111,11 +110,8 @@ Step "Service $Service"
 $wrapper = Get-Download $WinSWUrl (Join-Path $Root 'downloads\WinSW.NET461.exe') $WinSWSha256
 $svcExe = Join-Path $Root "service\$Service.exe"
 $svcXml = Join-Path $Root "service\$Service.xml"
-if ($RequireAccount -eq -1) {
-    $RequireAccount = 0
-    if ((Test-Path $svcXml) -and ((Get-Content $svcXml -Raw) -match 'name="CULLING_REQUIRE_ACCOUNT" value="1"')) { $RequireAccount = 1 }
-}
-Write-Host "  accounts: $(if ($RequireAccount -eq 1) { 'required to play online' } else { 'not required (turn on with -RequireAccount 1 once launcher 1.3.0 is published)' })"
+if ($RequireAccount -eq -1) { $RequireAccount = 1 }
+Write-Host "  accounts: $(if ($RequireAccount -eq 1) { 'required to play online' } else { 'NOT required (-RequireAccount 0): any game can log in as any Steam ID' })"
 @"
 <service>
   <id>$Service</id>

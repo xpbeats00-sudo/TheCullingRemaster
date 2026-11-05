@@ -2,6 +2,23 @@
 
 ## Game (next release)
 
+**Duo: your team wins when it's the last one standing**
+- A Duo match now ends with a team victory as soon as every living contestant is on one team: you and your teammate last alive is a win for both (a teammate who died earlier gets the victory too). Before, the match went on until your teammate died. Solo, Showdown and Survival are unchanged. Needs the patched exe (patch_exe.py fix 7, in the native module).
+
+**The Chokening: its kills are yours**
+- Players killed by the gas The Chokening starts are now credited to whoever activated it (kill count, kill feed, "Killed by <name>" on the board) instead of "Killed by Suicide" - but not the activator's own death or their Duo teammate's. Needs the patched exe (patch_exe.py fix 8).
+
+**Showdown: the rival gets your kit**
+- The rival no longer spawns with its own random loadout (a melee weapon, a bow or gun with ammo, a utility item): at the start of a Showdown match and after every round's reset it gets exactly the round's kit (the same armor, put on, the Muscle Man Milk and the round's weapon, plus fists). Needs the patched exe (patch_exe.py fix 5: SpawnStartingInventory's kit call, VA 0x140267275).
+- At each round's reset the fighters' inventories are cleared and weapons and pickups left lying in the world (dropped items) are removed.
+
+**Showdown: every round in one match**
+- A Showdown series (first to 4 rounds) is now one match: when a fighter goes down the round ends, the screen fades to black, both fighters are put back at their arena starts (full health, the fallen one alive again, corpses cleared) with a fresh kit, and the screen fades back in. Only the 4th round win ends the match (VICTORY or DEFEAT) and goes back to the menu. Needs the patched exe (patch_exe.py: the native module from patch/showdown_rounds.c in a new .sdround section) and the server update.
+- The kit changes every 2 rounds, starting from a random one of seven: a Tier 3 weapon (Tomahawk, Survival Axe, Tactical Machete, Bowie Knife, Baseball Bat, Pipe Wrench, Yari) with Tactical Body Armor and Muscle Man Milk. The pre-round panel shows the round's kit.
+- The menu no longer starts the next round by itself; it shows the final score once (or the forfeit of a series quit before its end). Right-clicks on its card no longer reach the screen underneath; PLAY AGAIN says why when matchmaking can't start.
+- Jungle's "Grab your Airdrop." toast is stock again in every mode (it was changed for all modes).
+- Server: the HUD reports each round (`POST /api/showdown/round`, by round number, counted once); the match result pays the series once with its own economy (250 XP + 250 per round won + 750 for the series; 40 credits + 20 per round won + 120 for the series; one game on the career, a win only for the series, at most a kill per round won, damage capped at 200 a round), instead of a full 16-player match per round. Queuing Showdown leaves any lobby still searching. Series are kept in `data/showdown-series.json` across restarts.
+
 **Leaderboard**
 - A LEADERBOARD item on the main menu opens the global leaderboard: the top 50 players on Ranked (this season's rating and tier), Wins, Kills, K/D (10 matches or more), Showdown series won and Time played, by account username. Your own row is highlighted, with your position even outside the top 50; a row opens that player's card. Needs the server update (`remaster-leaderboard-get`). See docs/LEADERBOARD.md.
 
@@ -12,6 +29,32 @@
 **Bigger matches**
 - Up to 24 contestants instead of 16 (Victory.exe patched by `patch/patch_exe.py`): 23 bots on Jungle. Bots have 25 names, so none show an ID.
 - Ranked scores a match out of the contestants it really had: 24 on Jungle from the new build, 16 on Prison and from older builds.
+
+## Launcher (next release)
+
+**Game Sync**
+- Files changed in the game folder at the release already installed now read "Repair needed (N files changed)", not "Update available". PLAY offers Repair or Play anyway instead of forcing a sync, and a repair keeps the files it replaces in the game folder's `.remaster\replaced` folder (the newest repair's only, up to 1 GB).
+- Verify & Sync with nothing to do, and a repair at the installed release, no longer delete the previous version's backup or point "Restore previous version" at the current version. The old backup goes only once a new update has installed.
+- A dropped connection mid-download pauses Game Sync with "Connection lost — Resume when you're back online" instead of retrying every file for hours; the progress shows "Reconnecting" while connections keep failing.
+- Downloads left over from an older release are deleted, and no longer show as "Download paused" offline.
+- A game folder at the root of a drive (D:\) works.
+
+**Start-up and offline**
+- Offline at start-up, the launcher keeps trying to reach the update server by itself (5 s, growing to once a minute), with a Retry button next to Offline. Server ping and player count refresh every 45 s.
+- A start-up check that fails finishes the start-up screen with the error instead of hanging it.
+- A game folder that is gone (an unplugged drive, a deleted folder) says "Game folder not found" instead of "Ready to install".
+
+**PLAY**
+- PLAY shows Running while the game runs and can't start a second copy.
+- An install that uses a real Steam account is told so at PLAY, not asked to sign in.
+- A Steam copy of the game chosen in Settings is refused (installing there would replace Steam's files) unless the launcher already manages it.
+
+**Other**
+- Error messages say what Windows blocked: the game starting, a file locked by the running game, the launcher's settings folder, the game folder, or a launcher update.
+- A launcher update an antivirus blocks is reported instead of crashing the launcher, and the "Updating launcher" card goes away after a failed update. Offline starts no longer reset the limit on update tries.
+- Settings with an empty server list or a bad update address fall back to the defaults; the window buttons always work.
+- The window fits screens smaller than 1280x760.
+- Electron 45 (from 33), with electron-builder 26 and @electron/fuses 2. The saved sign-in now uses safeStorage's asynchronous API (the synchronous one is gone in Electron 46); sign-ins saved by older launchers still load. Copy diagnostics waits for the clipboard write. The exe also refuses an app.asar that doesn't match the hash embedded at build time, and the build fails if a newer Electron adds a fuse nobody has decided on.
 
 ## Launcher 1.3.0 (not yet published)
 

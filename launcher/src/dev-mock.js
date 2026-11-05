@@ -51,7 +51,7 @@
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   window.launcher = {
     state: async () => JSON.parse(JSON.stringify(state)),
-    pingServers: async () => { await wait(400); return [{ id: "eu", ok: true, ms: 16, users: 24 }, { id: "us", ok: true, ms: 32, users: 18 }]; },
+    pingServers: async () => { await wait(400); return [{ id: "eu", ok: true, ms: 16, users: 24, matchesToday: 310, playersWeek: 96 }, { id: "us", ok: true, ms: 32, users: 0, matchesToday: 128, playersWeek: 42 }]; },
     // Accounts: "taken" is a taken username; any password but "wrong" signs in.
     createAccount: async (f) => {
       await wait(500);
@@ -70,6 +70,7 @@
     setSetting: async (k, v) => { state.settings[k] = v; return window.launcher.state(); },
     chooseGameFolder: async () => window.launcher.state(),
     checkUpdates: async () => { await wait(600); return window.launcher.state(); },
+    retryConnection: async () => { await wait(500); return Object.assign(await window.launcher.state(), { reconnected: state.online }); },
     sync: async () => {
       paused = false;
       const p = state.pending;

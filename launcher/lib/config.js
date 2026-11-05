@@ -6,6 +6,10 @@ const path = require("path");
 
 const DEFAULTS = {
   gamePath: "",
+  // The folder the launcher last saw a finished install in: if it vanishes
+  // (an unplugged drive, a deleted folder), it reads as missing, not as a
+  // place to install into.
+  installedPath: "",
   // Release manifest (Game Sync / Update) and the fallback server list.
   manifestUrl: "https://xplab.shop:8443/remaster/manifest.json",
   servers: [{ id: "xplab", name: "The Culling Remaster", region: "USA",
@@ -37,17 +41,35 @@ function sanitize(c) {
   const out = {};
   for (const [k, def] of Object.entries(DEFAULTS)) {
     const v = c[k];
-    if (Array.isArray(def)) out[k] = Array.isArray(v) && v.every(validServer) ? v : def;
+    // A list the launcher can work with: at least one server, each with an
+    // id, a name and web addresses (an empty list leaves nothing to sign in
+    // to or play on).
+    if (k === "servers") out[k] = Array.isArray(v) && v.length > 0 && v.every(validServer) ? v : def;
     // Links come with the launcher, not from saved settings (a new link reaches everyone).
     else if (k === "links") out[k] = def;
+    else if (k === "manifestUrl") out[k] = validUrl(v) ? v : def;
     else if (CHOICES[k]) out[k] = CHOICES[k].includes(v) ? v : def;
     else out[k] = typeof v === typeof def ? v : def;
   }
   return out;
 }
 
+// An https address (plain http only on this PC, for testing), as Game Sync
+// and the account client require.
+function validUrl(u) {
+  if (typeof u !== "string") return false;
+  try {
+    const url = new URL(u);
+    const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    return url.protocol === "https:" || (url.protocol === "http:" && local);
+  } catch {
+    return false;
+  }
+}
+
 function validServer(s) {
-  return s && typeof s.id === "string" && typeof s.name === "string" && typeof s.api === "string";
+  return !!s && typeof s === "object" && typeof s.id === "string" && s.id !== "" && typeof s.name === "string" &&
+    validUrl(s.api) && (s.status === undefined || validUrl(s.status));
 }
 
 function save(file, c) {
@@ -59,4 +81,4 @@ function save(file, c) {
   return clean;
 }
 
-module.exports = { load, save, sanitize, DEFAULTS, CHOICES };
+module.exports = { load, save, sanitize, validUrl, DEFAULTS, CHOICES };

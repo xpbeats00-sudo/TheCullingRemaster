@@ -87,7 +87,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       s.emit("join-mm", { queueName: "__proto__" });
       await next(s, "join-mm-ack");
       s.emit("purchase-entitlement", null);
-      await next(s, "purchase-success");
+      assert.strictEqual((await next(s, "purchase-fail")).reason, "unknown-item");
       s.emit("lobby-create", { mapName: ["Prison"] });
       assert.strictEqual((await next(s, "lobby-update")).mapName, "Jungle_P");
       for (const u of ["steam:someone-else", "__proto__", 12345, { x: 1 }]) {

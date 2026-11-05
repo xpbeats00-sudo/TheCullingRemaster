@@ -1,17 +1,27 @@
-// Showdown in-match HUD (patch/make_showdown.py, server/showdown.js).
+// Showdown in-match HUD (patch/make_showdown.py, patch/showdown_rounds.c,
+// server/showdown.js).
 //
-// Pre-round panel: at the start of a Showdown round it shows the round and
-// score, the kit both sides spawn with (from the server, which reads
-// server/data/showdown.json) by section - weapons, armor, injects, Muscle Man
-// Milk, other - with the game's own item art, and what you carry now (the
-// HUD's own inventory slots, refreshed as they change). The kit is in your
-// inventory from the start; armor is already on, the rest you use yourself.
+// The whole series (first to 4 rounds) is one match. The patched game runs
+// the rounds and tells the HUD through ShowGameMessage strings it never shows:
+//   SDR|S|<round>|<you>|<rival>|<kit>   a round starts (kit 0-6)
+//   SDR|E|<round>|<you>|<rival>|<W/L/D> a round is over, the series goes on
+//   SDR|O|<round>|<you>|<rival>|<W/L/D> the last round: the series is over
 //
-// Round banner: after the round's result, the round won or lost and the
-// series score (hud.js calls ShowShowdownResult with the server's reply).
+// Between rounds: the round banner and the score, the screen fades to black
+// while the game puts both fighters back at their starts with the next kit,
+// then fades back in with the pre-round panel. A death that doesn't end the
+// series shows no death screen and sends no match result; the round goes to
+// the server (/api/showdown/round). The series' last round ends the match the
+// normal way: VICTORY, or the death screen, then the menu.
+//
+// Pre-round panel: the round and score, the round's kit (the same for both
+// sides, from the server's server/data/showdown.json) by section - weapons,
+// armor, injects, Muscle Man Milk, other - with the game's own item art, and
+// what you carry now (the HUD's own inventory slots, refreshed as they change).
 (function () {
   var API = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
-  var PANEL_SECONDS = 14;
+  var PANEL_SECONDS = 12;
+  var BANNER_TO_BLACK_MS = 1000;
   var SECTIONS = [
     { title: "WEAPONS", cats: ["melee", "ranged", "throwable", "trap"] },
     { title: "ARMOR", cats: ["armor"] },
@@ -22,6 +32,9 @@
   // Rarity by the game's weapon tier (1-4); untiered items by kind.
   var TIER_COLORS = { 1: "#9aa0a6", 2: "#4caf50", 3: "#3d8bfd", 4: "#a64dff" };
   var CAT_COLORS = { armor: "#e0a030", inject: "#36c2b4", healing: "#36c2b4", muscle_milk: "#f2f2f2", ranged: "#3d8bfd" };
+  // The HUD elements the game hides when you die (hud.js HideAllHudElements).
+  var HUD_PARTS = ["hud-bottom-left-container", "hud-bottom-right-container", "hud-center-container",
+    "compass-container", "location-container", "game-message-container"];
 
   var CSS = [
     "#sd-hud { position: absolute; right: 2vw; top: 6.5vh; width: 23vw; z-index: 30; font-family: Sucrose-Regular, Arial, sans-serif; color: #ececec; opacity: 0; transform: translateX(2vw); transition: opacity 0.35s ease, transform 0.35s ease; pointer-events: none; }",
@@ -44,6 +57,8 @@
     "#sd-hud .sd-slot { width: 2.2vw; height: 2.2vw; border-radius: 0.6vh; background: rgba(255, 255, 255, 0.07) center / 80% no-repeat; }",
     "#sd-hud .sd-help { font-size: 0.74vw; margin-top: 0.8vh; padding-top: 0.7vh; border-top: 1px solid rgba(255, 255, 255, 0.1); }",
     "#sd-hud .sd-help b { color: #ff463c; }",
+    "#sd-black { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 29; background: #000; opacity: 0; transition: opacity 0.7s ease; pointer-events: none; }",
+    "#sd-black.on { opacity: 1; }",
     "#sd-banner { position: absolute; left: 50%; top: 22vh; transform: translate(-50%, -1vh); z-index: 31; text-align: center; font-family: Sucrose-Bold, Arial, sans-serif; color: #fff; opacity: 0; transition: opacity 0.4s ease, transform 0.4s ease; pointer-events: none; text-shadow: 0 0.3vh 1vh rgba(0, 0, 0, 0.8); }",
     "#sd-banner.on { opacity: 1; transform: translate(-50%, 0); }",
     "#sd-banner .sd-big { font: 4.4vw Creepster, Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.25vw; white-space: nowrap; }",
@@ -52,7 +67,10 @@
     "#sd-banner .sd-line { font-size: 1.4vw; letter-spacing: 0.2vw; }"
   ].join("\n");
 
-  var panel = null, current = null, hideTimer = null;
+  var panel = null, hideTimer = null, bannerTimer = null, blackTimer = null;
+  // What the server knows (kits, rounds to win) and what the game has said.
+  var info = { kits: null, kit: null, roundsToWin: 4 };
+  var series = { active: false, round: 1, wins: 0, losses: 0, kit: 0, over: false, reported: {} };
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -71,6 +89,11 @@
 
   function color(item) {
     return item.tier ? TIER_COLORS[item.tier] || "#9aa0a6" : CAT_COLORS[item.category] || "#9aa0a6";
+  }
+
+  function kitFor(k) {
+    if (info.kits && info.kits.length) return info.kits[((k % info.kits.length) + info.kits.length) % info.kits.length];
+    return info.kit;
   }
 
   function itemRow(item) {
@@ -103,10 +126,9 @@
     }
   }
 
-  function show(state) {
+  function show() {
     style();
-    current = state;
-    var series = state.series, kit = state.kit;
+    var kit = kitFor(series.kit);
     if (!panel) {
       panel = el("div");
       panel.id = "sd-hud";
@@ -121,7 +143,7 @@
     head.appendChild(left);
     head.appendChild(el("div", "sd-score", "YOU " + series.wins + " — " + series.losses + " RIVAL"));
     p.appendChild(head);
-    p.appendChild(el("div", "sd-kit", "FIRST TO " + series.roundsToWin + (kit ? " · SAME KIT FOR BOTH SIDES" : "")));
+    p.appendChild(el("div", "sd-kit", "FIRST TO " + info.roundsToWin + (kit ? " · " + kit.name.toUpperCase() + " · SAME KIT FOR BOTH SIDES" : "")));
     var items = kit ? kit.items : [];
     for (var s = 0; s < SECTIONS.length; s++) {
       var sec = SECTIONS[s], mine = [];
@@ -140,7 +162,8 @@
     var boost = null;
     for (var b = 0; b < items.length; b++) if (items[b].category == "muscle_milk" || items[b].category == "inject") boost = boost || items[b];
     help.innerHTML = "Everything is already in your inventory" + (items.some(function (x) { return x.autoEquip; }) ? " and your armor is on" : "") + ". " +
-      (boost ? "Use the <b>" + boost.name + "</b> before you fight, then switch to your weapon." : "Switch to your weapon and fight.");
+      (boost ? "Use the <b>" + boost.name + "</b> before you fight, then switch to your weapon." : "Switch to your weapon and fight.") +
+      " The kit changes every 2 rounds.";
     p.appendChild(help);
     panel.appendChild(p);
     panel._carry = carry;
@@ -153,6 +176,30 @@
     if (panel) panel.className = "";
   }
 
+  function black(on) {
+    style();
+    var b = document.getElementById("sd-black");
+    if (!b) {
+      b = el("div");
+      b.id = "sd-black";
+      document.body.appendChild(b);
+    }
+    b.className = on ? "on" : "";
+  }
+
+  function banner(big, good, line, ms) {
+    style();
+    var b = document.getElementById("sd-banner") || el("div");
+    b.id = "sd-banner";
+    b.textContent = "";
+    b.appendChild(el("div", "sd-big " + (good ? "won" : "lost"), big));
+    b.appendChild(el("div", "sd-line", line));
+    document.body.appendChild(b);
+    setTimeout(function () { b.className = "on"; }, 30);
+    if (bannerTimer) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(function () { b.className = ""; }, ms || 9000);
+  }
+
   // Refresh "carrying now" whenever the HUD redraws its slots.
   if (typeof RedrawWeaponSlots == "function") {
     var redraw = RedrawWeaponSlots;
@@ -162,29 +209,116 @@
     };
   }
 
-  function load() {
-    $.ajax({ type: "GET", url: API + "/showdown", dataType: "json", timeout: 8000,
-      success: function (state) { if (state && state.active && state.series) show(state); } });
+  // Players sharing an address are told apart by their in-game name.
+  function nickname() {
+    return typeof matchData != "undefined" && matchData.playerName ? String(matchData.playerName) : "";
   }
 
+  function load(then) {
+    $.ajax({ type: "GET", url: API + "/showdown?nickname=" + encodeURIComponent(nickname()), dataType: "json", timeout: 8000,
+      success: function (state) {
+        if (!state) return;
+        if (state.kits) info.kits = state.kits;
+        if (state.kit) info.kit = state.kit;
+        if (state.series && state.series.roundsToWin) info.roundsToWin = state.series.roundsToWin;
+        if (state.active && state.series && !series.active) {
+          series.active = true;
+          series.round = state.series.round || 1;
+          series.wins = state.series.wins || 0;
+          series.losses = state.series.losses || 0;
+        }
+        if (then) then(state);
+      } });
+  }
+
+  // The round's result to the server (once per round).
+  function report(round, x) {
+    if (series.reported[round]) return;
+    series.reported[round] = true;
+    $.ajax({ type: "POST", url: API + "/showdown/round", contentType: "application/json", timeout: 8000,
+      data: JSON.stringify({ round: round, result: x, wins: series.wins, losses: series.losses, nickname: nickname() }),
+      error: function () { series.reported[round] = false; } });
+  }
+
+  // Back to playing after a reset: the game hid the HUD when you died.
+  function restoreHud() {
+    for (var i = 0; i < HUD_PARTS.length; i++) {
+      var e = document.getElementById(HUD_PARTS[i]);
+      if (e) e.classList.remove("hidden");
+    }
+    if (typeof OnStartPlaying == "function") OnStartPlaying();
+  }
+
+  function onMessage(text) {
+    var f = String(text).split("|");
+    if (f.length < 6) return;
+    var ev = f[1], round = parseInt(f[2], 10) || 1, x = f[5];
+    series.active = true;
+    series.round = round;
+    series.wins = parseInt(f[3], 10) || 0;
+    series.losses = parseInt(f[4], 10) || 0;
+    var score = "YOU " + series.wins + " — " + series.losses + " RIVAL";
+    if (ev == "S") {
+      series.kit = parseInt(x, 10) || 0;
+      series.over = false;
+      if (blackTimer) { clearTimeout(blackTimer); blackTimer = null; }
+      restoreHud();
+      show();
+      setTimeout(function () { black(false); }, 400);
+    } else if (ev == "E") {
+      hide();
+      report(round, x);
+      var big = x == "W" ? "ROUND " + round + " WON" : x == "L" ? "ROUND " + round + " LOST" : "ROUND " + round + " DRAW";
+      banner(big, x == "W", score + "  ·  FIRST TO " + info.roundsToWin, 3200);
+      if (blackTimer) clearTimeout(blackTimer);
+      blackTimer = setTimeout(function () { black(true); }, BANNER_TO_BLACK_MS);
+    } else if (ev == "O") {
+      series.over = true;
+      hide();
+      report(round, x);
+      var won = series.wins > series.losses;
+      banner(won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT", won, score, 9000);
+    }
+  }
+
+  // The game's messages: the "SDR|" ones are for us, never shown.
+  if (typeof AddGameMessage == "function") {
+    var addMessage = AddGameMessage;
+    AddGameMessage = function (message, duration) {
+      if (typeof message == "string" && message.indexOf("SDR|") == 0) return onMessage(message);
+      return addMessage.apply(this, arguments);
+    };
+  }
+
+  // A death that doesn't end the series: no death screen, no match result
+  // (the round goes to the server from the round message). The death that
+  // loses the series, and the win that takes it, end the match normally.
+  if (typeof SetDeathData == "function") {
+    var setDeathData = SetDeathData;
+    SetDeathData = function (deathData, bIsVictory) {
+      if (series.active && !series.over && !bIsVictory && series.losses + 1 < info.roundsToWin) {
+        hide();
+        return;
+      }
+      return setDeathData.apply(this, arguments);
+    };
+  }
+
+  // The match result names the series' round (server/server.js).
+  function currentRound() {
+    if (!series.active) return 0;
+    return series.round;
+  }
+
+  // Old servers answer the match result with the series score.
   window.ShowShowdownResult = function (state) {
-    if (!state || !state.series) return;
-    style();
-    hide();
-    var series = state.series, won = series.rounds[series.rounds.length - 1] == "won";
-    var b = document.getElementById("sd-banner") || el("div");
-    b.id = "sd-banner";
-    b.textContent = "";
-    var big = series.over ? (series.won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT") : "ROUND " + series.round + (won ? " WON" : " LOST");
-    b.appendChild(el("div", "sd-big " + ((series.over ? series.won : won) ? "won" : "lost"), big));
-    b.appendChild(el("div", "sd-line", "YOU " + series.wins + " — " + series.losses + " RIVAL" +
-      (series.over ? "" : "  ·  FIRST TO " + series.roundsToWin)));
-    document.body.appendChild(b);
-    setTimeout(function () { b.className = "on"; }, 30);
-    setTimeout(function () { b.className = ""; }, 9000);
+    if (!state || !state.series || series.over) return;
+    var s = state.series, won = s.rounds[s.rounds.length - 1] == "won";
+    var big = s.over ? (s.won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT") : "ROUND " + s.round + (won ? " WON" : " LOST");
+    banner(big, s.over ? s.won : won, "YOU " + s.wins + " — " + s.losses + " RIVAL", 9000);
   };
 
-  // At the start of the round (the HUD page loads with the match).
-  load();
-  window.ShowdownHud = { show: show, hide: hide, reload: load };
+  // At the start of the match (the HUD page loads with it).
+  load(function (state) { if (state.active && state.series) show(); });
+  window.ShowdownHud = { show: show, hide: hide, reload: load, round: currentRound, message: onMessage };
 })();

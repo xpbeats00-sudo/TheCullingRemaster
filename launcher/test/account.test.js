@@ -45,11 +45,19 @@ function fakeServer() {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, seen, api: `http://127.0.0.1:${server.address().port}/api` })));
 }
 
-// safeStorage stand-in: reversible, and visibly not plain text.
-const fakeSafe = (available = true) => ({
-  isEncryptionAvailable: () => available,
-  encryptString: (s) => Buffer.from("enc:" + Buffer.from(s).toString("base64")),
-  decryptString: (b) => Buffer.from(String(b).slice(4), "base64").toString()
+// safeStorage stand-in (its asynchronous API): reversible, and visibly not
+// plain text. rotated: decrypting asks for the data to be encrypted again.
+// The synchronous methods throw: Electron 46 removed them.
+const fakeSafe = (available = true, { rotated = false } = {}) => ({
+  isAsyncEncryptionAvailable: async () => available,
+  encryptStringAsync: async (s) => Buffer.from((rotated ? "en2:" : "enc:") + Buffer.from(s).toString("base64")),
+  decryptStringAsync: async (b) => ({
+    result: Buffer.from(String(b).slice(4), "base64").toString(),
+    shouldReEncrypt: rotated && String(b).startsWith("enc:")
+  }),
+  isEncryptionAvailable: () => { throw new Error("synchronous safeStorage used"); },
+  encryptString: () => { throw new Error("synchronous safeStorage used"); },
+  decryptString: () => { throw new Error("synchronous safeStorage used"); }
 });
 
 function install(root) {
@@ -73,10 +81,10 @@ function install(root) {
     });
 
     await test("creating an account sends the claim and returns the sign-in", async () => {
-      const a = await client.register(api, { username: " New  Player ", email: "New@Example.com", password: "long enough", claimUserID: "steam:76561199752700292" });
+      const a = await client.register(api, { username: " New  Player ", email: "New@Example.com", password: "long enough", claimUserID: "steam:76561190000000777" });
       assert.deepStrictEqual(a, { username: "New Player", userID: "steam:76561201234567890", token: "t-new", claimed: true });
       const req = seen[seen.length - 1];
-      assert.deepStrictEqual(req.body, { username: "New Player", email: "new@example.com", password: "long enough", claimUserID: "steam:76561199752700292" });
+      assert.deepStrictEqual(req.body, { username: "New Player", email: "new@example.com", password: "long enough", claimUserID: "steam:76561190000000777" });
     });
 
     await test("bad forms are refused before anything is sent", async () => {
@@ -103,44 +111,66 @@ function install(root) {
       assert.strictEqual(seen[seen.length - 1].auth, "Bearer t-reaper");
     });
 
-    await test("the saved sign-in is encrypted, per server, and never holds the password", () => {
+    await test("the saved sign-in is encrypted, per server, and never holds the password", async () => {
       const file = path.join(tmp, "account.dat");
-      const store = account.createStore(file, fakeSafe());
-      store.set("xplab", { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper", password: "correct horse" });
+      const store = await account.createStore(file, fakeSafe());
+      await store.set("xplab", { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper", password: "correct horse" });
       const raw = fs.readFileSync(file, "utf8");
       assert.ok(raw.startsWith("enc:") && !raw.includes("t-reaper"), "written encrypted");
       assert.ok(!Buffer.from(raw.slice(4), "base64").toString().includes("correct horse"), "no password");
-      const again = account.createStore(file, fakeSafe());
+      assert.strictEqual(store.persistent(), true);
+      const again = await account.createStore(file, fakeSafe());
       assert.deepStrictEqual(again.get("xplab"), { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper" });
       assert.strictEqual(again.get("other"), null);
-      again.remove("xplab");
-      assert.strictEqual(account.createStore(file, fakeSafe()).get("xplab"), null);
+      await again.remove("xplab");
+      assert.strictEqual((await account.createStore(file, fakeSafe())).get("xplab"), null);
     });
 
-    await test("without OS encryption nothing is written: the sign-in lasts until the launcher closes", () => {
+    await test("quick changes are written in order: the last one is on disk", async () => {
+      const file = path.join(tmp, "order.dat");
+      const store = await account.createStore(file, fakeSafe());
+      const a = { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper" };
+      await Promise.all([store.set("xplab", a), store.set("eu", a), store.remove("xplab")]);
+      const again = await account.createStore(file, fakeSafe());
+      assert.strictEqual(again.get("xplab"), null);
+      assert.ok(again.get("eu"));
+    });
+
+    await test("a sign-in saved under an older OS key is written again with the new one", async () => {
+      const file = path.join(tmp, "rotated.dat");
+      const a = { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper" };
+      await (await account.createStore(file, fakeSafe())).set("xplab", a);
+      assert.ok(fs.readFileSync(file, "utf8").startsWith("enc:"));
+      const store = await account.createStore(file, fakeSafe(true, { rotated: true }));
+      assert.deepStrictEqual(store.get("xplab"), a);
+      assert.ok(fs.readFileSync(file, "utf8").startsWith("en2:"), "re-encrypted");
+    });
+
+    await test("without OS encryption nothing is written: the sign-in lasts until the launcher closes", async () => {
       const file = path.join(tmp, "plain.dat");
-      const store = account.createStore(file, fakeSafe(false));
-      store.set("xplab", { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper" });
+      const store = await account.createStore(file, fakeSafe(false));
+      await store.set("xplab", { username: "Reaper", userID: "steam:76561198000000101", token: "t-reaper" });
       assert.ok(store.get("xplab"));
       assert.ok(!fs.existsSync(file));
+      assert.strictEqual(store.persistent(), false);
     });
 
-    await test("an unreadable saved sign-in just means signing in again", () => {
+    await test("an unreadable saved sign-in just means signing in again", async () => {
       const file = path.join(tmp, "broken.dat");
       fs.writeFileSync(file, "garbage");
-      assert.strictEqual(account.createStore(file, fakeSafe()).get("xplab"), null);
+      assert.strictEqual((await account.createStore(file, fakeSafe())).get("xplab"), null);
     });
 
     await test("the game is pointed at the account's Steam ID; an older ID is kept once", () => {
       const root = path.join(tmp, "game");
       const dir = install(root);
-      fs.writeFileSync(path.join(dir, "force_steamid.txt"), "76561199752700292");
-      assert.strictEqual(playername.readSteamId(root), "steam:76561199752700292");
+      fs.writeFileSync(path.join(dir, "force_steamid.txt"), "76561190000000777");
+      assert.strictEqual(playername.readSteamId(root), "steam:76561190000000777");
       playername.writeSteamId(root, "steam:76561201234567890");
       assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt"), "utf8"), "76561201234567890");
-      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561199752700292");
+      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561190000000777");
       playername.writeSteamId(root, "steam:76561198000000101");
-      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561199752700292", "the first one is kept");
+      assert.strictEqual(fs.readFileSync(path.join(dir, "force_steamid.txt.before-account"), "utf8"), "76561190000000777", "the first one is kept");
       assert.throws(() => playername.writeSteamId(root, "steam:123"), /not a Steam ID/);
     });
 
@@ -151,8 +181,8 @@ function install(root) {
       const settings = path.join(appData, "Goldberg SteamEmu Saves", "settings");
       fs.mkdirSync(settings, { recursive: true });
       assert.strictEqual(playername.readSteamId(root, appData), null);
-      fs.writeFileSync(path.join(settings, "user_steam_id.txt"), "76561199752700292\r\n");
-      assert.strictEqual(playername.readSteamId(root, appData), "steam:76561199752700292");
+      fs.writeFileSync(path.join(settings, "user_steam_id.txt"), "76561190000000777\r\n");
+      assert.strictEqual(playername.readSteamId(root, appData), "steam:76561190000000777");
     });
 
     await test("an install that uses real Steam can't take an account", () => {

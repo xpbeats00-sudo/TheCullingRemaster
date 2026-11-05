@@ -115,32 +115,46 @@ function createClient(fetchImpl, timeoutMs = 15000) {
 // Saved sign-ins, one per server id: { username, userID, token }. Written
 // only when the OS can encrypt it; otherwise the sign-in lasts until the
 // launcher closes.
-function createStore(file, safeStorage) {
+//
+// Uses safeStorage's asynchronous API (the synchronous one is deprecated in
+// Electron 45 and removed in 46); a file written by the synchronous API of an
+// older launcher decrypts with it. Resolves once the saved sign-ins are read.
+// get() answers from memory; set() and remove() change memory at once and
+// resolve when the file is written (one write at a time, in order).
+async function createStore(file, safeStorage) {
   let memory = {};
-  const canEncrypt = () => { try { return !!(safeStorage && safeStorage.isEncryptionAvailable()); } catch { return false; } };
-  function load() {
-    if (!canEncrypt()) return memory;
-    try {
-      const all = JSON.parse(safeStorage.decryptString(fs.readFileSync(file)));
-      memory = all && typeof all === "object" ? all : {};
-    } catch { /* none yet, or from another Windows user: sign in again */ }
-    return memory;
-  }
+  let canEncrypt = false;
+  try { canEncrypt = !!(safeStorage && await safeStorage.isAsyncEncryptionAvailable()); } catch { /* not available */ }
+  let writing = Promise.resolve();
   function save() {
-    if (!canEncrypt()) return;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file + ".tmp", safeStorage.encryptString(JSON.stringify(memory)));
-    fs.renameSync(file + ".tmp", file);
+    if (!canEncrypt) return Promise.resolve();
+    const plain = JSON.stringify(memory);
+    const write = writing.then(async () => {
+      const data = await safeStorage.encryptStringAsync(plain);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file + ".tmp", data);
+      fs.renameSync(file + ".tmp", file);
+    });
+    writing = write.catch(() => {});    // a failed write doesn't block the next one
+    return write;
   }
-  load();
+  if (canEncrypt) {
+    try {
+      const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(fs.readFileSync(file));
+      const all = JSON.parse(result);
+      memory = all && typeof all === "object" ? all : {};
+      // The OS key changed: written again with the current one.
+      if (shouldReEncrypt) await save().catch(() => {});
+    } catch { /* none yet, or from another Windows user: sign in again */ }
+  }
   return {
     get(serverId) {
       const a = memory[serverId];
       return a && typeof a.token === "string" && typeof a.username === "string" && /^steam:\d{17}$/.test(a.userID) ? a : null;
     },
-    set(serverId, a) { memory[serverId] = { username: a.username, userID: a.userID, token: a.token }; save(); },
-    remove(serverId) { delete memory[serverId]; save(); },
-    persistent: canEncrypt
+    set(serverId, a) { memory[serverId] = { username: a.username, userID: a.userID, token: a.token }; return save(); },
+    remove(serverId) { delete memory[serverId]; return save(); },
+    persistent: () => canEncrypt
   };
 }
 

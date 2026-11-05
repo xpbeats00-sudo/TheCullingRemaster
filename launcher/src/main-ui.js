@@ -129,7 +129,7 @@
 
   // ---------------------------------------------------------------- rendering
   function selectedServer() {
-    return state.servers.find((s) => s.id === state.settings.serverId) || state.servers[0];
+    return UiLogic.selectedServer(state) || { id: null };
   }
 
   function renderServers() {
@@ -141,7 +141,7 @@
       li.className = "server" + (s.id === selectedServer().id ? " selected" : "") + (p && !p.ok ? " offline" : "");
       li.dataset.id = s.id;
       const level = !p || !p.ok ? 0 : p.ms < 60 ? 4 : p.ms < 120 ? 3 : p.ms < 220 ? 2 : 1;
-      const players = p && p.ok && p.users != null ? `${p.users} online` : p && !p.ok ? "Unreachable" : "Checking";
+      const players = UiLogic.activityView(p).text;
       li.innerHTML = `
         <div class="server-thumb"><img src="assets/mask.png" alt=""></div>
         <div><div class="server-name"></div><div class="server-meta"></div></div>
@@ -170,40 +170,35 @@
     const online = $("#env-online");
     const live = $("#env-live");
     online.className = "env-online" + (!p ? "" : p.ok ? " ok" : " bad");
-    $("#env-online-text").textContent = !p ? "Checking"
-      : !p.ok ? "Unreachable"
-      : p.users != null ? `${Number(p.users).toLocaleString()} online` : `${p.ms} ms`;
+    const activity = UiLogic.activityView(p);
+    $("#env-online-text").textContent = activity.text;
+    online.title = activity.title;
     live.className = "env-live" + (!p ? "" : p.ok ? " ok" : " bad");
     live.textContent = !p ? "..." : p.ok ? "Live" : "Offline";
   }
 
   function renderStatus() {
     const box = $("#status-game");
-    box.className = "status-game";
-    let title, sub = "Version " + (state.installed || "-");
-    const resume = resumeInfo();
-    if (syncing) { title = pausing ? "Pausing" : "Syncing"; box.classList.add("busy"); }
-    else if (!state.online && state.offlineStaged > 0) {
-      title = "Download paused";
-      sub = `${bytes(state.offlineStaged)} kept · reconnect to resume`;
-      box.classList.add("warn");
+    const v = UiLogic.statusView(state, { syncing, pausing, resume: resumeInfo(), notInstalled: notInstalled(), bytes });
+    box.className = "status-game" + (v.look ? " " + v.look : "");
+    $("#status-title").textContent = v.title;
+    $("#status-sub").textContent = v.sub;
+    $("#retry-online").hidden = !UiLogic.showRetry(state, syncing);
+  }
+
+  // Retry next to "Offline": the launcher also keeps trying by itself.
+  async function retryOnline() {
+    const btn = $("#retry-online");
+    btn.disabled = true;
+    try {
+      const r = await call(api.retryConnection);
+      state = r;
+      toast(r.reconnected ? "Back online." : "Still can't reach xplab.shop. The launcher keeps trying by itself.", r.reconnected ? "info" : undefined);
+      if (r.reconnected) refreshPings().catch(() => {});
+    } catch { /* toast shown */ } finally {
+      btn.disabled = false;
+      render();
     }
-    else if (resume) {
-      title = "Download paused";
-      sub = `${Math.floor(resume.have / resume.total * 100)}% done, ${bytes(resume.total - resume.have)} left`;
-      box.classList.add("warn");
-    }
-    else if (notInstalled()) {
-      title = state.online ? "Ready to install" : "Not installed";
-      sub = !state.online ? "Can't reach xplab.shop" : state.pending ? bytes(state.pending.bytes) + " download" : "Checking";
-      box.classList.add("warn");
-    }
-    else if (!state.game.ok) { title = "Choose a game folder"; sub = "In Settings"; box.classList.add("bad"); }
-    else if (state.pending && state.pending.files) { title = "Update available"; sub = `${state.pending.files} file(s), ${bytes(state.pending.bytes)}`; box.classList.add("warn"); }
-    else if (!state.online) { title = "Offline"; sub = "Can't reach xplab.shop"; box.classList.add("warn"); }
-    else title = "Game Up to Date";
-    $("#status-title").textContent = title;
-    $("#status-sub").textContent = sub;
   }
 
   // A paused or interrupted download: what is already on disk, of how much.
@@ -263,7 +258,7 @@
     }
     $("#update-launcher").textContent = state.build ? state.build.label : "v" + state.appVersion;
     $("#update-patch").textContent = state.release ? `${state.installed || "none"} installed, ${state.release} available` : "-";
-    $("#update-server").textContent = new URL(state.settings.manifestUrl).host;
+    $("#update-server").textContent = UiLogic.hostOf(state.settings.manifestUrl);
     $("#update-note").textContent = state.launcherUpdate && state.launcherUpdate.error ? state.launcherUpdate.error
       : state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
     $("#opt-intro").checked = state.settings.playIntro;
@@ -316,16 +311,10 @@
   function renderPlay() {
     const btn = $("#play");
     btn.classList.remove("working", "secondary");
-    btn.disabled = false;
-    let label = "Play";
-    if (syncing) { label = pausing ? "Pausing" : "Pause"; btn.classList.add("working"); btn.disabled = pausing; }
-    else if (resumeInfo() && state.online) { label = "Resume"; btn.classList.add("working"); }
-    else if (notInstalled() && state.online) { label = "Install"; btn.classList.add("working"); }
-    else if (notInstalled()) { label = "Offline"; btn.classList.add("secondary"); btn.disabled = true; }
-    else if (!state.game.ok) { label = "Set game folder"; btn.classList.add("secondary"); }
-    else if (state.pending && state.pending.files) { label = "Update"; btn.classList.add("working"); }
-    else if (accountNeeded()) { label = "Sign in"; btn.classList.add("secondary"); }
-    $("#play-label").textContent = label;
+    const v = UiLogic.playView(state, { syncing, pausing, resume: !!resumeInfo(), notInstalled: notInstalled(), accountNeeded: accountNeeded() });
+    if (v.look) btn.classList.add(v.look);
+    btn.disabled = v.disabled;
+    $("#play-label").textContent = v.label;
   }
 
   // ---------------------------------------------------------------- account
@@ -468,9 +457,14 @@
     try {
       const r = await call(api.sync, { repair: repairing });
       state = r;
-      if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
-      else if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` : "Every game file checked out: nothing to repair.", "info");
-      else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` : "Everything is up to date.", "info");
+      if (r.paused && r.lost) toast(r.message || "Connection lost — Resume when you're back online");
+      else if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
+      else {
+        // A repair at the installed release keeps the files it replaced.
+        const kept = r.synced && r.synced.kept ? ` The ${r.synced.kept} file(s) it replaced are kept in the game folder's .remaster\\replaced folder.` : "";
+        if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` + kept : "Every game file checked out: nothing to repair.", "info");
+        else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` + kept : "Everything is up to date.", "info");
+      }
     } catch (e) {
       /* toast already shown */
     } finally {
@@ -500,15 +494,21 @@
   }
 
   // The launcher updating itself: it restarts on its own when done.
-  function onLauncherUpdate(p) {
-    const pct = Math.floor(p.done / p.total * 100);
+  async function onLauncherUpdate(p) {
+    const v = UiLogic.launcherUpdateView(p, bytes);
+    if (!v) {
+      // It failed: the card goes, the screen shows the launcher as it is.
+      if (opLive && opLive.launcher) opLive = null;
+      if (p && p.error) toast(p.error);
+      if (!syncing) state = await api.state();
+      render();
+      return;
+    }
     const box = $("#status-game");
     box.className = "status-game busy";
-    $("#status-title").textContent = "Updating launcher";
-    $("#status-sub").textContent = p.done < p.total ? `Version ${p.version} · ${pct}%` : `Version ${p.version} · restarting`;
-    opLive = { kind: "Operation in progress · Updating launcher", title: `Launcher ${p.version}`,
-      file: p.done < p.total ? "The launcher restarts by itself when it's done" : "Restarting",
-      frac: p.total ? p.done / p.total : 1, size: `${bytes(p.done)} / ${bytes(p.total)}` };
+    $("#status-title").textContent = v.title;
+    $("#status-sub").textContent = v.sub;
+    opLive = v.op;
     setOp(opLive);
     const btn = $("#play");
     btn.disabled = true;
@@ -536,10 +536,13 @@
       frac = total ? done / total : 1;
       const what = p.active > 1 ? `${p.active} files` : p.file.split("/").pop();
       const files = p.filesTotal ? `${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files` : "";
-      const speed = speedText(p.doneBytes, p.totalBytes);
-      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + (files ? " · " + files : "") + speed;
-      op = { kind: `Operation in progress · ${pausing ? "Pausing" : "Downloading"}`,
-        file: p.active > 1 ? `${p.file.split("/").pop()} and ${p.active - 1} more` : p.file.split("/").pop(),
+      const verb = UiLogic.downloadVerb(p, pausing);
+      const speed = verb === "Downloading" ? speedText(p.doneBytes, p.totalBytes) : "";
+      label = (verb === "Downloading" ? `Downloading ${what}` : verb === "Reconnecting" ? "Connection trouble: reconnecting" : verb) +
+        ` (${bytes(done)} / ${bytes(total)})` + (files ? " · " + files : "") + speed;
+      op = { kind: `Operation in progress · ${verb}`,
+        file: verb === "Reconnecting" ? "Waiting for the connection to come back"
+          : p.active > 1 ? `${p.file.split("/").pop()} and ${p.active - 1} more` : p.file.split("/").pop(),
         size: (files ? files + " · " : "") + `${bytes(done)} / ${bytes(total)}` + speed };
     }
     $("#sync-progress-fill").style.width = Math.round(frac * 100) + "%";
@@ -550,11 +553,43 @@
   }
 
   async function play() {
-    if (syncing) return pauseSync();
-    if (notInstalled()) return runSync();
-    if (!state.game.ok) { openDrawer("settings"); return chooseFolder(); }
-    if (state.pending && state.pending.files) return runSync();
+    const action = UiLogic.playAction(state, { syncing, notInstalled: notInstalled(), accountNeeded: accountNeeded() });
+    if (action === "pause") return pauseSync();
+    if (action === "none") return;
+    if (action === "sync") return runSync();
+    if (action === "folder") { openDrawer("settings"); return chooseFolder(); }
+    // Only files changed here, the release is current: Repair or Play anyway.
+    if (action === "choose") return openDrift();
     // The account comes first.
+    if (action === "signin") return openAccount("signin");
+    return launch();
+  }
+
+  function openDrift() {
+    const n = state.pending.files;
+    if (state.held && !state.drift) {
+      // A restored previous version: update to the latest, or keep playing it.
+      $("#drift-title").textContent = "Update available";
+      $("#drift-text").textContent = `You restored release ${state.installed}. ` +
+        `Update to the latest release, or keep playing ${state.installed}.`;
+      $("#drift-play").textContent = "Play this version";
+      $("#drift-repair").textContent = "Update";
+    } else {
+      $("#drift-title").textContent = "Repair needed";
+      $("#drift-text").textContent = `${n} game file${n === 1 ? "" : "s"} here ${n === 1 ? "doesn't" : "don't"} match release ${state.installed}. ` +
+        "Repair downloads the release's copies (the replaced files are kept in the game folder's .remaster\\replaced folder), or play with them as they are.";
+      $("#drift-play").textContent = "Play anyway";
+      $("#drift-repair").textContent = "Repair";
+    }
+    $("#drift-modal").hidden = false;
+    $("#drift-repair").focus();
+  }
+
+  function closeDrift() {
+    $("#drift-modal").hidden = true;
+  }
+
+  async function launch() {
     if (accountNeeded()) return openAccount("signin");
     const btn = $("#play");
     btn.disabled = true;
@@ -578,11 +613,14 @@
     try {
       state = await call(api.checkUpdates);
       if (state.restarting) { toast(`Installing launcher ${state.launcherUpdate.version}: it restarts by itself.`, "info"); return; }
-      toast(state.pending && state.pending.files ? "An update is ready to install." : "You're on the latest release.", "info");
+      toast(state.pending && state.pending.files
+        ? (state.drift ? "You're on the latest release, but some game files were changed: Verify & Sync repairs them." : "An update is ready to install.")
+        : "You're on the latest release.", "info");
     } catch (e) {
       state = await api.state();
     } finally {
       btn.disabled = false;
+      opLive = UiLogic.keepOp(opLive, state);
       render();
     }
   }
@@ -594,13 +632,18 @@
     $("#account-form").addEventListener("submit", submitAccount);
     $("#acc-cancel").addEventListener("click", closeAccount);
     $("#account-modal").addEventListener("keydown", (e) => { if (e.key === "Escape") closeAccount(); });
-    $("#refresh-servers").addEventListener("click", refreshPings);
+    $("#refresh-servers").addEventListener("click", () => refreshPings().catch(() => {}));
+    $("#retry-online").addEventListener("click", retryOnline);
     $("#region-select").addEventListener("change", (e) => chooseServer(e.target.value));
     $("#choose-folder").addEventListener("click", chooseFolder);
     $("#settings-folder").addEventListener("click", chooseFolder);
     $("#run-sync").addEventListener("click", () => runSync());
     $("#check-updates").addEventListener("click", checkUpdates);
     $("#play").addEventListener("click", play);
+    $("#drift-repair").addEventListener("click", () => { closeDrift(); runSync(); });
+    $("#drift-play").addEventListener("click", () => { closeDrift(); launch(); });
+    $("#drift-cancel").addEventListener("click", closeDrift);
+    $("#drift-modal").addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrift(); });
     $("#opt-intro").addEventListener("change", async (e) => { state = await call(api.setSetting, "playIntro", e.target.checked); });
     $("#opt-close").addEventListener("change", async (e) => { state = await call(api.setSetting, "closeOnLaunch", e.target.checked); });
     $("#opt-parallel").addEventListener("change", async (e) => { state = await call(api.setSetting, "parallel", Number(e.target.value)); render(); });
@@ -617,7 +660,6 @@
       } catch { state = await api.state(); }
       render();
     });
-    $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     $$("[data-link]").forEach((b) => b.addEventListener("click", () => call(api.openLink, b.dataset.link)));
     // The drawer: the bottom bar's buttons, the build number, the server status.
     $("#open-settings").addEventListener("click", () => openDrawer("settings"));
@@ -643,15 +685,27 @@
 
   async function start() {
     api = window.launcher;
+    // Minimize, maximize and close work from the start, even when the state
+    // can't be read or drawn.
+    $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     // Without the intro, the start-up checks finish after this page shows.
-    if (api.onStateChanged) api.onStateChanged(async () => { if (!syncing) { state = await api.state(); render(); } });
+    if (api.onStateChanged) api.onStateChanged(async () => {
+      if (syncing) return;
+      const wasOnline = state && state.online;
+      state = await api.state();
+      if (!wasOnline && state.online) refreshPings().catch(() => {});      // back online
+      opLive = UiLogic.keepOp(opLive, state);
+      render();
+    });
     state = await api.state();
     buildNews();
     wire();
     render();
     selectTab("servers");
     showSlide(0);
-    refreshPings();
+    refreshPings().catch(() => {});
+    // Ping and player count stay current while the launcher is open.
+    setInterval(() => { if (!document.hidden) refreshPings().catch(() => {}); }, UiLogic.PING_EVERY_MS);
   }
 
   // Browser preview (no Electron): a stand-in API with sample data.

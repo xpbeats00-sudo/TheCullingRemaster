@@ -19,7 +19,7 @@
 // Self-contained: builds its own markup and styles (only .js files are kept
 // in the patch tree), so it can also be previewed outside the game.
 (function () {
-  var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo" };
+  var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo", showdown: "Showdown" };
   var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
   var ROWS = 10;                    // player rows that fit at any resolution
   // The bots' names: the same list the game draws from in the match
@@ -75,8 +75,12 @@
     "#remaster-lobby .rl-row.empty { background: rgba(18, 14, 16, 0.55); border: 1px dashed rgba(255, 255, 255, 0.16); }",
     "#remaster-lobby .rl-row.empty::before, #remaster-lobby .rl-row.more::before { display: none; }",
     "#remaster-lobby .rl-row.more { background: rgba(18, 14, 16, 0.75); border: 0; }",
+    "#remaster-lobby .rl-tag { flex: 0 0 auto; margin-right: 0.6vw; padding: 0.2vh 0.5vw; border-radius: 1vh; background: rgba(80, 200, 110, 0.9); color: #0b0b0b; font: 0.6vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; }",
+    "#remaster-lobby .rl-row.divider { background: none; border: 0; height: auto; min-height: 0; padding: 0.4vh 0.6vw 0; font: 0.65vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.2vw; opacity: 0.9; color: #ff463c; }",
     "#remaster-lobby .rl-row.empty .rl-name { font: 0.85vw Sucrose-Regular, Arial, sans-serif; opacity: 0.55; letter-spacing: 0.1vw; text-transform: uppercase; }",
     "#remaster-lobby .rl-row.joined { animation: rl-in 0.35s ease-out; }",
+    "#remaster-lobby-notice { position: absolute; top: 1.8vh; left: 50%; z-index: 40; transform: translateX(-50%); padding: 1vh 1.4vw; border-radius: 4vh; white-space: nowrap; font: 0.9vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; color: rgba(255, 120, 110, 1); background: rgba(10, 6, 8, 0.88); box-shadow: 0 0 0 1px rgba(255, 70, 60, 0.5), 0 0.6vh 2vh rgba(0, 0, 0, 0.5); pointer-events: none; }",
+    "#remaster-lobby-notice.hidden { display: none; }",
     "@keyframes rl-in { from { opacity: 0; transform: translateX(1.5vw); } to { opacity: 1; transform: none; } }"
   ].join("\n");
 
@@ -102,16 +106,45 @@
       '<div class="rl-bottom"><div class="rl-maps-title"></div><div class="rl-maps"></div><div class="rl-note"></div></div>' +
       '<div class="rl-players"><div class="rl-players-title"><span>Players</span><span class="rl-count"></span></div><ul class="rl-list"></ul></div>';
     panel.querySelector(".rl-cancel").addEventListener("click", function () {
+      if (leaving()) return;
       if (typeof OnCancelMatchmaking == "function") OnCancelMatchmaking();
       else if (typeof LeaveMatchmaking == "function") LeaveMatchmaking();
+      if (last) cancelButton(last.state);
     });
+    // Only the pill's button, the map cards and the player rows take the
+    // mouse (pointer-events: all); a press on them stays here, so a right
+    // click isn't the stock menu's Back and a drag doesn't turn the character.
+    panel.addEventListener("mousedown", function (e) { e.stopPropagation(); });
     document.body.appendChild(panel);
     return panel;
+  }
+
+  // The player asked to leave (ClientWeb.js ignores a match-ready after that).
+  function leaving() { return typeof Matchmaking != "undefined" && !!Matchmaking.LeaveRequested; }
+
+  // Cancel search while searching; Leave lobby in the pregame lobby (the
+  // server lets you leave until the match loads); Leaving... once asked.
+  function cancelButton(state) {
+    var b = build().querySelector(".rl-cancel");
+    b.style.display = state === "searching" || state === "starting" ? "" : "none";
+    b.textContent = leaving() ? "Leaving..." : state === "starting" ? "Leave lobby" : "Cancel search";
   }
 
   function cardImage(cardID) {
     var name = (typeof CullingCardImages != "undefined") ? CullingCardImages[String(cardID)] : null;
     return name ? 'url("/images/culling-cards/' + name + '.png")' : "none";
+  }
+
+  // The queue a menu tile asks for (e.g. "ffa_jungle_coop2"), as the server
+  // names it in remaster-lobby.
+  function modeName(q) {
+    q = String(q || "");
+    if (MODES[q]) return MODES[q];
+    if (q.indexOf("showdown") >= 0) return MODES.showdown;
+    if (q.indexOf("ranked") >= 0) return MODES.ranked_ffa;
+    if (q.indexOf("coop2") >= 0) return MODES.coop2;
+    if (q.indexOf("ffa") >= 0) return MODES.ffa;
+    return "";
   }
 
   function myName() {
@@ -216,6 +249,10 @@
     return li;
   }
 
+  function divider(textValue) {
+    return el("li", "rl-row divider", textValue);
+  }
+
   function emptyRow(textValue) {
     var li = el("li", "rl-row empty");
     li.appendChild(el("span", "rl-level"));
@@ -252,7 +289,11 @@
     var root = build();
     var elapsed = Date.now() - received;
     var state, what, time;
-    if (last.state === "starting" || last.state === "started") {
+    if (last.state === "joining") {
+      state = "Joining";
+      what = modeName(last.queue);
+      time = clock(elapsed);
+    } else if (last.state === "starting" || last.state === "started") {
       state = "Pregame Lobby";
       what = (MODES[last.queue] || last.queue) + (last.map && MAPS[last.map] ? " · " + MAPS[last.map].name : "");
       time = clock((last.startsInMs || 0) - elapsed);
@@ -273,25 +314,63 @@
     return byMap && lobby.map && typeof byMap[lobby.map] == "number" ? byMap[lobby.map] : lobby.matchBots;
   }
 
-  // The pregame roster: you, then the bots of your match.
+  // The pregame roster: you, then the contestants of your match. In Duo: your
+  // team first (you and your teammate), then the other teams.
   function renderRoster(lobby, list, names) {
     var count = matchBots(lobby);
+    var duo = lobby.queue === "coop2";
     var me = myName(), you = null;
     for (var i = 0; i < lobby.players.length; i++) if (lobby.players[i].name === me) you = lobby.players[i];
     if (!you) you = lobby.players[0];
+    if (duo) list.appendChild(divider("YOUR TEAM"));
     list.appendChild(row(you, true));
     names[you.name] = true;
     var cards = botCards(lobby.id, count), bots = botNames(lobby.id, count);
-    var shown = count > ROWS - 1 ? ROWS - 2 : count;
-    for (var b = 0; b < shown; b++) { list.appendChild(botRow(bots[b], cards[b], lobby.id * 31 + b + 1)); names["bot " + bots[b]] = true; }
+    var rows = duo ? ROWS - 2 : ROWS - 1;          // the two headings take a row each in Duo
+    var shown = count > rows ? rows - 1 : count;
+    for (var b = 0; b < shown; b++) {
+      var r = botRow(bots[b], cards[b], lobby.id * 31 + b + 1);
+      if (duo && b === 0) {
+        r.insertBefore(el("span", "rl-tag", "TEAMMATE"), r.lastChild && r.lastChild.className == "rl-rank" ? r.lastChild : null);
+      }
+      list.appendChild(r);
+      names["bot " + bots[b]] = true;
+      if (duo && b === 0) list.appendChild(divider("OPPONENTS"));
+    }
     if (shown < count) {
       var more = emptyRow("+" + (count - shown) + " more contestants");
       more.className = "rl-row more";
       list.appendChild(more);
     }
     build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
-    build().querySelector(".rl-count").textContent = (count + 1) + " contestants";
+    build().querySelector(".rl-count").textContent = duo ? Math.ceil((count + 1) / 2) + " teams" : (count + 1) + " contestants";
     build().querySelector(".rl-note").textContent = lobby.note || "";
+  }
+
+  function parts(show) {
+    var root = build();
+    root.querySelector(".rl-bottom").style.display = show ? "" : "none";
+    root.querySelector(".rl-players").style.display = show ? "" : "none";
+  }
+
+  function showPanel() {
+    document.body.className = (document.body.className.replace(/\brl-on\b/g, "") + " rl-on").trim();
+    build().className = "";
+    if (!ticker) ticker = setInterval(function () { if (last) renderHead(); }, 250);
+  }
+
+  // From pressing a mode until the server's first remaster-lobby: the pill
+  // alone, "Joining" with the mode, the clock and Cancel search (the stock
+  // queue widget is hidden, so the screen would otherwise show nothing).
+  function joining(queue) {
+    if (last && last.state !== "joining") return;      // the lobby is already here
+    last = { state: "joining", queue: queue, players: [] };
+    received = Date.now();
+    build().querySelector(".rl-list").textContent = "";
+    parts(false);
+    cancelButton("searching");
+    renderHead();
+    showPanel();
   }
 
   function render(lobby) {
@@ -302,11 +381,12 @@
     var me = myName();
     list.textContent = "";
     var names = {};
+    parts(true);
     document.body.className = (document.body.className.replace(/\brl-on\b/g, "") + " rl-on").trim();
     if (lobby.state !== "searching" && lobby.matchBots) {
       renderRoster(lobby, list, names);
       shownNames = names;
-      root.querySelector(".rl-cancel").style.display = "none";
+      cancelButton(lobby.state);
       renderMaps();
       renderHead();
       root.className = "";
@@ -334,7 +414,7 @@
     shownNames = names;
     root.querySelector(".rl-count").textContent = lobby.players.length + "/" + lobby.maxPlayers;
     root.querySelector(".rl-note").textContent = lobby.note || "";
-    root.querySelector(".rl-cancel").style.display = lobby.state === "searching" ? "" : "none";
+    cancelButton(lobby.state);
     renderMaps();
     renderHead();
     root.className = "";
@@ -349,7 +429,25 @@
     if (ticker) { clearInterval(ticker); ticker = null; }
   }
 
-  window.RemasterLobby = { show: render, hide: hide };
+  // A short line where the search pill was (e.g. the connection dropped).
+  var noticeEl = null, noticeTimer = null;
+  function notice(text) {
+    build();
+    if (!noticeEl) {
+      noticeEl = el("div", "rl-notice hidden");
+      noticeEl.id = "remaster-lobby-notice";
+      document.body.appendChild(noticeEl);
+    }
+    noticeEl.textContent = text;
+    noticeEl.className = "rl-notice";
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(function () { noticeEl.className = "rl-notice hidden"; }, 6000);
+  }
+
+  function isShown() { return !!panel && panel.className !== "hidden"; }
+
+  window.RemasterLobby = { show: render, hide: hide, notice: notice, isShown: isShown, joining: joining,
+    refresh: function () { if (last) cancelButton(last.state); } };
 
   // The stock queue widget (QUEUING / PLAYERS QUEUED / ELAPSED TIME / CANCEL
   // SEARCH) never shows: this lobby's search pill replaces it. Hidden from the
