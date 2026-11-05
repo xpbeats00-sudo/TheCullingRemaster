@@ -21,8 +21,10 @@
     if (!img.length) {
       // Sized inline: Coherent ignored the stylesheet size for it. Centred on
       // the row like the level and name columns (the card row is top-aligned).
+      // The emblems are square, so a square box shows them whole (no object-fit:
+      // Coherent doesn't support it).
       img = $('<img class="card-rank-emblem" style="width:2.6vw; height:2.6vw; max-width:2.6vw; max-height:2.6vw;' +
-        ' margin:0 0.6vw 0 0; align-self:center; flex:0 0 2.6vw; object-fit:contain;">');
+        ' margin:0 0.6vw 0 0; align-self:center; flex:0 0 2.6vw;">');
       card.find(".left-column").after(img);
     }
     img.attr("src", emblem(s.tier.name));
