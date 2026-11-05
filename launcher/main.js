@@ -218,7 +218,7 @@ function state() {
 
 function currentServer() {
   const servers = (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers;
-  return servers.find((s) => s.id === settings.serverId) || servers[0];
+  return servers.find((s) => s.id === settings.serverId) || servers[0] || config.DEFAULTS.servers[0];
 }
 
 async function ping(server) {

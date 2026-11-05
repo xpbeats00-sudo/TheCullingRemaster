@@ -39,5 +39,16 @@
     return opLive;
   }
 
-  return { downloadVerb, launcherUpdateView, keepOp };
+  // The host of an address, for display; never throws.
+  function hostOf(url) {
+    try { return new URL(url).host || "-"; } catch { return "-"; }
+  }
+
+  // The selected server, or the first; null when there is none.
+  function selectedServer(state) {
+    const list = (state && state.servers) || [];
+    return list.find((s) => s.id === state.settings.serverId) || list[0] || null;
+  }
+
+  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer };
 });

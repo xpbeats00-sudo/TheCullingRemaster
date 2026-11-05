@@ -129,7 +129,7 @@
 
   // ---------------------------------------------------------------- rendering
   function selectedServer() {
-    return state.servers.find((s) => s.id === state.settings.serverId) || state.servers[0];
+    return UiLogic.selectedServer(state) || { id: null };
   }
 
   function renderServers() {
@@ -263,7 +263,7 @@
     }
     $("#update-launcher").textContent = state.build ? state.build.label : "v" + state.appVersion;
     $("#update-patch").textContent = state.release ? `${state.installed || "none"} installed, ${state.release} available` : "-";
-    $("#update-server").textContent = new URL(state.settings.manifestUrl).host;
+    $("#update-server").textContent = UiLogic.hostOf(state.settings.manifestUrl);
     $("#update-note").textContent = state.launcherUpdate && state.launcherUpdate.error ? state.launcherUpdate.error
       : state.error ? "Last check: " + state.error : state.online ? "Connected to the update server." : "";
     $("#opt-intro").checked = state.settings.playIntro;
@@ -628,7 +628,6 @@
       } catch { state = await api.state(); }
       render();
     });
-    $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     $$("[data-link]").forEach((b) => b.addEventListener("click", () => call(api.openLink, b.dataset.link)));
     // The drawer: the bottom bar's buttons, the build number, the server status.
     $("#open-settings").addEventListener("click", () => openDrawer("settings"));
@@ -654,6 +653,9 @@
 
   async function start() {
     api = window.launcher;
+    // Minimize, maximize and close work from the start, even when the state
+    // can't be read or drawn.
+    $$("[data-window]").forEach((b) => b.addEventListener("click", () => api.window(b.dataset.window)));
     // Without the intro, the start-up checks finish after this page shows.
     if (api.onStateChanged) api.onStateChanged(async () => {
       if (syncing) return;

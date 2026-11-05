@@ -29,4 +29,20 @@ test("a failed launcher update drops its 'Updating launcher' card", () => {
   assert.strictEqual(ui.keepOp(sync, { launcherUpdate: { error: "x" } }), sync, "a game download's card isn't touched");
 });
 
+test("odd settings can't break drawing the screen", () => {
+  assert.strictEqual(ui.hostOf("https://xplab.shop:8443/remaster/manifest.json"), "xplab.shop:8443");
+  assert.strictEqual(ui.hostOf("not a url"), "-");
+  assert.strictEqual(ui.hostOf(undefined), "-");
+  const servers = [{ id: "a" }, { id: "b" }];
+  assert.strictEqual(ui.selectedServer({ servers, settings: { serverId: "b" } }).id, "b");
+  assert.strictEqual(ui.selectedServer({ servers, settings: { serverId: "gone" } }).id, "a");
+  assert.strictEqual(ui.selectedServer({ servers: [], settings: { serverId: "a" } }), null);
+});
+
+test("the window controls are wired before the launcher's state is asked for", () => {
+  const src = require("fs").readFileSync(require("path").join(__dirname, "..", "src", "main-ui.js"), "utf8");
+  const start = src.slice(src.indexOf("async function start()"));
+  assert.ok(start.indexOf("[data-window]") >= 0 && start.indexOf("[data-window]") < start.indexOf("api.state()"));
+});
+
 console.log("all %d ui tests passed", passed);

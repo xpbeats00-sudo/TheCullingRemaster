@@ -43,6 +43,20 @@ try {
 
   test("bad server lists fall back to the defaults", () => {
     assert.deepStrictEqual(config.sanitize({ servers: [{ id: 1 }] }).servers, config.DEFAULTS.servers);
+    assert.deepStrictEqual(config.sanitize({ servers: [] }).servers, config.DEFAULTS.servers, "an empty list leaves nothing to play on");
+    assert.deepStrictEqual(config.sanitize({ servers: [{ id: "x", name: "X", api: "not a url" }] }).servers, config.DEFAULTS.servers);
+    assert.deepStrictEqual(config.sanitize({ servers: [{ id: "x", name: "X", api: "http://evil.example/api" }] }).servers, config.DEFAULTS.servers);
+    assert.deepStrictEqual(config.sanitize({ servers: [null] }).servers, config.DEFAULTS.servers);
+    const mine = [{ id: "local", name: "Local", api: "http://127.0.0.1:8000/api" }, { id: "eu", name: "EU", api: "https://eu.example/api", status: "https://eu.example/health" }];
+    assert.deepStrictEqual(config.sanitize({ servers: mine }).servers, mine, "valid lists are kept");
+  });
+
+  test("a manifest address that isn't an https URL falls back to the default", () => {
+    for (const bad of ["", "manifest.json", "ftp://x/m.json", "http://xplab.shop/m.json", 42, null, "https://"]) {
+      assert.strictEqual(config.sanitize({ manifestUrl: bad }).manifestUrl, config.DEFAULTS.manifestUrl, String(bad));
+    }
+    assert.strictEqual(config.sanitize({ manifestUrl: "https://example.com/r/manifest.json" }).manifestUrl, "https://example.com/r/manifest.json");
+    assert.strictEqual(config.sanitize({ manifestUrl: "http://localhost:8080/manifest.json" }).manifestUrl, "http://localhost:8080/manifest.json");
   });
 
   test("game folder check finds Victory.exe, Func launcher and the client DLL", () => {
