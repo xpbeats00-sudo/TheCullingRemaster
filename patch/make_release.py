@@ -60,6 +60,9 @@ GAME_EXE = "Victory/Binaries/Win64/Victory.exe"
 # MIN_FULL_FILES files (the stock install has about 3,560).
 REQUIRED = (GAME_EXE, "Victory/Content/Paks/pakchunk0-WindowsClient.pak")
 MIN_FULL_FILES = 3000
+SETTINGS_README_PATH = STEAM_SETTINGS + "/README.txt"
+# Files of a release the build writes itself, so never linked from the install.
+WRITTEN = {SETTINGS_README_PATH, "Victory/Content/Paks/" + PAK}
 SETTINGS_README = (
     "The Culling Remaster: the launcher writes your player name here\r\n"
     "(force_account_name.txt) before every game. Change it in the launcher.\r\n")
@@ -111,11 +114,26 @@ def game_files(game):
     return sorted(out)
 
 
+def write_new(path, data):
+    """Writes path as a new file swapped in whole: a hard link that was there
+    (a file of the install) is replaced, never written through."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".new"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
 def link_game(game, release, files):
-    """Hard-link the install's files into release/."""
+    """Hard-link the install's files into release/. Files the release changes
+    are copies (Victory.exe, patched) or written new (WRITTEN): a hard link
+    shares the install's disk file, and writing to it would change the install
+    and every published object of it."""
     for rel in files:
         src = os.path.join(game, *rel.split("/"))
         dst = os.path.join(release, *rel.split("/"))
+        if rel in WRITTEN:
+            continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         if rel == GAME_EXE:
             # Patched (more contestants), so a copy: a link would patch the install.
@@ -126,10 +144,7 @@ def link_game(game, release, files):
             os.link(src, dst)
         except OSError:
             shutil.copy2(src, dst)
-    readme = os.path.join(release, *STEAM_SETTINGS.split("/"), "README.txt")
-    os.makedirs(os.path.dirname(readme), exist_ok=True)
-    with open(readme, "w", newline="") as f:
-        f.write(SETTINGS_README)
+    write_new(os.path.join(release, *SETTINGS_README_PATH.split("/")), SETTINGS_README.encode("ascii"))
     return len(files)
 
 

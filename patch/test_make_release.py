@@ -109,6 +109,30 @@ try:
         files = mr.game_files(game)
         assert not set(files) & set(mr.FULL_EXCLUDE), set(files) & set(mr.FULL_EXCLUDE)
         assert len(files) == len(mr.REQUIRED) + 10, files
+    @test
+    def links():
+        """release files link the install's, but what the release changes is a copy or written new"""
+        import patch_exe as P
+        exe = bytearray(P.CAP_AT + 16)                     # a stand-in exe (test_patch_exe.py)
+        exe[P.CAP_AT:P.CAP_AT + 5] = bytes.fromhex("b810000000")
+        exe[P.SHA_GATE_AT:P.SHA_GATE_AT + 7] = P.SHA_GATE
+        exe[P.SHA_GATE_AT + 7:P.SHA_GATE_AT + 13] = P.SHA_JUMP
+        exe[P.TRAIN_JUMP_AT:P.TRAIN_JUMP_AT + 2] = P.TRAIN_JUMP
+        exe[P.TRAIN_CALL_AT:P.TRAIN_CALL_AT + len(P.TRAIN_CALL)] = P.TRAIN_CALL
+        exe[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
+        touch(game, mr.GAME_EXE, bytes(exe))
+        touch(game, mr.SETTINGS_README_PATH, b"the install's own readme")
+        release = os.path.join(tmp, "release")
+        mr.link_game(game, release, mr.game_files(game))
+        at = lambda root, rel: os.path.join(root, *rel.split("/"))      # noqa: E731
+        same = lambda rel: os.path.samefile(at(game, rel), at(release, rel))  # noqa: E731
+        assert same("Victory/Content/Movies/m0.mp4"), "an unchanged file is a hard link"
+        assert not same(mr.GAME_EXE), "Victory.exe is a copy"
+        assert open(at(game, mr.GAME_EXE), "rb").read() == bytes(exe), "patching changed the install's exe"
+        assert P.check(at(release, mr.GAME_EXE))["slots"], "the release's exe is patched"
+        assert not same(mr.SETTINGS_README_PATH), "the readme the release writes is its own file"
+        assert open(at(game, mr.SETTINGS_README_PATH), "rb").read() == b"the install's own readme"
+        assert open(at(release, mr.SETTINGS_README_PATH), "rb").read() == mr.SETTINGS_README.encode("ascii")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

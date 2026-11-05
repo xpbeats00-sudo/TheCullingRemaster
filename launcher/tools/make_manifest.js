@@ -7,9 +7,11 @@
 // published (it can be cached for good, and a launcher mid-download never sees
 // it replaced), identical files are stored once, and a new release only adds
 // the objects that changed. servers.json (optional, in the release folder's
-// parent) is copied in as the server list. Objects are hard-linked into the
-// publish folder when it is on the same drive (a full release doesn't need its
-// gigabytes twice), copied otherwise.
+// parent) is copied in as the server list. Objects of release files are
+// hard-linked into the publish folder when it is on the same drive (a full
+// release doesn't need its gigabytes twice), copied otherwise; anything from
+// outside the release folder (the launcher setup) is always copied, and an
+// object already there is re-hashed before it is reused (place, putObject).
 //
 // The manifest is signed with the release key (tools/make_release_key.js):
 // manifest.json.sig holds its Ed25519 signature, which launchers require.
@@ -43,9 +45,37 @@ function walk(dir, base = dir, out = []) {
   return out;
 }
 
-function place(src, dst) {
-  fs.rmSync(dst, { force: true });
-  try { fs.linkSync(src, dst); } catch { fs.copyFileSync(src, dst); }
+// Whether file is inside dir.
+function inside(dir, file) {
+  const rel = path.relative(path.resolve(dir), path.resolve(file));
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+// An object is immutable once published, so it may only share its disk file
+// (a hard link) with a release file: those are hard links of the read-only
+// game install or written fresh for this release. Anything else, the launcher
+// setup in launcher/dist above all, is rebuilt in place later, and a hard link
+// would change the published object with it; it is copied. The new object is
+// made beside its final name and swapped in, so a stale one is replaced whole.
+function place(src, dst, link) {
+  const tmp = dst + ".tmp";
+  fs.rmSync(tmp, { force: true });
+  if (link) { try { fs.linkSync(src, tmp); } catch { fs.copyFileSync(src, tmp); } } else fs.copyFileSync(src, tmp);
+  fs.renameSync(tmp, dst);
+}
+
+// objects/<sha256> for src: an existing object is hashed again before it is
+// reused (through the hash cache, so only one whose file changed since it was
+// last hashed is read) and replaced when it no longer matches its name.
+async function putObject(src, sha256, outDir, cache, link) {
+  const dst = path.join(outDir, "objects", sha256);
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  if (fs.existsSync(dst)) {
+    if (await cache.sha256(dst) === sha256) return dst;
+    console.log(`objects/${sha256} no longer matches its name (changed on disk): replaced`);
+  }
+  place(src, dst, link);
+  return dst;
 }
 
 // SHA-256s of files hashed before, keyed by the file's identity (volume and
@@ -63,7 +93,8 @@ function hashCache(file) {
       const st = fs.statSync(src, { bigint: true });
       const key = st.dev + ":" + st.ino;
       const stamp = st.size + ":" + st.mtimeNs;
-      const hit = file && saved[key];
+      // Hashed already in this run (an object hard-linked to a release file), or in an earlier one.
+      const hit = now[key] || (file && saved[key]);
       if (hit && hit.stamp === stamp && /^[0-9a-f]{64}$/.test(hit.sha256)) { n.hits++; now[key] = hit; return hit.sha256; }
       const sha256 = await sha256File(src);
       n.hashed++;
@@ -92,10 +123,8 @@ function exeVersion(file) {
 async function launcherEntry(setup, outDir, cache) {
   if (!fs.existsSync(setup)) throw new Error("no setup at " + setup);
   const version = exeVersion(setup);
-  const sha256 = cache ? await cache.sha256(setup) : await sha256File(setup);
-  const dst = path.join(outDir, "objects", sha256);
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  if (!fs.existsSync(dst)) place(setup, dst);
+  const sha256 = await cache.sha256(setup);
+  await putObject(setup, sha256, outDir, cache, false);      // a copy: launcher/dist is rebuilt in place
   return { version, size: fs.statSync(setup).size, sha256, url: "objects/" + sha256 };
 }
 
@@ -123,9 +152,7 @@ async function build(release, version, outDir, keyPath, setup) {
     targetPath(release, rel);                    // the same path rules the launcher applies
     const src = path.join(release, ...rel.split("/"));
     const sha256 = await cache.sha256(src);
-    const dst = path.join(outDir, "objects", sha256);
-    fs.mkdirSync(path.dirname(dst), { recursive: true });
-    if (!fs.existsSync(dst)) place(src, dst);
+    await putObject(src, sha256, outDir, cache, inside(release, src));
     files.push({ path: rel, size: fs.statSync(src).size, sha256, url: "objects/" + sha256 });
   }
   let servers = [];

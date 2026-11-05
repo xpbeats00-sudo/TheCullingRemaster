@@ -70,8 +70,11 @@ def main(src, out):
 
     footer = struct.pack("<IiQQ", PAK_MAGIC, PAK_VERSION, len(body), len(index))
     footer += hashlib.sha1(index).digest()
-    with open(out, "wb") as f:
+    # A new file swapped in whole: an existing pak (or a hard link of one) is never written through.
+    tmp = out + ".new"
+    with open(tmp, "wb") as f:
         f.write(body + index + footer)
+    os.replace(tmp, out)
     print("wrote %s (%d files)" % (out, len(files)))
 
 
