@@ -371,7 +371,7 @@ function registerIpc() {
       let lastSent = 0;
       const r = await sync.apply(manifest, todo, settings.gamePath, (p) => {
         const now = Date.now();
-        if (p.phase === "download" && now - lastSent < 100 && p.doneBytes < p.totalBytes) return;
+        if (p.phase === "download" && now - lastSent < 100 && p.doneBytes < p.totalBytes && !p.reconnecting && !p.lost) return;
         lastSent = now;
         send("sync-progress", p);
       }, {
@@ -390,10 +390,11 @@ function registerIpc() {
         try { await refreshPlan(); } catch { /* keep the error below */ }
         throw e;
       }
-      log("paused", {});
+      log("paused", { lost: !!e.lost });
       busy = false;
       await refreshPlan();
-      return Object.assign(state(), { paused: true });
+      // A lost connection pauses too, and says so.
+      return Object.assign(state(), { paused: true, lost: !!e.lost, message: e.lost ? e.message : null });
     } finally {
       busy = false;
       syncAbort = null;

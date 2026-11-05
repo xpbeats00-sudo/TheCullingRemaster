@@ -468,7 +468,8 @@
     try {
       const r = await call(api.sync, { repair: repairing });
       state = r;
-      if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
+      if (r.paused && r.lost) toast(r.message || "Connection lost — Resume when you're back online");
+      else if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
       else if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` : "Every game file checked out: nothing to repair.", "info");
       else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` : "Everything is up to date.", "info");
     } catch (e) {
@@ -536,10 +537,13 @@
       frac = total ? done / total : 1;
       const what = p.active > 1 ? `${p.active} files` : p.file.split("/").pop();
       const files = p.filesTotal ? `${p.filesDone.toLocaleString()} / ${p.filesTotal.toLocaleString()} files` : "";
-      const speed = speedText(p.doneBytes, p.totalBytes);
-      label = (pausing ? "Pausing" : `Downloading ${what}`) + ` (${bytes(done)} / ${bytes(total)})` + (files ? " · " + files : "") + speed;
-      op = { kind: `Operation in progress · ${pausing ? "Pausing" : "Downloading"}`,
-        file: p.active > 1 ? `${p.file.split("/").pop()} and ${p.active - 1} more` : p.file.split("/").pop(),
+      const verb = UiLogic.downloadVerb(p, pausing);
+      const speed = verb === "Downloading" ? speedText(p.doneBytes, p.totalBytes) : "";
+      label = (verb === "Downloading" ? `Downloading ${what}` : verb === "Reconnecting" ? "Connection trouble: reconnecting" : verb) +
+        ` (${bytes(done)} / ${bytes(total)})` + (files ? " · " + files : "") + speed;
+      op = { kind: `Operation in progress · ${verb}`,
+        file: verb === "Reconnecting" ? "Waiting for the connection to come back"
+          : p.active > 1 ? `${p.file.split("/").pop()} and ${p.active - 1} more` : p.file.split("/").pop(),
         size: (files ? files + " · " : "") + `${bytes(done)} / ${bytes(total)}` + speed };
     }
     $("#sync-progress-fill").style.width = Math.round(frac * 100) + "%";

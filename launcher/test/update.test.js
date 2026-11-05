@@ -367,6 +367,32 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(lowered.length >= 1 && lowered[lowered.length - 1][1].now < 8, JSON.stringify(lowered));
     });
 
+    await test("a dropped connection pauses the sync with a clear message instead of retrying every file", async () => {
+      const files = {};
+      for (let i = 0; i < 8; i++) files[`Victory/n${i}.bin`] = Buffer.alloc(40000, i + 1);
+      release("netdown", "1", files);
+      let requests = 0;
+      for (const b of Object.values(files)) routes[`/netdown/o/${sha(b)}`] = (req) => { requests++; req.socket.destroy(); };
+      const r = path.join(tmp, "netdown");
+      // A partial download from before the outage stays for the resume.
+      const part = path.join(r, ".remaster", "staging", "Victory", "n0.bin.part");
+      fs.mkdirSync(path.dirname(part), { recursive: true });
+      fs.writeFileSync(part, Buffer.alloc(1000, 1));
+      const m = await get("netdown");
+      const seen = [];
+      const e = await sync.apply(m, await sync.plan(m, r), r, (p) => seen.push(p), { parallel: 4, retryDelayMs: 1 }).then(() => null, (x) => x);
+      assert.ok(e instanceof sync.SyncPaused && e instanceof sync.ConnectionLost && e.lost, e && e.message);
+      assert.match(e.message, /^Connection lost — Resume when you're back online$/);
+      assert.ok(seen.some((p) => p.reconnecting), "the window is told it is reconnecting");
+      assert.ok(requests < 8 * 6, `gave up early: ${requests} requests, not ${8 * 6}`);
+      assert.ok(fs.existsSync(part), "partial download kept");
+      assert.strictEqual(sync.installedVersion(r), null);
+      // Back online: Resume finishes it.
+      for (const b of Object.values(files)) routes[`/netdown/o/${sha(b)}`] = (req, res) => serveRange(req, res, b);
+      await sync.apply(m, await sync.plan(m, r), r, () => {}, { retryDelayMs: 1 });
+      assert.strictEqual(sync.installedVersion(r), "1");
+    });
+
     await test("unsafe or ambiguous manifests are refused", async () => {
       const entry = (p) => ({ path: p, size: 1, sha256: "a".repeat(64), url: "x" });
       for (const p of ["REMAST~1/x", "Victory./x", "a/con .txt", "a/CONIN$", "../x", "C:/x", ".remaster/x"]) {

@@ -62,6 +62,12 @@ const MIN_PARALLEL = 2;
 const RECOVER_MS = 20000;            // a slot comes back after this long without trouble
 // A connection that delivers nothing for this long is dropped and resumed.
 const STALL_MS = 30000;
+// The connection counts as lost after this many connection failures in a row
+// (no byte received in between) on at least LOST_FILES files; the window shows
+// "reconnecting" from RECONNECTING_AFTER of them.
+const LOST_FAILURES = 20;
+const LOST_FILES = 3;
+const RECONNECTING_AFTER = 4;
 // Progress (sync-state.json) is written at most this often while downloading.
 const SAVE_EVERY_MS = 2000;
 // Resume metadata (.part.json: hash + ETag) is kept only for files this big;
@@ -86,6 +92,10 @@ class SyncError extends Error {
 // one, are kept for the next run to continue from.
 class SyncPaused extends SyncError {
   constructor() { super("Game Sync paused", "paused"); this.paused = true; }
+}
+// apply() paused itself because the connection is gone (see LOST_FAILURES).
+class ConnectionLost extends SyncPaused {
+  constructor() { super(); this.message = "Connection lost — Resume when you're back online"; this.lost = true; }
 }
 
 function checkUrl(u) {
@@ -515,10 +525,11 @@ async function download(manifest, f, gameRoot, onBytes, o) {
   fs.mkdirSync(path.dirname(staged), { recursive: true });
   const part = staged + ".part";
   let counted = 0;                               // bytes of this file reported so far
-  const count = (n) => { counted += n; onBytes(n); };
+  // fromDisk: bytes already on disk, not bytes that just arrived.
+  const count = (n, fromDisk) => { counted += n; onBytes(n, !!fromDisk); };
   // A .part left by an earlier run counts as already downloaded.
   const st = statOrNull(part);
-  if (st) count(Math.min(st.size, f.size));
+  if (st) count(Math.min(st.size, f.size), true);
   // Tries count only failures without progress: a long download over a flaky
   // line that keeps moving forward isn't given up on (TOTAL_TRIES bounds it).
   let lastError = null;
@@ -542,7 +553,7 @@ async function download(manifest, f, gameRoot, onBytes, o) {
       if (!retryable(e)) break;
       fails = counted > before && e.kind !== "verify" ? 0 : fails + 1;
       if (fails >= ATTEMPTS) break;
-      o.onRetry(classify(e), e, fails);
+      o.onRetry(classify(e), e, fails, f.path);
       await sleep(o.retryDelayMs * 2 ** Math.max(0, fails - 1) * (0.75 + Math.random() * 0.5), o.signal);
       if (o.signal && o.signal.aborted) throw new SyncPaused();
     }
@@ -783,16 +794,41 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     stallMs: opts.stallMs || STALL_MS,
     retryDelayMs: opts.retryDelayMs == null ? 1000 : opts.retryDelayMs,
     limit: bandwidth(opts.maxBytesPerSec || 0),
-    onRetry(kind, e, n) {
+    onRetry(kind, e, n, file) {
       retries++;
       log("retry", { file: e.message, kind, attempt: n });
       if (kind === "stall" || kind === "network") {
         lastTrouble = Date.now();
         const next = Math.max(Math.min(MIN_PARALLEL, maxParallel), Math.floor(parallel / 2));
         if (next < parallel) { parallel = next; log("parallel", { now: parallel, why: kind }); }
+        trouble(file);
       }
     }
   };
+  // The connection itself gone: connection failures one after another, on
+  // several files, without a byte arriving in between. Retrying each of
+  // thousands of files six times would take hours and never say why, so the
+  // sync pauses instead (everything downloaded so far is kept).
+  let streak = 0;
+  const streakFiles = new Set();
+  let lost = false;
+  function trouble(file) {
+    streak++;
+    streakFiles.add(file);
+    if (!lost && streak >= LOST_FAILURES && streakFiles.size >= LOST_FILES) {
+      lost = true;
+      log("connection-lost", { failures: streak, files: streakFiles.size });
+      stopAll.abort();
+    }
+    if (streak === RECONNECTING_AFTER || lost) report(file);
+  }
+  function progressed() {
+    if (!streak) return;
+    const was = streak >= RECONNECTING_AFTER;
+    streak = 0;
+    streakFiles.clear();
+    if (was) log("reconnected", {});
+  }
   let retries = 0;
   let doneBytes = 0;
   let filesDone = 0;
@@ -810,7 +846,9 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
   const active = new Set();
   const failed = [];
   let fatal = null;
-  const report = (file) => onProgress({ phase: "download", file, doneBytes, totalBytes, active: active.size, filesDone, filesTotal: todo.length });
+  // reconnecting: connections keep failing (the window says so); lost: given up.
+  const report = (file) => onProgress({ phase: "download", file, doneBytes, totalBytes, active: active.size, filesDone, filesTotal: todo.length,
+    reconnecting: streak >= RECONNECTING_AFTER, lost });
   const t0 = Date.now();
 
   async function worker() {
@@ -826,7 +864,11 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
       active.add(f.path);
       report(f.path);
       try {
-        state.staged[f.path] = await download(manifest, f, gameRoot, (n) => { doneBytes += n; report(f.path); }, o);
+        state.staged[f.path] = await download(manifest, f, gameRoot, (n, fromDisk) => {
+          doneBytes += n;
+          if (n > 0 && !fromDisk) progressed();
+          report(f.path);
+        }, o);
         f.staged = true;
         filesDone++;
         save(false);
@@ -835,6 +877,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
           log("failed", { file: f.path, kind: classify(e), error: e.message });
           if (classify(e) === "disk") { fatal = fatal || e; stopAll.abort(); }
           else failed.push({ path: f.path, error: e.message, kind: classify(e) });
+          if (classify(e) === "network" || classify(e) === "stall") trouble(f.path);
         }
       } finally {
         active.delete(f.path);
@@ -848,8 +891,9 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     if (opts.signal) opts.signal.removeEventListener("abort", onPause);
   }
   const seconds = (Date.now() - t0) / 1000;
-  log("download", { files: toDownload, seconds, retries, failed: failed.length });
+  log("download", { files: toDownload, seconds, retries, failed: failed.length, lost });
   if (fatal) throw fatal;
+  if (lost) throw new ConnectionLost();
   if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   if (failed.length) {
     const e = new SyncError(`${failed.length} file(s) couldn't be downloaded (${failed[0].error}); press Resume to try them again`, failed[0].kind);
@@ -907,4 +951,4 @@ function installedVersion(gameRoot) {
 
 module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion,
   freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
-  SyncError, SyncPaused, STATE_DIR, REPLACED_DIR, PARALLEL };
+  SyncError, SyncPaused, ConnectionLost, STATE_DIR, REPLACED_DIR, PARALLEL };
