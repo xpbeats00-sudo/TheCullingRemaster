@@ -117,6 +117,15 @@ const manifestFor = (base, url = "objects/" + SHA, version = "1.3.0") =>
       assert.ok(!fs.existsSync(dir));
     });
 
+    await test("offline, the downloaded setups and the try cap are left alone", () => {
+      const m = manifestFor(s.base);
+      assert.deepStrictEqual(selfupdate.decide(null, "1.2.0", true), { offer: null, cleanup: false }, "no release fetched: no cleanup");
+      assert.deepStrictEqual(selfupdate.decide(m, "1.2.0", false), { offer: null, cleanup: false }, "a dev run: nothing");
+      assert.strictEqual(selfupdate.decide(m, "1.2.0", true).offer.version, "1.3.0");
+      assert.deepStrictEqual(selfupdate.decide(m, "1.3.0", true), { offer: null, cleanup: true }, "up to date per the release: clean up");
+      assert.deepStrictEqual(selfupdate.decide({ version: "1", files: [] }, "1.3.0", true), { offer: null, cleanup: true });
+    });
+
     await test("the release tools name the launcher by the version built into the setup exe", async () => {
       // node.exe stands in for a setup: any exe with a version resource.
       const v = exeVersion(process.execPath);

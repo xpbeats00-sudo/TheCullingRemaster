@@ -38,6 +38,16 @@ function offered(manifest, current) {
   return sync.compareVersions(l.version, current) > 0 ? l : null;
 }
 
+// What to do about the launcher: { offer } a newer one, or { cleanup } when a
+// fetched release offers nothing newer (downloaded setups and try counts go).
+// Without a release (offline) nothing happens: cleaning up then would reset
+// the try cap for a setup that doesn't take. Throws on a bad launcher entry.
+function decide(manifest, current, allowed) {
+  if (!allowed || !manifest) return { offer: null, cleanup: false };
+  const offer = offered(manifest, current);
+  return { offer, cleanup: !offer };
+}
+
 const attemptsFile = (dir) => path.join(dir, "attempts.json");
 function attempts(dir) {
   try { return JSON.parse(fs.readFileSync(attemptsFile(dir), "utf8")) || {}; } catch { return {}; }
@@ -129,4 +139,4 @@ function install(file, spawnImpl = spawn) {
   });
 }
 
-module.exports = { offered, validate, download, install, mayTry, recordTry, cleanup, MAX_TRIES };
+module.exports = { offered, decide, validate, download, install, mayTry, recordTry, cleanup, MAX_TRIES };

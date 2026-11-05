@@ -139,10 +139,11 @@ async function boot() {
 // allows it from a dev run, for testing.
 async function updateLauncher(onProgress) {
   const allowed = app.isPackaged || process.env.CULLING_SELFUPDATE === "1";
-  let offer = null;
-  try { offer = allowed && manifest ? selfupdate.offered(manifest, app.getVersion()) : null; } catch (e) { log("launcher-update", { error: e.message }); return false; }
+  let plan;
+  try { plan = selfupdate.decide(manifest, app.getVersion(), allowed); } catch (e) { log("launcher-update", { error: e.message }); return false; }
+  const offer = plan.offer;
   if (!offer) {
-    if (allowed) try { selfupdate.cleanup(UPDATES()); } catch { /* in use: next time */ }
+    if (plan.cleanup) try { selfupdate.cleanup(UPDATES()); } catch { /* in use: next time */ }
     return false;
   }
   if (!selfupdate.mayTry(UPDATES(), offer.version)) {
