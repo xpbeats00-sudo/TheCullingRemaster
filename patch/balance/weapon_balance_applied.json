@@ -1,0 +1,7 @@
+{
+ "source": "patch/make_weapon_balance.py",
+ "table": "weapon_balance.json",
+ "changes": [],
+ "tooltips": [],
+ "files": []
+}
