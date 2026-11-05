@@ -39,7 +39,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from build_catalog import pak_entries, read_entry  # noqa: E402
+from build_catalog import pak_entries, read_entry, stock_paks  # noqa: E402
 from uasset import Package  # noqa: E402
 
 BP = "Victory/Content/Blueprints/"
@@ -141,10 +141,8 @@ def stock_assets(paks_dir, wanted):
     """The stock copies: every base pak, never a patch pak (*_P.pak), so a
     rebuild never stacks on an installed patch."""
     found = {}
-    for pak in sorted(os.listdir(paks_dir)):
-        if not pak.endswith(".pak") or pak.endswith("_P.pak"):
-            continue
-        for f, name, off, usize, method, blocks in pak_entries(os.path.join(paks_dir, pak)):
+    for pak in stock_paks(paks_dir):                    # build_catalog's one rule for stock paks
+        for f, name, off, usize, method, blocks in pak_entries(pak):
             rel = name.replace("../../../", "")
             if rel in wanted:
                 found[rel] = read_entry(f, off, usize, method, blocks)

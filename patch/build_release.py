@@ -16,7 +16,10 @@ Steps (each one's output is shown; the first failure stops the build):
   3. generators, in this order (later ones build on earlier output):
        build_catalog.py           only with --catalog (rewrites the stock part of catalog.json)
        make_airdrop_unlocks.py    airdrop items + AirdropUnlocks.js
+       make_airdrop_prices.py     airdrop prices 25% off (the cooked AirDropPackages)
        patch_assets.py            gameplay tuning, bot names
+       make_bot_ai.py             bot AI tier (default Experienced)
+       make_weapon_balance.py     weapon stats from patch/balance/weapon_balance.json (empty: stock)
        make_loading_bar.py        write_config only: DefaultGame.ini
        make_branding.py           logos, font, FrontEnd.html, loading screens (--skip-intro:
                                   the install's LoadingScreen.mp4 ships as it is; make_intro
@@ -33,6 +36,10 @@ Steps (each one's output is shown; the first failure stops the build):
        make_ranked.py             rank emblems and cards, registry ranked.bin
        make_card_image_map.py     CardImageMap.js (after every card exists)
        make_showdown.py           Showdown mode, server/data/showdown.json
+       make_rain.py               the rain particle systems
+       make_weather.py            Jungle Night and Prison Night (built on make_showdown's
+                                  Jungle_P) and patch/weather_maps.h; the server offers them
+                                  only with CULLING_NIGHT_MAPS=1
        extract_func_anims.py      the Func animation assets
   4. the release consistency gate (test_release_consistency.py --paks <stage>)
   5. every patch, deploy and launcher test (TESTS below)
@@ -101,7 +108,10 @@ def generators(a, stage, frontend):
         steps.append(g("build_catalog.py", stage, os.path.join(ROOT, "server", "data", "catalog.json")))
     steps += [
         g("make_airdrop_unlocks.py", stage),
+        g("make_airdrop_prices.py", stage),
         g("patch_assets.py", stage),
+        g("make_bot_ai.py", stage),
+        g("make_weapon_balance.py", stage),
         g("make_loading_bar.py", a.game, stage),
         g("make_branding.py", a.game, frontend, stage, "--skip-intro"),
         g("make_branding.py", "--menu-only"),
@@ -122,6 +132,8 @@ def generators(a, stage, frontend):
         g("make_ranked.py", stage),
         g("make_card_image_map.py", stage),
         g("make_showdown.py", stage),
+        g("make_rain.py", stage),
+        g("make_weather.py", stage),
         g("extract_func_anims.py", a.game),
     ]
     return steps
@@ -132,12 +144,18 @@ def tests(a, stage):
     exe = os.path.join(a.game, *make_release.GAME_EXE.split("/"))
     p = lambda name, *args: (name, PY + [os.path.join(HERE, name)] + list(args), ROOT)  # noqa: E731
     d = lambda name: (name, ["node", os.path.join(ROOT, "deploy", name)], ROOT)  # noqa: E731
+    n = lambda name: (name, ["node", os.path.join(HERE, name)], ROOT)  # noqa: E731
     return [
         p("test_patch_exe.py", exe), p("test_make_pak.py"), p("test_make_release.py"), p("test_stock_paks.py"),
         p("test_release_gate.py"), p("test_extract_func_anims.py"), p("test_menu_items.py"),
         p("test_match_urls.py", stage), p("test_eye_skins.py", stage), p("test_loot_tables.py"),
         p("test_vfx_camos.py", stage),
-        p("test_custom_match.py", stage), ("test_showdown_hud.js", ["node", os.path.join(HERE, "test_showdown_hud.js")], ROOT),
+        p("test_custom_match.py", stage), n("test_showdown_hud.js"), n("test_team_hud.js"), n("test_hud_layout.js"),
+        p("test_airdrop_prices.py", stage), p("test_weapon_balance.py", stage), p("test_bot_ai.py", stage),
+        p("test_weather.py", stage), p("test_measure_loading.py"), p("test_netplay_check.py", exe),
+        # The native module (fixes 5, 7-9 and the weather) compiled and run against fake game
+        # objects: these need the Visual Studio C++ tools, as build_showdown_rounds.py does.
+        p("build_showdown_rounds.py", "--check"), p("test_native_module.py"), p("test_weather_native.py", exe),
         d("stage_objects.test.js"), d("publish.test.js"), d("make_manifest.test.js"),
         ("launcher: npm test", [NPM, "test"], os.path.join(ROOT, "launcher")),
     ]
@@ -179,6 +197,11 @@ def preflight(a):
         need(f, "a Windows font the generators draw with")
     if not shutil.which("node"):
         missing.append("node (deploy and launcher tests, make_manifest.js)")
+    try:
+        import build_showdown_rounds
+        build_showdown_rounds.find_cl()
+    except (SystemExit, Exception):
+        missing.append("the Visual Studio C++ tools (cl.exe: the native module's check and tests)")
     if missing:
         raise BuildError("missing inputs:\n" + "\n".join("  " + m for m in missing))
     if not a.allow_dirty:
