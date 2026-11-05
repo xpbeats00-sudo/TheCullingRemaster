@@ -68,9 +68,27 @@
         !state.online ? "Can't reach xplab.shop" : state.pending ? f.bytes(state.pending.bytes) + " download" : "Checking", "warn");
     }
     if (!state.game.ok) return v("Choose a game folder", "In Settings", "bad");
+    // Files differing from the installed release: a repair, not an update.
+    if (state.drift && state.pending && state.pending.files) {
+      const n = state.pending.files;
+      return v("Repair needed", `${n} file${n === 1 ? "" : "s"} changed`, "warn");
+    }
     if (state.pending && state.pending.files) return v("Update available", `${state.pending.files} file(s), ${f.bytes(state.pending.bytes)}`, "warn");
     if (!state.online) return v("Offline", "Can't reach xplab.shop", "warn");
     return v("Game Up to Date", version);
+  }
+
+  // What PLAY does: "pause", "sync" (install, resume, update), "folder",
+  // "choose" (only local changes: offer Repair or Play anyway), "signin",
+  // "launch" or "none". f as for playView.
+  function playAction(state, f) {
+    if (f.syncing) return "pause";
+    if (state.gameRunning) return "none";
+    if (f.notInstalled) return "sync";
+    if (!state.game.ok) return "folder";
+    if (state.pending && state.pending.files) return state.drift ? "choose" : "sync";
+    if (f.accountNeeded) return "signin";
+    return "launch";
   }
 
   // Retry sits next to "Offline" (any offline state) while nothing runs.
@@ -90,10 +108,11 @@
     if (f.notInstalled && state.online) return v("Install", "working");
     if (f.notInstalled) return v("Offline", "secondary", true);
     if (!state.game.ok) return v("Set game folder", "secondary");
-    if (state.pending && state.pending.files) return v("Update", "working");
+    // Only local changes: PLAY stays PLAY (it offers Repair or Play anyway).
+    if (state.pending && state.pending.files && !state.drift) return v("Update", "working");
     if (f.accountNeeded) return v("Sign in", "secondary");
     return v("Play");
   }
 
-  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView, showRetry, PING_EVERY_MS };
+  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView, playAction, showRetry, PING_EVERY_MS };
 });

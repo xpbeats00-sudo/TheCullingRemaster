@@ -459,8 +459,12 @@
       state = r;
       if (r.paused && r.lost) toast(r.message || "Connection lost — Resume when you're back online");
       else if (r.paused) toast("Paused. Your progress is saved: Resume continues where it stopped, even after closing the launcher.", "info");
-      else if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` : "Every game file checked out: nothing to repair.", "info");
-      else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` : "Everything is up to date.", "info");
+      else {
+        // A repair at the installed release keeps the files it replaced.
+        const kept = r.synced && r.synced.kept ? ` The ${r.synced.kept} file(s) it replaced are kept in the game folder's .remaster\\replaced folder.` : "";
+        if (repairing) toast(r.synced && r.synced.files ? `Repaired ${r.synced.files} file(s), ${bytes(r.synced.bytes)}. Everything else checked out.` + kept : "Every game file checked out: nothing to repair.", "info");
+        else toast(r.synced && r.synced.files ? `Installed ${r.synced.files} file(s), ${bytes(r.synced.bytes)}.` + kept : "Everything is up to date.", "info");
+      }
     } catch (e) {
       /* toast already shown */
     } finally {
@@ -549,12 +553,31 @@
   }
 
   async function play() {
-    if (syncing) return pauseSync();
-    if (state.gameRunning) return;
-    if (notInstalled()) return runSync();
-    if (!state.game.ok) { openDrawer("settings"); return chooseFolder(); }
-    if (state.pending && state.pending.files) return runSync();
+    const action = UiLogic.playAction(state, { syncing, notInstalled: notInstalled(), accountNeeded: accountNeeded() });
+    if (action === "pause") return pauseSync();
+    if (action === "none") return;
+    if (action === "sync") return runSync();
+    if (action === "folder") { openDrawer("settings"); return chooseFolder(); }
+    // Only files changed here, the release is current: Repair or Play anyway.
+    if (action === "choose") return openDrift();
     // The account comes first.
+    if (action === "signin") return openAccount("signin");
+    return launch();
+  }
+
+  function openDrift() {
+    const n = state.pending.files;
+    $("#drift-text").textContent = `${n} game file${n === 1 ? "" : "s"} here ${n === 1 ? "doesn't" : "don't"} match release ${state.installed}. ` +
+      "Repair downloads the release's copies (the replaced files are kept in the game folder's .remaster\\replaced folder), or play with them as they are.";
+    $("#drift-modal").hidden = false;
+    $("#drift-repair").focus();
+  }
+
+  function closeDrift() {
+    $("#drift-modal").hidden = true;
+  }
+
+  async function launch() {
     if (accountNeeded()) return openAccount("signin");
     const btn = $("#play");
     btn.disabled = true;
@@ -578,7 +601,9 @@
     try {
       state = await call(api.checkUpdates);
       if (state.restarting) { toast(`Installing launcher ${state.launcherUpdate.version}: it restarts by itself.`, "info"); return; }
-      toast(state.pending && state.pending.files ? "An update is ready to install." : "You're on the latest release.", "info");
+      toast(state.pending && state.pending.files
+        ? (state.drift ? "You're on the latest release, but some game files were changed: Verify & Sync repairs them." : "An update is ready to install.")
+        : "You're on the latest release.", "info");
     } catch (e) {
       state = await api.state();
     } finally {
@@ -603,6 +628,10 @@
     $("#run-sync").addEventListener("click", () => runSync());
     $("#check-updates").addEventListener("click", checkUpdates);
     $("#play").addEventListener("click", play);
+    $("#drift-repair").addEventListener("click", () => { closeDrift(); runSync(); });
+    $("#drift-play").addEventListener("click", () => { closeDrift(); launch(); });
+    $("#drift-cancel").addEventListener("click", closeDrift);
+    $("#drift-modal").addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrift(); });
     $("#opt-intro").addEventListener("change", async (e) => { state = await call(api.setSetting, "playIntro", e.target.checked); });
     $("#opt-close").addEventListener("change", async (e) => { state = await call(api.setSetting, "closeOnLaunch", e.target.checked); });
     $("#opt-parallel").addEventListener("change", async (e) => { state = await call(api.setSetting, "parallel", Number(e.target.value)); render(); });

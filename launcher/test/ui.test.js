@@ -71,4 +71,18 @@ test("the status line: a vanished game folder says so", () => {
   assert.strictEqual(ui.statusView(fresh, Object.assign({}, sIdle, { notInstalled: true })).title, "Ready to install");
 });
 
+test("local changes at the current release: 'Repair needed', and PLAY offers Repair or Play anyway", () => {
+  const drift = st({ drift: true, pending: { files: 3, bytes: 900, partial: 0, releaseBytes: 100 } });
+  assert.deepStrictEqual(ui.statusView(drift, sIdle), { title: "Repair needed", sub: "3 files changed", look: "warn" });
+  assert.deepStrictEqual(ui.playView(drift, idle), { label: "Play", look: "", disabled: false }, "not 'Update'");
+  assert.strictEqual(ui.playAction(drift, idle), "choose", "no forced sync");
+  const update = st({ release: "1.1.0", pending: { files: 3, bytes: 900, partial: 0, releaseBytes: 100 } });
+  assert.strictEqual(ui.statusView(update, sIdle).title, "Update available");
+  assert.strictEqual(ui.playView(update, idle).label, "Update");
+  assert.strictEqual(ui.playAction(update, idle), "sync", "a new release is still installed first");
+  assert.strictEqual(ui.playAction(st(), idle), "launch");
+  assert.strictEqual(ui.playAction(st(), Object.assign({}, idle, { accountNeeded: true })), "signin");
+  assert.strictEqual(ui.playAction(st({ gameRunning: true }), idle), "none");
+});
+
 console.log("all %d ui tests passed", passed);

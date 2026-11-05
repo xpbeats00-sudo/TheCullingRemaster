@@ -272,6 +272,10 @@ function state() {
       partial: busy ? 0 : sync.partialBytes(todo, settings.gamePath),
       releaseBytes: manifest.files.reduce((s, f) => s + f.size, 0)
     } : null,
+    // The pending files differ from the release already installed (a
+    // player's own edit, a damaged file): "Repair needed", and PLAY may go
+    // ahead without it.
+    drift: check.ok && status.isDrift(sync.installedVersion(settings.gamePath), manifest && manifest.version, todo),
     freeBytes: (() => { try { return sync.freeBytes(settings.gamePath); } catch { return null; } })(),
     servers: (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers,
     // A Remaster account works unless the installed game uses a real Steam account.

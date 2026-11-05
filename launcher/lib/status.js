@@ -81,14 +81,21 @@ function windowSize(workArea) {
 
 // The start-up screen's last line. check: game.check(); todo: the plan (null
 // without a release to plan against).
-function bootLabel({ online, check, todo }) {
+function bootLabel({ online, check, todo, installed, release }) {
   // A vanished folder isn't a place to install into.
   if (check && check.missing) return "Game folder not found";
   if (!online) return "Offline";
   if (!check || !check.ok) return check && check.installable ? "Ready to install" : "Choose a game folder";
-  if (todo && todo.length) return "Update available";
+  if (todo && todo.length) return isDrift(installed, release, todo) ? `Repair needed (${changedFiles(todo.length)})` : "Update available";
   return "Ready";
 }
+
+// Files that differ from the release the install already has (a player's
+// own edit, a damaged file): a repair, not an update.
+function isDrift(installed, release, todo) {
+  return !!installed && !!release && installed === release && !!todo && todo.length > 0;
+}
+const changedFiles = (n) => `${n} file${n === 1 ? "" : "s"} changed`;
 
 // Runs the start-up checks so that the start-up screen always finishes:
 // checks() resolves to the last label, or HANDED_OFF when a launcher update
@@ -108,4 +115,4 @@ async function finishBoot(checks, progress, onError) {
   return label;
 }
 
-module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, bootLabel, finishBoot, HANDED_OFF, STEAM_ACCOUNT };
+module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, bootLabel, isDrift, finishBoot, HANDED_OFF, STEAM_ACCOUNT };

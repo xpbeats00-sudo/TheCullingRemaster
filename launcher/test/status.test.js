@@ -103,6 +103,16 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.strictEqual(status.bootLabel({ online: true, check: { ok: false, installable: false }, todo: null }), "Choose a game folder");
   });
 
+  await test("files changed at the installed release read as 'Repair needed', not 'Update available'", async () => {
+    const two = [{ path: "a" }, { path: "b" }];
+    assert.strictEqual(status.bootLabel({ online: true, check: ok, todo: two, installed: "1.2.0", release: "1.2.0" }), "Repair needed (2 files changed)");
+    assert.strictEqual(status.bootLabel({ online: true, check: ok, todo: [{}], installed: "1.2.0", release: "1.2.0" }), "Repair needed (1 file changed)");
+    assert.strictEqual(status.bootLabel({ online: true, check: ok, todo: two, installed: "1.1.0", release: "1.2.0" }), "Update available");
+    assert.strictEqual(status.bootLabel({ online: true, check: ok, todo: two, installed: null, release: "1.2.0" }), "Update available", "a Steam copy's first sync");
+    assert.strictEqual(status.isDrift("1.2.0", "1.2.0", []), false);
+    assert.strictEqual(status.isDrift("1.2.0", null, two), false, "offline: unknown");
+  });
+
   await test("the start-up screen always finishes, an error included", async () => {
     const seen = [];
     const progress = (p, label) => seen.push([p, label]);
