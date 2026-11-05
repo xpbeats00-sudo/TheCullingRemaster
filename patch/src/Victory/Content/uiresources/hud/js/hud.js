@@ -2244,6 +2244,7 @@ var onHitTimeout = undefined;
 
 function SetTeamMemberStatus(health, maxHealth, stam, maxStam)
 {
+		if(!remasterPartyPlaced) RemasterPlacePartyBar();
 		//Has our health changed? If not, no point in modifying the DOM
 		if(health != lastHealth){
 			/*
@@ -2274,8 +2275,39 @@ function SetTeamMemberStatus(health, maxHealth, stam, maxStam)
 		}
 }
 
+// Duo: the teammate's panel sits bottom left, in the empty space right of
+// your movement icon: from your armor bar's right edge, ending just above
+// its top (your armor and health stay visible). Placed from the elements'
+// real positions, so it fits any screen.
+var remasterPartyStyled = false, remasterPartyPlaced = false;
+function RemasterPlacePartyBar()
+{
+	var box = document.getElementById("party-member-container");
+	var armor = document.getElementById("armor-icon-container");
+	if(!box || !armor) return;
+	if(!remasterPartyStyled){
+		remasterPartyStyled = true;
+		var css = document.createElement("style");
+		css.textContent =
+			"#party-member-container { top: auto; width: 15vw; height: auto; }" +
+			"#party-member-container .party-health-meter { height: 1.9vw; margin-bottom: 0.2vw; }" +
+			"#party-member-container .party-health-bar { height: 1.9vw; }" +
+			"#party-member-container .party-member-name { font-size: 1.15vw; height: 1.5vw; margin-top: 0.25vw; }" +
+			"#party-member-container .party-stamina-meter-content { height: 0.6vw; }";
+		document.head.appendChild(css);
+	}
+	var a = armor.getBoundingClientRect();
+	if(!a.height || !a.width) return;		// the bottom left isn't shown yet: placed on a later update
+	var gap = window.innerWidth * 0.004;
+	box.style.left = Math.round(a.right + gap * 2) + "px";
+	box.style.bottom = Math.round(window.innerHeight - a.top + gap) + "px";
+	remasterPartyPlaced = true;
+}
+window.addEventListener("resize", function(){ remasterPartyPlaced = false; if(bHasPartyMember) RemasterPlacePartyBar(); });
+
 function OnTeamMemberAdded(playername){
 	bHasPartyMember = true;
+	setTimeout(RemasterPlacePartyBar, 0);
 	//SSPP.classList.remove('hidden');
 	//SSPP2.classList.remove('hidden');
 	PartyBar.classList.remove('hidden');

@@ -46,7 +46,8 @@
 
 5. Showdown rounds (showdown_rounds.c, built by build_showdown_rounds.py into
    showdown_rounds_blob.py). A new section (.sdround, RVA 0x35b4000, after
-   .reloc) holds a small native module, and two pointers lead to it:
+   .reloc) holds a small native module (also fixes 7 and 8), and these lead
+   to it:
    - AShooterGame_FreeForAll's vtable slot 282 (VA 0x1425a81e8, stock
      0x140244d30, the "should the match end" check AShooterGameMode::Tick
      calls once a second): in a Lightning-type match (Showdown) a round ends
@@ -85,6 +86,43 @@
    builder's normal teardown at VA 0x14024447d. The <= 16 path is untouched, so
    small matches keep the native sorting; this only runs when there are more
    than 16 contestants.
+
+7. Duo ends with a team's win (in the native module of fix 5, no new bytes in
+   the stock code). The stock "should the match end" check (VA 0x140244d30)
+   has a team rule - every living human on one team - but takes it only when
+   the world's net mode isn't Standalone (UWorld::GetNetMode, 0x1416848f0,
+   called at 0x140244e6b). A local match is Standalone, so a Duo match got
+   the Solo rule: it ends when no bot is alive and at most one human is. With
+   a bot teammate alive the match went on after every rival was dead, and
+   ended only when the teammate died. The module's slot-282 function now, in
+   a ClassicTeams match (GameMode +0x4e0 == 2, the byte the game copies to
+   GameState +0x4e4; Solo = 1 and Showdown = 3 keep their own paths), runs the
+   stock check and also ends the match once every living contestant (the stock
+   check's filters: PlayerArray, not spectator, +0x5b4, not left, alive by the
+   records) has the same TeamNumber > 0 (fix 4) and a contestant of another
+   team has died. The stock end of match follows: DetermineMatchWinner
+   (0x1402324a0) marks every record with that team number a winner (the dead
+   teammate too), and each player gets the victory path (ClientGameEnded with
+   bIsWinner, the HUD's SetVictoryData).
+
+8. The Chokening credits its user with the gas's kills (module of fix 5). Gas
+   damage is AGasWound's TakeDamage with EventInstigator =
+   GetInstigatorController() (Instigator's Controller; calls at VA
+   0x1402e71e8 and 0x1402e752f). A pylon gives its wound the pylon's
+   Instigator: a tank used directly sets it to the user (APylon::OnUseFinished
+   0x14022e1a0), one forced by damage to the attacker (0x14022e0d0), but the
+   Chokening console (BP_KillSwitch) starts every BP_GasPylon_2 through the
+   Blueprint KillSwitchActivation -> APylon::OnRising (0x14022dd80), which
+   leaves it empty, so its kills were "Killed by Suicide" (the GameState's
+   PlayerDied, 0x140241980, names "Suicide" when there's no killer). The
+   console then calls HandleAirDropRatingActivity("PylonUse", name, 4) on its
+   user's player state; its thunk's call (VA 0x140362477) now goes to the
+   module, which records every pylon then Rising with no instigator together
+   with the user's controller. The two GetInstigatorController calls go to the
+   module too: with no stock instigator, a wound of a recorded pylon's wound
+   class on a character standing in that (not yet Inert) pylon's danger area
+   gets the user as instigator, except the user and the user's teammate
+   (TeamNumber > 0 and equal), who keep "no instigator".
 
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it.
@@ -224,6 +262,22 @@ RAND_LEA = bytes.fromhex("4c8d05b7af0c00")
 SPAWN_WITH_CALL_AT = 0x266875       # file offset of "call 0x14030a460" (VA 0x140267275)
 SPAWN_WITH_CALL_VA = 0x140267275
 SPAWN_WITH_CALL = bytes.fromhex("e8e6310a00")
+# Calls the module takes over besides the spawn-with call (fixes 7 and 8):
+# (name, file offset, VA, stock bytes, module entry offset).
+MODULE_CALLS = (
+    # 8. execHandleAirDropRatingActivity's "call 0x1402494d0" (the Chokening's user)
+    ("rating", 0x361A77, 0x140362477, bytes.fromhex("e85470eeff"), ROUNDS.SD_RATING),
+    # 8. AGasWound's two "call 0x141119150" (GetInstigatorController: the gas's EventInstigator)
+    ("gas damage", 0x2E67E8, 0x1402E71E8, bytes.fromhex("e8631fe300"), ROUNDS.SD_GAS_INSTIGATOR),
+    ("gas tick", 0x2E6B2F, 0x1402E752F, bytes.fromhex("e81c1ce300"), ROUNDS.SD_GAS_INSTIGATOR),
+)
+
+
+def module_calls():
+    """(name, file offset, stock bytes, patched bytes) for MODULE_CALLS."""
+    sect = IMAGE_BASE + ROUNDS.SECTION_RVA
+    return [(name, at, stock, b"\xe8" + struct.pack("<i", sect + entry - (va + 5)))
+            for name, at, va, stock, entry in MODULE_CALLS]
 
 
 def _align(n, a):
@@ -263,23 +317,31 @@ def _rounds(data, path):
     cur_slot = struct.unpack_from("<Q", data, FFA_SLOT_AT)[0] if len(data) >= FFA_SLOT_AT + 8 else None
     cur_lea = bytes(data[RAND_LEA_AT:RAND_LEA_AT + len(RAND_LEA)])
     cur_call = bytes(data[SPAWN_WITH_CALL_AT:SPAWN_WITH_CALL_AT + len(SPAWN_WITH_CALL)])
+    calls = module_calls()
+    cur_calls = [bytes(data[c_at:c_at + 5]) for _n, c_at, _s, _p in calls]
     if nsec == STOCK_NUM_SECTIONS:
+        bad = [n for (n, _a, stock, _p), cur in zip(calls, cur_calls) if cur != stock]
         if (struct.unpack_from("<I", data, size_at)[0] != STOCK_IMAGE_SIZE or len(data) != STOCK_FILE_SIZE
                 or cur_slot != FFA_SLOT or cur_lea != RAND_LEA or cur_call != SPAWN_WITH_CALL or any(data[at:at + 40])
-                or at + 40 > struct.unpack_from("<I", data, pe + 24 + 60)[0]):
-            raise ValueError("%s is not the Victory.exe this patch is for (Showdown rounds: section table, vtable "
-                             "slot %s, RandomIntegerInRange %s or spawn-with call %s)"
-                             % (path, cur_slot and hex(cur_slot), cur_lea.hex(), cur_call.hex()))
+                or at + 40 > struct.unpack_from("<I", data, pe + 24 + 60)[0] or bad):
+            raise ValueError("%s is not the Victory.exe this patch is for (native module: section table, vtable "
+                             "slot %s, RandomIntegerInRange %s, spawn-with call %s or calls %s)"
+                             % (path, cur_slot and hex(cur_slot), cur_lea.hex(), cur_call.hex(), bad))
     elif nsec == STOCK_NUM_SECTIONS + 1 and data[at:at + 8] == ROUNDS_NAME:
         if (data[at:at + 40] == header and data[STOCK_FILE_SIZE:] == raw and cur_slot == slot and cur_lea == lea
-                and cur_call == call and struct.unpack_from("<I", data, size_at)[0] == image_size):
+                and cur_call == call and struct.unpack_from("<I", data, size_at)[0] == image_size
+                and cur_calls == [p for _n, _a, _s, p in calls]):
             return False
-        # An older build of the module: replace it. Its spawn-with call is
-        # stock (builds before the rival's kit) or leads into the section.
-        into = cur_call[:1] == b"\xe8" and (IMAGE_BASE + ROUNDS.SECTION_RVA <= SPAWN_WITH_CALL_VA + 5
-                                            + struct.unpack_from("<i", cur_call, 1)[0] < IMAGE_BASE + image_size + 0x10000)
-        if cur_call != SPAWN_WITH_CALL and not into:
+        # An older build of the module: replace it. Each call it takes over is
+        # stock (builds from before that fix) or leads into the section.
+        def into(cur, va):
+            return cur[:1] == b"\xe8" and (IMAGE_BASE + ROUNDS.SECTION_RVA <= va + 5 + struct.unpack_from("<i", cur, 1)[0]
+                                           < IMAGE_BASE + image_size + 0x10000)
+        if cur_call != SPAWN_WITH_CALL and not into(cur_call, SPAWN_WITH_CALL_VA):
             raise ValueError("%s is not the Victory.exe this patch is for (spawn-with call %s)" % (path, cur_call.hex()))
+        for (name, _a, va, stock, _e), cur in zip(MODULE_CALLS, cur_calls):
+            if cur != stock and not into(cur, va):
+                raise ValueError("%s is not the Victory.exe this patch is for (%s call %s)" % (path, name, cur.hex()))
         del data[STOCK_FILE_SIZE:]
     else:
         raise ValueError("%s is not the Victory.exe this patch is for (%d sections)" % (path, nsec))
@@ -290,6 +352,8 @@ def _rounds(data, path):
     struct.pack_into("<Q", data, FFA_SLOT_AT, slot)
     data[RAND_LEA_AT:RAND_LEA_AT + len(lea)] = lea
     data[SPAWN_WITH_CALL_AT:SPAWN_WITH_CALL_AT + len(call)] = call
+    for _n, c_at, _s, patched in calls:
+        data[c_at:c_at + 5] = patched
     return True
 
 
@@ -315,4 +379,4 @@ if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
     print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds, "
-          "big scoreboards%s" % (sys.argv[1], n, "" if changed else " (already)"))
+          "big scoreboards, Duo team win, Chokening kills%s" % (sys.argv[1], n, "" if changed else " (already)"))

@@ -1,16 +1,19 @@
-/* Showdown rounds: every round of a Showdown series in one match.
+/* The native module: Showdown rounds, the Duo team's win and the Chokening's
+ * kills.
  *
  * Built by build_showdown_rounds.py (MSVC cl, no CRT) into a blob that
  * patch_exe.py places in a new section of Victory.exe. All game addresses are
  * image-relative (the exe is ASLR-enabled): the base is found from the RVA of
  * sd_self_rva, which the builder writes into the blob.
  *
- * Three entry points:
+ * Five entry points:
  *
  * sd_should_end(gm) replaces AShooterGame_FreeForAll's "should the match end"
  *   virtual (vtable slot 282, VA 0x140244d30), which AShooterGameMode::Tick
- *   calls once a second while the match is InProgress. For any mode but
- *   Lightning (Showdown) it is the stock function. For Showdown it runs the
+ *   calls once a second while the match is InProgress. For Solo and every
+ *   other mode it is the stock function. For Duo (ClassicTeams) it is the
+ *   stock function, and also ends the match once every living contestant is
+ *   on one team (duo_should_end, below). For Lightning (Showdown) it runs the
  *   series:
  *     FIGHT    both fighters alive -> keep playing. One left (by the game's
  *              own alive records, AShooterGameState+0x468) -> the round goes
@@ -43,6 +46,27 @@
  * At each reset the fighters' inventories are cleared before their pawns go,
  * and weapons and pickups lying in the world without an owner (dropped
  * items) are destroyed.
+ *
+ * sd_rating(ps, activity, player, value) replaces the call of
+ *   AShooterPlayerState::HandleAirDropRatingActivity in its Blueprint thunk
+ *   (VA 0x140362477). The Chokening's console (BP_KillSwitch) calls it with
+ *   ("PylonUse", name, 4) on its user's player state right after it has run
+ *   KillSwitchActivation on every BP_GasPylon_2 (whose OnRising puts the
+ *   pylon in the Rising state); a gas tank used directly passes 1. On the
+ *   Chokening's call the module records every pylon that is Rising with no
+ *   instigator (the ones the console just started), each with the user's
+ *   controller (weak pointers: either may go away).
+ *
+ * sd_gas_instigator(wound) replaces AGasWound's two calls of
+ *   AActor::GetInstigatorController (VA 0x1402e71e8 and 0x1402e752f), whose
+ *   result is the EventInstigator of the gas's TakeDamage. A pylon gives its
+ *   wound the pylon's Instigator (a tank used directly, or forced by damage,
+ *   has its user's pawn; one the Chokening started has none, so its kills
+ *   were "Suicide"). When the stock answer is none and the wounded character
+ *   stands in a pylon the Chokening started (still not Inert), with that
+ *   pylon's wound class, the answer is the Chokening's user - unless the
+ *   wounded character is the user or the user's teammate (TeamNumber > 0 and
+ *   equal, i.e. Duo), who keep the stock "no instigator".
  *
  * HUD messages go through AVictoryPlayerHUD::ShowGameMessage, which the HUD
  * page receives as the ShowGameMessage event (ShowdownHud.js takes the "SDR|"
@@ -88,6 +112,10 @@ unsigned __int64 __rdtsc(void);
 #define R_FREE           0x50c510  /* FMemory::Free */
 #define R_CLS_WEAPON     0x303d00  /* AShooterWeapon */
 #define R_CLS_PICKUP     0x3034e0  /* AShooterPickup */
+#define R_INSTIGATOR_CTRL 0x1119150 /* AActor::GetInstigatorController (Instigator ? its Controller : 0) */
+#define R_RATING         0x2494d0  /* AShooterPlayerState::HandleAirDropRatingActivity(FString, FString, int32) */
+#define R_CLS_PYLON      0x302980  /* APylon */
+#define R_WEAK_SET       0x69c2a0  /* FWeakObjectPtr::operator=(const UObject *) */
 
 /* Virtual functions (byte offsets in the vtable). */
 #define V_GET_WORLD      0x120     /* UObject::GetWorld */
@@ -117,8 +145,25 @@ unsigned __int64 __rdtsc(void);
 #define PS_FLAGS       0x42c       /* bit 0 spectator, bit 1 only spectator */
 #define F_OBJECT       0x18        /* FFrame::Object */
 #define F_CODE         0x20        /* FFrame::Code */
+#define GM_NO_END      0x74d       /* while set, the stock check never ends the match */
+#define GS_PLAYERS     0x418       /* AGameState::PlayerArray */
+#define GS_NUM_PLAYERS 0x420
+#define PS_TEAM        0x490       /* VictoryPlayerState TeamNumber (GetTeamNum) */
+#define PS_CONTESTANT  0x5b4       /* the stock check counts only these */
+#define REC_PS         0x10        /* player record: the player state */
+#define REC_TEAM       0x40        /* player record: the team (SetTeamNum writes it) */
+#define A_INSTIGATOR   0x150       /* AActor::Instigator */
+#define P_CONTROLLER   0x438       /* APawn::Controller */
+#define PY_STATE       0x480       /* APylon::PylonState (EPylonState) */
+#define PY_IN_AREA     0x488       /* APylon::PlayersInDangerArea (TArray<AShooterCharacter *>) */
+#define PY_WOUND_CLASS 0x438       /* APylon::WoundClass */
 
+#define CLASSIC_TEAMS  2           /* EVictoryGameMode::ClassicTeams: Duo (CoopRanked) */
 #define LIGHTNING      3           /* EVictoryGameMode::Lightning: Showdown */
+#define PYLON_INERT    0           /* EPylonState */
+#define PYLON_RISING   1
+#define CHOKENING_RATING 4         /* BP_KillSwitch's HandleAirDropRatingActivity value (a tank: 1) */
+#define MAX_PYLONS     128
 #define ROUNDS_TO_WIN  4
 #define KITS           7
 #define BLACK_TICKS    3           /* seconds between a round's end and the reset */
@@ -388,12 +433,172 @@ static void reset(u8 *gm, u8 *world)
     }
 }
 
+/* ---------------------------------------------------------------- Duo: a team's win */
+
+/* The stock check (VA 0x140244d30) knows teams only when the world's net mode
+   is not Standalone (UWorld::GetNetMode, 0x1416848f0): its team rule ("every
+   living human on one team") is for online matches. A local Duo match is
+   Standalone, so it takes the Solo rule instead - the match ends when no bot
+   is alive and at most one human is - and a bot teammate alive keeps the
+   match going. Here the match also ends once every living contestant (humans
+   and bots, by the stock check's own filters) is on one team (TeamNumber > 0,
+   which patch_exe.py fix 4 assigns) and some contestant of another team has
+   died (so a match that has not filled yet never ends). The stock end of
+   match follows: AShooterGame_FreeForAll's DetermineMatchWinner (0x1402324a0)
+   makes every record with the living team's number a winner, dead ones too. */
+static char duo_should_end(u8 *gm)
+{
+    u8 *gs, **players, *recs;
+    i32 i, n, team = 0, alive = 0;
+    if (((fn_bool)AT(R_FFA_SHOULD_END))(gm)) return 1;
+    if (FIELD(gm, GM_NO_END, u8)) return 0;
+    gs = FIELD(gm, GM_GAMESTATE, u8 *);
+    if (!gs) return 0;
+    players = FIELD(gs, GS_PLAYERS, u8 **);
+    n = FIELD(gs, GS_NUM_PLAYERS, i32);
+    for (i = 0; i < n; i++) {
+        u8 *ps = players[i];
+        i32 t;
+        if (!ps || (FIELD(ps, PS_FLAGS, u32) & 1) || !FIELD(ps, PS_CONTESTANT, u8)) continue;
+        if (((fn_bool)AT(R_PS_HAS_LEFT))(ps) || !((fn_bool)AT(R_PS_IS_ALIVE))(ps)) continue;
+        t = FIELD(ps, PS_TEAM, i32);
+        if (t <= 0 || (team && t != team)) return 0;
+        team = t;
+        alive++;
+    }
+    if (!alive) return 0;
+    recs = FIELD(gs, GS_RECORDS, u8 *);
+    n = FIELD(gs, GS_NUM_RECORDS, i32);
+    for (i = 0; i < n; i++) {
+        u8 *r = recs + (u64)i * REC_SIZE;
+        if (FIELD(r, REC_PS, u8 *) && !FIELD(r, REC_ALIVE, u8) && FIELD(r, REC_TEAM, i32) != team) return 1;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------- the Chokening's kills */
+
+typedef struct { i32 index, serial; } Weak;   /* FWeakObjectPtr */
+typedef void (*fn_rating)(u8 *, FString *, FString *, i32);
+
+static struct {
+    u8 *world;                     /* compared, never read */
+    i32 n;
+    struct { Weak pylon, by; } list[MAX_PYLONS];
+} C;
+
+static const u16 PYLON_USE[] = { 'P', 'y', 'l', 'o', 'n', 'U', 's', 'e', 0 };
+
+static u8 *weak(Weak *w) { return ((fn_ptr)AT(R_WEAK_GET))((u8 *)w); }
+static void weak_set(Weak *w, u8 *obj) { ((fn_void2)AT(R_WEAK_SET))((u8 *)w, obj); }
+
+static int is_pylon_use(FString *s)
+{
+    i32 i;
+    if (!s || !s->data || s->num != 9) return 0;
+    for (i = 0; i < 9; i++)
+        if (s->data[i] != PYLON_USE[i]) return 0;
+    return 1;
+}
+
+/* Pylons that went back to Inert (or are gone) are no longer the Chokening's:
+   a later trigger by the match's own schedule is not the user's. */
+static void sweep(void)
+{
+    i32 i = 0;
+    while (i < C.n) {
+        u8 *p = weak(&C.list[i].pylon);
+        if (p && FIELD(p, PY_STATE, u8) != PYLON_INERT) { i++; continue; }
+        C.n--;
+        C.list[i] = C.list[C.n];
+    }
+}
+
+/* The Chokening was used by ps: the pylons it just started are theirs. */
+static void chokening(u8 *ps)
+{
+    u8 *world = world_of(ps), *list, *by = 0, *cls;
+    PtrArray found;
+    i32 i, j, num;
+    if (!world) return;
+    list = world + W_CONTROLLERS;
+    num = FIELD(list, 8, i32);
+    for (i = 0; i < num && !by; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && FIELD(c, C_PLAYERSTATE, u8 *) == ps) by = c;
+    }
+    if (!by) return;
+    cls = ((fn_class)AT(R_CLS_PYLON))((const u16 *)AT(R_PKG_VICTORY));
+    if (!cls) return;
+    if (C.world != world) C.n = 0;      /* a new match */
+    C.world = world;
+    found.data = 0;
+    found.num = found.max = 0;
+    ((fn_actors)AT(R_ACTORS_OF_CLASS))(ps, cls, &found);
+    for (i = 0; i < found.num && C.n < MAX_PYLONS; i++) {
+        u8 *p = found.data[i];
+        if (!p || FIELD(p, PY_STATE, u8) != PYLON_RISING || FIELD(p, A_INSTIGATOR, u8 *)) continue;
+        for (j = 0; j < C.n && weak(&C.list[j].pylon) != p; j++) ;
+        if (j == C.n) C.n++;
+        weak_set(&C.list[j].pylon, p);
+        weak_set(&C.list[j].by, by);
+    }
+    if (found.data) ((fn_free)AT(R_FREE))(found.data);
+}
+
+void sd_rating(u8 *ps, FString *activity, FString *player, i32 value)
+{
+    int choke;
+    B = base();
+    choke = value == CHOKENING_RATING && is_pylon_use(activity);
+    ((fn_rating)AT(R_RATING))(ps, activity, player, value);     /* takes the strings */
+    if (choke && ps) chokening(ps);
+}
+
+static i32 team_of(u8 *c)
+{
+    u8 *ps = c ? FIELD(c, C_PLAYERSTATE, u8 *) : 0;
+    return is_a(ps, R_CLS_PS) ? FIELD(ps, PS_TEAM, i32) : 0;
+}
+
+u8 *sd_gas_instigator(u8 *wound)
+{
+    u8 *ctrl, *victim, *by, *vc, *p = 0;
+    i32 i, j, t;
+    B = base();
+    ctrl = ((fn_ptr)AT(R_INSTIGATOR_CTRL))(wound);
+    if (ctrl || !wound || !C.n) return ctrl;
+    victim = FIELD(wound, A_OWNER, u8 *);
+    if (!victim || world_of(wound) != C.world) return 0;
+    for (i = 0; i < C.n; i++) {
+        u8 **in;
+        i32 n;
+        p = weak(&C.list[i].pylon);
+        if (!p || FIELD(p, PY_STATE, u8) == PYLON_INERT) continue;
+        if (FIELD(p, PY_WOUND_CLASS, u8 *) != FIELD(wound, O_CLASS, u8 *)) continue;
+        in = FIELD(p, PY_IN_AREA, u8 **);
+        n = FIELD(p, PY_IN_AREA + 8, i32);
+        for (j = 0; j < n && in[j] != victim; j++) ;
+        if (j < n) break;
+    }
+    if (i == C.n) return 0;
+    by = weak(&C.list[i].by);
+    if (!by || FIELD(by, C_PAWN, u8 *) == victim) return 0;
+    vc = FIELD(victim, P_CONTROLLER, u8 *);
+    if (vc == by) return 0;
+    t = team_of(by);
+    if (t > 0 && team_of(vc) == t) return 0;
+    return by;
+}
+
 char sd_should_end(u8 *gm)
 {
     u8 *world;
     Count n;
     u16 x;
     B = base();
+    if (C.n) sweep();
+    if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) return duo_should_end(gm);
     if (!gm || FIELD(gm, GM_TYPE, u8) != LIGHTNING) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     world = world_of(gm);
     if (!world) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);

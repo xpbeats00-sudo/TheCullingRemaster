@@ -22,3 +22,5 @@ backups/
 .claude/
 server/data/sessions.json*
 releases/
+
+server/data/activity.json*

@@ -64,6 +64,7 @@ const { createMetrics, metricsAllowed } = require('./metrics');
 const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
 const { Friends } = require('./friends');
+const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
 
 // How often changed profiles / sessions are written (at most once per this
@@ -321,6 +322,8 @@ const tickets = new MatchTickets(Date.now, path.join(DATA_DIR, 'tickets.json'), 
 const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin, file: path.join(DATA_DIR, 'showdown-series.json'),
   saveDelayMs: SAVE_DELAY_MS, onSaveError: (e) => { metrics.error('save'); log('saving showdown series failed:', e.message); } });
 // Friends (friends.json) and parties (memory); see friends.js.
+// Recent activity for the launcher: matches today, players this week.
+const activity = new Activity(Date.now, path.join(DATA_DIR, 'activity.json'));
 const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
   saveDelayMs: SAVE_DELAY_MS,
   onSaveError: (e) => { metrics.error('save'); log('saving friends failed:', e.message); }
@@ -516,6 +519,7 @@ app.post('/api/matchresult', (req, res) => {
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
+  activity.match(userID);
   if (claim.ticket.map === SHOWDOWN.map) return showdownMatchResult(res, claim, body, userID);
   const p = getProfile(userID);
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
@@ -963,7 +967,7 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
 
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
-app.get(['/health', '/api/health'], (req, res) => res.json({ ok: true, users: socketsByUser.size }));
+app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: true, users: socketsByUser.size }, activity.summary())));
 
 app.get('/api/ranked', (req, res) => {
   const userID = userFromRequest(req);
@@ -1459,6 +1463,7 @@ io.on('connection', (socket) => {
     clearTimeout(socket.loginTimer);
     socket.userID = userID;
     socketsByUser.set(userID, socket);
+    activity.seen(userID);
     const p = getProfile(userID);
     log('socket login', userID);
 
@@ -1739,6 +1744,7 @@ function flushAll(why) {
   showdowns.flushSync();
   const wroteAccounts = accounts.flushSync();
   friends.flushSync();
+  activity.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {
     log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
       .filter(Boolean).join(', '));
