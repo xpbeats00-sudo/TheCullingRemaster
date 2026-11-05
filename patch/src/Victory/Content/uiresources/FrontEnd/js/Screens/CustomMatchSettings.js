@@ -338,21 +338,29 @@
     BaseMenuScreen.prototype.OnMouseClicked.call(this, elem);
   };
 
-  // Sends the FULL set, so the server always holds exactly what the screen
-  // shows. EGameModeMod 17 (StartingActivityValue) is not in the table and is
-  // never sent.
-  function SendCustomMatchMods() {
-    if (typeof LobbyData == "undefined" || !LobbyData.IsInLobby ||
-        typeof PlayerProfileData == "undefined" ||
-        typeof IsLobbyOwner != "function" || !IsLobbyOwner(PlayerProfileData.UserID)) {
-      return;
-    }
+  function IsCustomLobbyOwner() {
+    return typeof LobbyData != "undefined" && LobbyData.IsInLobby &&
+      typeof PlayerProfileData != "undefined" &&
+      typeof IsLobbyOwner == "function" && IsLobbyOwner(PlayerProfileData.UserID);
+  }
+
+  function CustomMatchModsPayload() {
     var mods = {};
     for (var i = 0; i < GAME_MODE_MOD_DEFINITIONS.length; i++) {
       var key = GAME_MODE_MOD_DEFINITIONS[i].key;
       mods[key] = CustomMatchController[key];
     }
-    var payload = { mods: mods };
+    return { mods: mods };
+  }
+
+  // Sends the FULL set, so the server always holds exactly what the screen
+  // shows. EGameModeMod 17 (StartingActivityValue) is not in the table and is
+  // never sent.
+  function SendCustomMatchMods() {
+    if (!IsCustomLobbyOwner()) {
+      return;
+    }
+    var payload = CustomMatchModsPayload();
     if (typeof ConnectWebsocketIfNeeded != "function") {
       return;
     }
@@ -368,6 +376,21 @@
     }).catch(function (err) {
       console.error("CustomMatchSettings: failed to send lobby-set-mods " + err);
     });
+  }
+
+  // START: the settings once more, right before the stock lobby-start-match
+  // and on the same socket (messages arrive in order), so the match plays
+  // what the screen shows even if a send while clicking through was lost.
+  if (typeof CustomScreen == "function" && typeof CustomScreen.OnClicked == "function" && !CustomScreen.OnClicked.RemasterMods) {
+    var stockOnClicked = CustomScreen.OnClicked;
+    CustomScreen.OnClicked = function (elem) {
+      if (elem && elem.id == "start_match_btn" && LobbyData.CanStartMatch && !LobbyData.MatchIsStarting &&
+          IsCustomLobbyOwner() && typeof socketConnection != "undefined" && socketConnection && socketConnection.connected) {
+        socketConnection.emit("lobby-set-mods", CustomMatchModsPayload());
+      }
+      return stockOnClicked.apply(this, arguments);
+    };
+    CustomScreen.OnClicked.RemasterMods = true;
   }
 
   $.extend(CustomSettings.prototype, VerticalMenuMixin);

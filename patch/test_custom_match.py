@@ -9,6 +9,8 @@
   options) gives no URL. The menu opens it with StartTraining(url).
 - The Join explanation is the same text in the menu and the server, and no
   menu text added for custom matches mentions bots.
+- test_custom_menu.js: CustomMatchSettings.js on stand-ins for the stock
+  menu (the settings screen, START, Join, leaving the screen).
 - node --check on the changed scripts, and an ES5 check (no arrow functions,
   let/const, template literals, Promise, .includes, Object.assign, classes,
   spread) of CustomMatchSettings.js and of every ClientWeb.js line that isn't
@@ -124,6 +126,10 @@ check(not re.search(r"\bbots?\b", "The custom match could not start. Please try 
 for path in (CLIENTWEB, SETTINGS, os.path.join(SERVER, "custommatch.js"), os.path.join(SERVER, "server.js")):
     r = subprocess.run(["node", "--check", path], capture_output=True, text=True)
     check(r.returncode == 0, "node --check %s: %s" % (os.path.basename(path), r.stderr.strip()))
+
+
+r = subprocess.run(["node", os.path.join(HERE, "test_custom_menu.js")], capture_output=True, text=True)
+check(r.returncode == 0, "test_custom_menu.js (the CUSTOM screens on stand-ins): %s" % (r.stderr.strip() or r.stdout.strip()))
 
 
 def code_only(text):
