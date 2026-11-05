@@ -11,6 +11,9 @@
   menu text added for custom matches mentions bots.
 - test_custom_menu.js: CustomMatchSettings.js on stand-ins for the stock
   menu (the settings screen, START, Join, leaving the screen).
+- With a Paks dir, test_custom_lobby.js: ClientWeb.js, the stock Custom.js and
+  CustomMatchSettings.js fed the lobby-update the server sends (the owner is
+  listed, the owner's options and START are shown).
 - node --check on the changed scripts, and an ES5 check (no arrow functions,
   let/const, template literals, Promise, .includes, Object.assign, classes,
   spread) of CustomMatchSettings.js and of every ClientWeb.js line that isn't
@@ -130,6 +133,27 @@ for path in (CLIENTWEB, SETTINGS, os.path.join(SERVER, "custommatch.js"), os.pat
 
 r = subprocess.run(["node", os.path.join(HERE, "test_custom_menu.js")], capture_output=True, text=True)
 check(r.returncode == 0, "test_custom_menu.js (the CUSTOM screens on stand-ins): %s" % (r.stderr.strip() or r.stdout.strip()))
+
+# The CUSTOM screen fed the server's real lobby: needs the stock Custom.js from the pak.
+if len(sys.argv) > 1:
+    import tempfile
+    from build_catalog import pak_entries, read_entry
+    stock_custom = None
+    for pak in sorted(os.listdir(sys.argv[1])):
+        if pak.endswith(".pak"):
+            for e in pak_entries(os.path.join(sys.argv[1], pak)):
+                if e[1].endswith("uiresources/FrontEnd/js/Screens/Custom.js"):
+                    stock_custom = read_entry(*([e[0]] + list(e[2:])))
+    check(stock_custom is not None, "no stock Custom.js in the paks")
+    if stock_custom is not None:
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "Custom.js")
+        open(path, "wb").write(stock_custom)
+        r = subprocess.run(["node", os.path.join(HERE, "test_custom_lobby.js"), path], capture_output=True, text=True)
+        check(r.returncode == 0 and "custom lobby tests passed" in r.stdout,
+              "test_custom_lobby.js (the server's lobby on the stock CUSTOM screen): %s" % (r.stderr.strip() or r.stdout.strip()))
+        os.remove(path)
+        os.rmdir(tmp)
 
 
 def code_only(text):

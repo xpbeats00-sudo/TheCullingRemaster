@@ -1921,13 +1921,8 @@ io.on('connection', (socket) => {
   // PC with the map and the settings the CUSTOM screen picked. Nobody can join
   // one (there is no multiplayer hosting): the menu says to use a party.
   on('lobby-create', (msg) => {
-    socket.lobby = {
-      code: crypto.randomBytes(3).toString('hex'),
-      owner: socket.userID,
-      mapName: custom.mapName(msg && msg.mapName),
-      members: [{ user: socket.userID, team: 0 }],
-      mods: custom.defaults()
-    };
+    socket.lobby = custom.lobby(crypto.randomBytes(3).toString('hex'), socket.userID, lobbyCard(socket.userID),
+      msg && msg.cullingcard, msg && msg.mapName);
     socket.emit('lobby-update', socket.lobby);
   });
   on('lobby-join', () => socket.emit('lobby-join-fail', { reason: custom.JOIN_REFUSED }));

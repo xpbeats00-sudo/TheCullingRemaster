@@ -54,6 +54,19 @@ const STOCK = custom.defaults();
       assert.strictEqual(lobby.members.length, 1);
       assert.strictEqual(lobby.mapName, "Jungle/Jungle_P", "an unknown map is the Jungle");
       assert.deepStrictEqual(lobby.mods, STOCK);
+      // What the stock CUSTOM screen needs to list the owner (Custom.js updateLobbyData).
+      const m = lobby.members[0];
+      assert.strictEqual(m.user, lobby.owner);
+      assert.strictEqual(m.userData.userID, lobby.owner);
+      assert.strictEqual(typeof m.userData.userName, "string");
+      assert.ok(Number.isInteger(m.userData.stats.level) && m.userData.stats.level >= 1);
+      assert.strictEqual(m.userData.cullingcard, "3");
+    });
+
+    await test("a bad calling card ID is the profile's card", async () => {
+      const update = next(a, "lobby-update");
+      a.emit("lobby-create", { cullingcard: { evil: 1 }, mapName: "Jungle/Jungle_P" });
+      assert.ok(/^\d+$/.test((await update).members[0].userData.cullingcard));
     });
 
     await test("START with the stock settings opens the plain map", async () => {
