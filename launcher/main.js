@@ -125,8 +125,20 @@ async function latestManifest() {
   return m;
 }
 
-async function boot() {
-  const progress = (p, label) => send("boot-progress", { p, label });
+// The start-up checks. They always finish the start-up screen, an error
+// included (a settings file that can't be written, a game folder that
+// can't be read), so it never hangs.
+const bootProgress = (p, label) => send("boot-progress", { p, label });
+function boot() {
+  return status.finishBoot(bootChecks, bootProgress, (e) => {
+    log("boot-error", { code: e.code, op: e.op, error: e.message });
+    bootResult.error = friendly(e, errorContext());
+    return "Couldn't finish the start-up checks: " + bootResult.error;
+  });
+}
+
+async function bootChecks() {
+  const progress = bootProgress;
   bootResult = { online: false, error: null };
   progress(0.08, "Checking game folder");
   if (!settings.gamePath) {
@@ -150,7 +162,7 @@ async function boot() {
   // A newer launcher first: it may handle this release better than this one.
   if (manifest && await updateLauncher((done, total) =>
     progress(0.25 + 0.7 * done / total, `Updating the launcher to ${manifest.launcher.version} (${Math.floor(done / total * 100)}%)`))) {
-    return;                      // the setup takes over; this launcher is quitting
+    return status.HANDED_OFF;    // the setup takes over; this launcher is quitting
   }
   const installed = checkGame().ok;
   progress(0.45, installed ? "Verifying game files" : "Preparing install");
@@ -164,7 +176,7 @@ async function boot() {
   // PLAY shows it running instead of starting a second copy.
   game.isRunning().then((up) => { if (up && !gameWatch.running) watchGame({ alreadyRunning: true }); }, () => {});
   log("boot", { online: bootResult.online, release: manifest && manifest.version, installed: sync.installedVersion(settings.gamePath), todo: todo ? todo.length : null });
-  progress(1, status.bootLabel({ online: bootResult.online, check: checkGame(), todo, installed: sync.installedVersion(settings.gamePath), release: manifest && manifest.version }));
+  return status.bootLabel({ online: bootResult.online, check: checkGame(), todo, installed: sync.installedVersion(settings.gamePath), release: manifest && manifest.version });
 }
 
 // ---------------------------------------------------------------- launcher self-update

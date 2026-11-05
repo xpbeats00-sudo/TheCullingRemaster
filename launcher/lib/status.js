@@ -90,4 +90,22 @@ function bootLabel({ online, check, todo }) {
   return "Ready";
 }
 
-module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, bootLabel, STEAM_ACCOUNT };
+// Runs the start-up checks so that the start-up screen always finishes:
+// checks() resolves to the last label, or HANDED_OFF when a launcher update
+// took over (the screen stays until the launcher quits). A check that throws
+// still finishes it, with onError(e)'s label. Never rejects.
+const HANDED_OFF = Symbol("handed off");
+async function finishBoot(checks, progress, onError) {
+  let label;
+  try {
+    const r = await checks();
+    if (r === HANDED_OFF) return r;
+    label = r;
+  } catch (e) {
+    try { label = onError(e); } catch { label = "Start-up checks failed"; }
+  }
+  progress(1, label);
+  return label;
+}
+
+module.exports = { playBlocker, createGameWatch, syncOutcome, windowSize, bootLabel, finishBoot, HANDED_OFF, STEAM_ACCOUNT };

@@ -103,5 +103,19 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     assert.strictEqual(status.bootLabel({ online: true, check: { ok: false, installable: false }, todo: null }), "Choose a game folder");
   });
 
+  await test("the start-up screen always finishes, an error included", async () => {
+    const seen = [];
+    const progress = (p, label) => seen.push([p, label]);
+    assert.strictEqual(await status.finishBoot(async () => "Ready", progress, () => "x"), "Ready");
+    assert.deepStrictEqual(seen.pop(), [1, "Ready"]);
+    const label = await status.finishBoot(async () => { throw new Error("EPERM settings.json"); }, progress, (e) => "Couldn't finish: " + e.message);
+    assert.strictEqual(label, "Couldn't finish: EPERM settings.json");
+    assert.deepStrictEqual(seen.pop(), [1, "Couldn't finish: EPERM settings.json"], "100% with the error: the screen can go on");
+    await status.finishBoot(() => { throw new Error("sync"); }, progress, () => { throw new Error("worse"); });
+    assert.deepStrictEqual(seen.pop(), [1, "Start-up checks failed"]);
+    assert.strictEqual(await status.finishBoot(async () => status.HANDED_OFF, progress, () => "x"), status.HANDED_OFF);
+    assert.strictEqual(seen.length, 0, "a launcher update taking over leaves the screen as it is");
+  });
+
   console.log("all %d status tests passed", passed);
 })().catch((e) => { console.error("FAIL", e.stack || e.message); process.exitCode = 1; });
