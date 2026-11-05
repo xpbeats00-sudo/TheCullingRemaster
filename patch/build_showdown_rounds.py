@@ -1,4 +1,4 @@
-"""Build showdown_rounds.c into the blob patch_exe.py puts in Victory.exe.
+"""Build showdown_rounds.c (the native module) into the blob patch_exe.py puts in Victory.exe.
 
 The C file is compiled with MSVC (cl /c, no CRT, no headers); this script is
 the linker: it lays the object's .text, .rdata, .data and .bss out one after
@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "showdown_rounds.c")
 OUT = os.path.join(HERE, "showdown_rounds_blob.py")
 SECTION_RVA = 0x35B4000            # Victory.exe's SizeOfImage: the new section
-ENTRIES = ("sd_should_end", "sd_rand_exec", "sd_spawn_with")
+ENTRIES = ("sd_should_end", "sd_rand_exec", "sd_spawn_with", "sd_rating", "sd_gas_instigator")
 SELF = "sd_self_rva"
 CL_FLAGS = ["/nologo", "/c", "/O1", "/GS-", "/Zl", "/Gy-", "/GR-", "/Oi", "/Gs1000000", "/W4", "/WX",
             "/wd4100", "/wd4127", "/volatileMetadata-"]

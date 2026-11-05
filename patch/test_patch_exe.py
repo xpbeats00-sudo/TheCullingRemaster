@@ -68,7 +68,8 @@ def rounds_changes(stock):
     at = table + 40 * P.STOCK_NUM_SECTIONS
     return (set(range(pe + 6, pe + 8)) | set(range(pe + 24 + 56, pe + 24 + 60)) | set(range(at, at + 40))
             | set(range(P.FFA_SLOT_AT, P.FFA_SLOT_AT + 8)) | set(range(P.RAND_LEA_AT + 3, P.RAND_LEA_AT + 7))
-            | set(range(P.SPAWN_WITH_CALL_AT + 1, P.SPAWN_WITH_CALL_AT + 5)))
+            | set(range(P.SPAWN_WITH_CALL_AT + 1, P.SPAWN_WITH_CALL_AT + 5))
+            | {at + k for _n, at, _va, _s, _e in P.MODULE_CALLS for k in range(1, 5)})
 
 
 def check_rounds(stock, data):
@@ -78,6 +79,11 @@ def check_rounds(stock, data):
     assert P.SPAWN_WITH_CALL_VA + 5 + struct.unpack_from("<i", call, 1)[0] == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SPAWN_WITH
     assert data[P.FFA_SLOT_AT:P.FFA_SLOT_AT + 8] == struct.pack("<Q", slot)
     assert data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] == lea
+    # The calls fixes 7/8 take over lead to their entry points.
+    for name, at, va, stock_call, entry in P.MODULE_CALLS:
+        cur = data[at:at + 5]
+        assert stock[at:at + 5] == stock_call and cur[:1] == bytes([0xE8]), name
+        assert va + 5 + struct.unpack_from("<i", cur, 1)[0] == P.IMAGE_BASE + ROUNDS.SECTION_RVA + entry, name
     # The vtable slot and the lea lead to the two entry points.
     sect = P.IMAGE_BASE + ROUNDS.SECTION_RVA
     assert slot == sect + ROUNDS.SD_SHOULD_END
@@ -124,7 +130,9 @@ def blob_checks():
     want = {0x244D30, 0x17F6E30, 0x69C470, 0x249D20, 0x249CA0, 0x249040, 0x23CAE0, 0x1A3420, 0x202900,
             0x303000, 0x303820, 0x302B20, 0x3039C0, 0x302CC0, 0x3046C0, 0x2567AA0,
             # the rival's kit and the dropped items
-            0x30A460, 0x267090, 0x268FA0, 0x27A810, 0x1336CA0, 0x50C510, 0x303D00, 0x3034E0}
+            0x30A460, 0x267090, 0x268FA0, 0x27A810, 0x1336CA0, 0x50C510, 0x303D00, 0x3034E0,
+            # the Chokening's user (fix 8)
+            0x1119150, 0x2494D0, 0x302980, 0x69C2A0}
     assert want <= rvas, sorted(hex(x) for x in want - rvas)
     # The rival asks the player's pawn for the kit with the Showdown perk's bits.
     import make_showdown
@@ -151,6 +159,8 @@ def rounds_stand_in(path):
     struct.pack_into("<Q", data, P.FFA_SLOT_AT, P.FFA_SLOT)
     data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] = P.RAND_LEA
     data[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
+    for _n, at, _va, stock_call, _e in P.MODULE_CALLS:
+        data[at:at + 5] = stock_call
     open(path, "wb").write(data)
 
 
@@ -169,6 +179,29 @@ def check_rounds_alone(path):
     old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
     old[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
     assert P._rounds(old, path) is True and old == data
+    # ... also one from before the Duo/Chokening calls (they are stock).
+    old = bytearray(data)
+    old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    for _n, at, _va, stock_call, _e in P.MODULE_CALLS:
+        old[at:at + 5] = stock_call
+    assert P._rounds(old, path) is True and old == data
+    # A gas call elsewhere: not ours, refused.
+    bad = bytearray(data)
+    bad[P.MODULE_CALLS[1][1]:P.MODULE_CALLS[1][1] + 5] = bytes.fromhex("e800000000")
+    bad[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a foreign gas call was accepted")
+    except ValueError:
+        pass
+    # A stock exe with a foreign rating call: refused.
+    bad = bytearray(stock)
+    bad[P.MODULE_CALLS[0][1]:P.MODULE_CALLS[0][1] + 5] = bytes.fromhex("e800000000")
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a foreign rating call was accepted")
+    except ValueError:
+        pass
     # A spawn-with call elsewhere: not ours, refused.
     bad = bytearray(data)
     bad[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = bytes.fromhex("e800000000")
@@ -229,8 +262,8 @@ try:
     rounds_stand_in(rs)
     check_rounds_alone(rs)
     os.remove(rs)
-    print("ok    Showdown rounds: new section; vtable slot 282 and RandomIntegerInRange lead to the module; "
-          "idempotent, replaces an older module, refuses other exes")
+    print("ok    native module: new section; vtable slot 282, RandomIntegerInRange, the spawn-with, rating and gas "
+          "calls lead to the module; idempotent, replaces an older module, refuses other exes")
 
     if len(sys.argv) > 1:
         real = os.path.join(tmp, "Real.exe")

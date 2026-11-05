@@ -2,6 +2,12 @@
 
 ## Game (next release)
 
+**Duo: your team wins when it's the last one standing**
+- A Duo match now ends with a team victory as soon as every living contestant is on one team: you and your teammate last alive is a win for both (a teammate who died earlier gets the victory too). Before, the match went on until your teammate died. Solo, Showdown and Survival are unchanged. Needs the patched exe (patch_exe.py fix 7, in the native module).
+
+**The Chokening: its kills are yours**
+- Players killed by the gas The Chokening starts are now credited to whoever activated it (kill count, kill feed, "Killed by <name>" on the board) instead of "Killed by Suicide" - but not the activator's own death or their Duo teammate's. Needs the patched exe (patch_exe.py fix 8).
+
 **Showdown: the rival gets your kit**
 - The rival no longer spawns with its own random loadout (a melee weapon, a bow or gun with ammo, a utility item): at the start of a Showdown match and after every round's reset it gets exactly the round's kit (the same armor, put on, the Muscle Man Milk and the round's weapon, plus fists). Needs the patched exe (patch_exe.py fix 5: SpawnStartingInventory's kit call, VA 0x140267275).
 - At each round's reset the fighters' inventories are cleared and weapons and pickups left lying in the world (dropped items) are removed.
