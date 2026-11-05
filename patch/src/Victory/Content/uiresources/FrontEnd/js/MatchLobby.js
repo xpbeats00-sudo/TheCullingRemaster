@@ -30,11 +30,10 @@
     "Viper Kid", "MossyBoots", "GrimJoe", "Kilowatt", "NoScopeNana", "Rusty Spoon", "The Barber", "Pyrelord"];
   var CSS = [
     // Three parts over the menu: the state at the top middle (where the stock
-    // queue widget sits; it is hidden while this is up), the map vote at the
+    // queue widget sat; that widget is always hidden), the map vote at the
     // bottom middle, the players (and in the pregame lobby, the bots) on the right.
     "#remaster-lobby { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 40; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); pointer-events: none; }",
     "#remaster-lobby.hidden { display: none; }",
-    "body.rl-on #queue-widget { display: none !important; }",
     "#remaster-lobby .rl-top { position: absolute; top: 1.8vh; left: 50%; transform: translateX(-50%); display: flex; align-items: center; padding: 0.8vh 0.8vw 0.8vh 1.3vw; border-radius: 4vh; white-space: nowrap; background: rgba(10, 6, 8, 0.82); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0.6vh 2vh rgba(0, 0, 0, 0.5); }",
     "#remaster-lobby .rl-state { display: flex; align-items: center; font: 1vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.18vw; text-transform: uppercase; white-space: nowrap; color: rgba(255, 70, 60, 1); }",
     "#remaster-lobby .rl-state:before { content: \"\"; display: inline-block; width: 0.55vw; height: 0.55vw; margin-right: 0.6vw; border-radius: 50%; background: rgba(255, 70, 60, 1); animation: rl-pulse 1.2s ease-in-out infinite; }",
@@ -351,6 +350,15 @@
   }
 
   window.RemasterLobby = { show: render, hide: hide };
+
+  // The stock queue widget (QUEUING / PLAYERS QUEUED / ELAPSED TIME / CANCEL
+  // SEARCH) never shows: this lobby's search pill replaces it. Hidden from the
+  // start, so it can't flash between pressing a mode and the server's answer.
+  (function () {
+    var s = document.createElement("style");
+    s.textContent = "#queue-widget { display: none !important; }";
+    document.head.appendChild(s);
+  })();
 
   // Leaving the queue (cancel, forced) hides the lobby; ClientWeb.js hides it
   // on match-ready too.

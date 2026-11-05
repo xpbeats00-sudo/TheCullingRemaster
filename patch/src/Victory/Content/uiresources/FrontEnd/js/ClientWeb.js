@@ -12,6 +12,16 @@ const RECONNECT_AUTOMATICALLY = false;
 
 //var httpStatus = require("http-status");
 
+// Remaster: the match URLs Duo and Showdown open with StartTraining(url) (patched
+// Victory.exe, patch_exe.py). Copies of make_duo.URLS (0 Jungle, 1 Prison) and
+// make_showdown.URL;
+// patch/test_match_urls.py checks they match.
+var REMASTER_DUO_URLS = [
+  "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C",
+  "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
+];
+var REMASTER_SHOWDOWN_URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C";
+
 var socketConnection = null;
 var bSentInvite = false;
 var bCheckDLCAtLogin = false;
@@ -1414,24 +1424,26 @@ function BindClientwebEvents(deferred) {
           engine.call("StartOfflineMatch", offlineMap);
           return;
       }
-      // Duo (make_duo.py): the pairs mode, through the Survival slots' URLs.
+      // Duo (make_duo.py): the pairs mode on the voted map. StartTraining with a
+      // URL opens it like a Solo match (patch_exe.py), so Duo has its own URL and
+      // the SURVIVAL screen keeps its match slots.
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("duo:") == 0) {
           var duoMap = parseInt(msg.gameServer.substring(4), 10) || 0;
           console.log("match-ready:: duo on map " + duoMap);
           Matchmaking.MatchmakingState = "JOINING";
           Matchmaking.SetMatchmaking(false);
           engine.call("PostSoundEvent", "Stop_MenuMusic");
-          engine.call("StartTraining", duoMap == 1 ? "SurvivalAdvanced" : "SurvivalBasic");
+          engine.call("StartTraining", REMASTER_DUO_URLS[duoMap == 1 ? 1 : 0]);
           return;
       }
-      // Showdown (make_showdown.py): you against one bot in the Jungle arena. Its
-      // URL is DefaultGame.ini's TrainingMapAdvanced, reached by "Practice".
+      // Showdown (make_showdown.py): you against one bot in the Jungle arena,
+      // opened the same way as Duo (the Training Range keeps its slot).
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("showdown:") == 0) {
           console.log("match-ready:: showdown " + msg.gameServer.substring(9));
           Matchmaking.MatchmakingState = "JOINING";
           Matchmaking.SetMatchmaking(false);
           engine.call("PostSoundEvent", "Stop_MenuMusic");
-          engine.call("StartTraining", "Practice");
+          engine.call("StartTraining", REMASTER_SHOWDOWN_URL);
           return;
       }
 

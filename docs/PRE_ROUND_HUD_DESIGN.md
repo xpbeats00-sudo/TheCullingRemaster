@@ -9,7 +9,7 @@ The screenshot is the real panel code with test data (round 3, 1-1, the Showdown
 ## Round flow
 
 1. SHOWDOWN tile → the menu queues `showdown` → the server starts round *n* of the player's series (`remaster-showdown` `round`) and answers `match-ready` `showdown:1v1`.
-2. The menu starts the arena match (`StartTraining("Practice")`).
+2. The menu opens the arena match (`StartTraining` with `make_showdown.URL`, patched exe).
 3. The HUD loads with the match and asks `GET /api/showdown`. The server finds the match from its open ticket and returns the round, score and kit. The panel shows for 14 s, top right.
 4. The round is played: one bot; both sides spawn holding the same kit.
 5. The HUD reports the result (`/api/matchresult`). The server scores the round (15 s minimum, kills capped at 1) and replies with the series. The HUD shows "ROUND n WON/LOST" or "SHOWDOWN VICTORY/DEFEAT" over the stock end screen.

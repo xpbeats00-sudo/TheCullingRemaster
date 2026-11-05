@@ -15,6 +15,17 @@
    takes the SSSE3/AVX path, the one every CPU without SHA instructions
    already uses. Hashes are identical; only the code path changes.
 
+3. More match slots. The menu's StartTraining(name) (VA 0x1401ea220) opens
+   one of four DefaultGame.ini URLs (Tutorial, Practice, SurvivalBasic,
+   SurvivalAdvanced) through the game's own "open <url>?bExitOnRoundComplete
+   =true" helper (VA 0x1401e4630, the one Solo uses too) and does nothing for
+   any other name. Now any other name is itself the URL: the last compare's
+   "jne done" goes to a 5-byte stub in the function's int3 padding that passes
+   the argument (r15, the FString) to the same helper call. The four names
+   are unchanged, so the SURVIVAL screen keeps its slots, and Duo and Showdown
+   open their own URLs (make_duo.py, make_showdown.py). The stock menu only
+   ever passes the four names.
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it.
 
@@ -30,6 +41,15 @@ SHA_GATE_AT = 0x4B334               # file offset of "test r10d, 0x20000000"
 SHA_GATE = bytes.fromhex("41f7c200000020")
 SHA_JUMP = bytes.fromhex("0f8595100000")   # jne 0x14004cdd6 (the SHA-extension routine)
 NOPS = b"\x90" * len(SHA_JUMP)
+
+TRAIN_CALL_AT = 0x1E9A92            # file offset of "mov rcx, rdi; call 0x1401e4630" (the open helper)
+TRAIN_CALL = bytes.fromhex("488bcfe896a1ffff")
+TRAIN_JUMP_AT = 0x1E9A89            # "jne 0x1401ea49a" after the SurvivalAdvanced compare
+TRAIN_JUMP = bytes.fromhex("750f")
+TRAIN_JUMP_NEW = bytes.fromhex("7528")    # jne 0x1401ea4b3 (the stub)
+TRAIN_STUB_AT = 0x1E9AB3            # the 13 int3 bytes after StartTraining
+TRAIN_STUB = bytes.fromhex("4c89faebda")  # mov rdx, r15; jmp 0x1401ea492
+PAD = b"\xcc" * 13
 
 
 def _cap(data, path, contestants):
@@ -56,13 +76,28 @@ def _sha1(data, path):
     return True
 
 
+def _slots(data, path):
+    if data[TRAIN_CALL_AT:TRAIN_CALL_AT + len(TRAIN_CALL)] != TRAIN_CALL:
+        raise ValueError("%s is not the Victory.exe this patch is for (StartTraining call)" % path)
+    jump = bytes(data[TRAIN_JUMP_AT:TRAIN_JUMP_AT + 2])
+    pad = bytes(data[TRAIN_STUB_AT:TRAIN_STUB_AT + len(PAD)])
+    if jump == TRAIN_JUMP_NEW and pad == TRAIN_STUB + PAD[len(TRAIN_STUB):]:
+        return False
+    if jump != TRAIN_JUMP or pad != PAD:
+        raise ValueError("%s is not the Victory.exe this patch is for (StartTraining %s / %s)" % (path, jump.hex(), pad.hex()))
+    data[TRAIN_STUB_AT:TRAIN_STUB_AT + len(TRAIN_STUB)] = TRAIN_STUB
+    data[TRAIN_JUMP_AT:TRAIN_JUMP_AT + 2] = TRAIN_JUMP_NEW
+    return True
+
+
 def patch(path, contestants=MAX):
-    """Apply both fixes; returns True when the file changed."""
+    """Apply every fix; returns True when the file changed."""
     if not STOCK <= contestants <= 64:
         raise ValueError("contestants must be 16-64")
     data = bytearray(open(path, "rb").read())
     changed = _cap(data, path, contestants)
     changed = _sha1(data, path) or changed
+    changed = _slots(data, path) or changed
     if changed:
         with open(path, "wb") as f:
             f.write(data)
@@ -72,4 +107,4 @@ def patch(path, contestants=MAX):
 if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
-    print("%s: up to %d players plus bots, SHA-1 crash fix%s" % (sys.argv[1], n, "" if changed else " (already)"))
+    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs%s" % (sys.argv[1], n, "" if changed else " (already)"))
