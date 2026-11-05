@@ -13,7 +13,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import patch_exe  # noqa: E402
 import showdown_rounds_blob as ROUNDS  # noqa: E402
-from exe_stand_ins import full_stand_in, rounds_stand_in, stand_in  # noqa: E402
+from exe_stand_ins import full_stand_in, rounds_stand_in, stand_in, stock_bytes  # noqa: E402
 
 P = patch_exe
 
@@ -27,12 +27,14 @@ def check(path, rounds=False):
     assert data[gate:gate + 6] == b"\x90" * 6
     assert data[P.TRAIN_JUMP_AT:P.TRAIN_JUMP_AT + 2] == P.TRAIN_JUMP_NEW
     assert data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 5] == P.TRAIN_STUB
-    assert data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] == P.DUO_HOOK_NEW
+    hook = data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)]
+    # With the module the refresh keeps its mov and calls the module (fix 9), else fix 4's stub.
+    assert (hook[:4] == P.DUO_HOOK[:4] and P._module_hook(hook)) if rounds else hook == P.DUO_HOOK_NEW
     assert data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] == P.DUO_STUB
     assert data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] == P.SCORE_JG_NEW
     assert data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] == P.SCORE_STUB
     changed = [i for i in range(len(stock)) if stock[i] != data[i]]
-    duo = set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
+    duo = set() if rounds else set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
     duo |= {P.DUO_STUB_AT + i for i in range(len(P.DUO_STUB)) if P.DUO_STUB[i] != 0xCC}
     duo |= {P.SCORE_JG_AT + 2, P.SCORE_JG_AT + 3, P.SCORE_JG_AT + 4, P.SCORE_JG_AT + 5}  # the retargeted disp32
     duo |= {P.SCORE_STUB_AT + i for i in range(len(P.SCORE_STUB)) if P.SCORE_STUB[i] != 0xCC}
@@ -118,7 +120,9 @@ def blob_checks():
             # the rival's kit and the dropped items
             0x30A460, 0x267090, 0x268FA0, 0x27A810, 0x1336CA0, 0x50C510, 0x303D00, 0x3034E0,
             # the Chokening's user (fix 8)
-            0x1119150, 0x2494D0, 0x302980, 0x69C2A0}
+            0x1119150, 0x2494D0, 0x302980, 0x69C2A0,
+            # team sizes (fix 9): SetTeamNum, the scoreboard sort, the bot spawner, teammates' status
+            0x24E7E0, 0x243C80, 0x2320F0, 0x262D20, 0x2634C0, 0x28EE40, 0x28F9C0}
     assert want <= rvas, sorted(hex(x) for x in want - rvas)
     # The rival asks the player's pawn for the kit with the Showdown perk's bits.
     import make_showdown
@@ -185,6 +189,41 @@ def check_rounds_alone(path):
         pass
 
 
+def check_team_hook(path):
+    """Fix 9 on a stand-in with the real layout: the refresh keeps its mov and
+    calls sd_teams, the bot spawner's call leads to sd_spawn_bots; an older
+    build (fix 4's stub called from the hook) is upgraded to the same bytes;
+    without the module the hook calls the stub again."""
+    data = bytearray(open(path, "rb").read())
+    stock_bytes(data)
+    open(path, "wb").write(data)
+    assert P.patch(path) is True
+    new = open(path, "rb").read()
+    sect = P.IMAGE_BASE + ROUNDS.SECTION_RVA
+    hook = new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8]
+    assert hook[:4] == P.DUO_HOOK[:4]
+    assert 0x140203B3D + 5 + struct.unpack_from("<i", hook, 4)[0] == sect + ROUNDS.SD_TEAMS
+    bots = new[0x23290D:0x23290D + 5]
+    assert bots[:1] == b"\xe8" and 0x14023330D + 5 + struct.unpack_from("<i", bots, 1)[0] == sect + ROUNDS.SD_SPAWN_BOTS
+    assert P.patch(path) is False, "running it again changes nothing"
+    old = bytearray(new)
+    old[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] = P.DUO_HOOK_NEW            # an older build: fix 4's stub
+    old[0x23290D:0x23290D + 5] = bytes.fromhex("e8deedffff")       # and the stock bot spawner call
+    old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF                          # and an older module
+    open(path, "wb").write(old)
+    assert P.patch(path) is True and open(path, "rb").read() == new, "an older build is upgraded"
+    assert P.patch(path, rounds=False) is True
+    assert open(path, "rb").read()[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] == P.DUO_HOOK_NEW, "no module: the stub"
+    bad = bytearray(new)
+    bad[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] = bytes.fromhex("488bc8e800000000")   # a call elsewhere
+    open(path, "wb").write(bad)
+    try:
+        P.patch(path)
+        raise AssertionError("a foreign refresh call was accepted")
+    except ValueError:
+        pass
+
+
 def real_checks(path):
     """The patched real exe still parses, the new section maps the module,
     and the vtable slot keeps its base relocation."""
@@ -226,15 +265,20 @@ try:
     rounds_stand_in(rs)
     check_rounds_alone(rs)
     os.remove(rs)
+    rounds_stand_in(rs)
+    check_team_hook(rs)
+    os.remove(rs)
     print("ok    native module: new section; vtable slot 282, RandomIntegerInRange, the spawn-with, rating and gas "
           "calls lead to the module; idempotent, replaces an older module, refuses other exes")
+    print("ok    team sizes: the refresh calls sd_teams (mov kept), the bot spawner sd_spawn_bots; an older "
+          "build's stub hook is upgraded; without the module the stub again; a foreign call is refused")
 
-    # check() reads only; verify() wants every fix 1-8 and the patched Steam exe's bytes.
+    # check() reads only; verify() wants every fix 1-9 and the patched Steam exe's bytes.
     fresh = os.path.join(tmp, "Fresh.exe")
     stand_in(fresh)
     before = open(fresh, "rb").read()
-    none = {"cap": 16, "sha1": False, "slots": False, "duoteam": False, "rounds": False, "scoreboard": False,
-            "duowin": False, "chokening": False}
+    none = {"cap": 16, "sha1": False, "slots": False, "duoteam": False, "rounds": False, "weather": False,
+            "scoreboard": False, "duowin": False, "chokening": False, "teams": False}
     assert P.check(fresh) == none, P.check(fresh)
     assert open(fresh, "rb").read() == before, "check() changed the file"
     try:
@@ -242,34 +286,43 @@ try:
         raise AssertionError("an unpatched exe verified")
     except ValueError as e:
         for want in ("contestant cap 24 (has 16)", "SHA-1", "StartTraining", "Duo team pairing", "Showdown rounds",
-                     "big scoreboards", "Duo team win", "Chokening"):
+                     "weather", "big scoreboards", "Duo team win", "Chokening", "team sizes"):
             assert want in str(e), (want, e)
-    # Fixes 1-4 and 6 without the native module (5, 7, 8): not a release exe.
+    # Fixes 1-4 and 6 without the native module (5, 7, 8, 9): not a release exe.
     assert P.check(exe) == dict(none, cap=24, sha1=True, slots=True, duoteam=True, scoreboard=True), P.check(exe)
     try:
         P.verify(exe)
         raise AssertionError("an exe without the native module verified")
     except ValueError as e:
-        assert "Showdown rounds" in str(e) and "Duo team win" in str(e) and "Chokening" in str(e), e
+        assert all(w in str(e) for w in ("Showdown rounds", "Duo team win", "Chokening", "team sizes")), e
         assert "SHA-1" not in str(e) and "scoreboards" not in str(e), e
     full = os.path.join(tmp, "Full.exe")
     full_stand_in(full)
     assert P.check(full) == none
     assert P.patch(full) is True
     assert P.check(full) == {k: (24 if k == "cap" else True) for k in none}, P.check(full)
+    every = {k: (24 if k == "cap" else True) for k in none}
     # Only the module's calls of fix 8 stock: everything else there, Chokening missing.
     partial = bytearray(open(full, "rb").read())
-    for _n, at, _va, stock_call, _e in P.MODULE_CALLS:
-        partial[at:at + 5] = stock_call
+    for name, at, _va, stock_call, _e in P.MODULE_CALLS:
+        if name in P.CHOKENING_CALLS:
+            partial[at:at + 5] = stock_call
     open(fresh, "wb").write(partial)
-    assert P.check(fresh) == dict({k: (24 if k == "cap" else True) for k in none}, chokening=False)
+    assert P.check(fresh) == dict(every, chokening=False), P.check(fresh)
+    # Only fix 9's calls stock (the refresh's call and the bot spawner): team sizes missing.
+    partial = bytearray(open(full, "rb").read())
+    for name, at, _va, stock_call, _e in P.MODULE_CALLS:
+        if name in P.TEAM_CALLS:
+            partial[at:at + 5] = stock_call
+    open(fresh, "wb").write(partial)
+    assert P.check(fresh) == dict(every, teams=False), P.check(fresh)
     try:
         P.verify(full)
         raise AssertionError("a stand-in verified as the Steam exe")
     except ValueError as e:
         assert "isn't the patched Steam exe" in str(e), e
     os.remove(full)
-    print("ok    check() reports fixes 1-8 without writing; verify() wants all eight and the patched exe's SHA-256")
+    print("ok    check() reports fixes 1-9 without writing; verify() wants all nine and the patched exe's SHA-256")
 
     # Patching never writes through a hard link (a release's files are links of the install).
     install = os.path.join(tmp, "Install.exe")

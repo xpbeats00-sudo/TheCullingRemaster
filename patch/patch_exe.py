@@ -43,6 +43,9 @@
    and calls SetTeamNum(playerState, (index >> 1) + 1, true) so contestants
    pair up (0,1 -> team 1; 2,3 -> team 2; ...), then runs the original sort.
    It reasserts each refresh, so join order and timing don't matter.
+   With the native module (fix 5, the default) the refresh's call leads to the
+   module instead (fix 9): the same, for any team size. The stub stays in the
+   padding for an exe patched without the module (patch(rounds=False)).
 
 5. Showdown rounds (showdown_rounds.c, built by build_showdown_rounds.py into
    showdown_rounds_blob.py). A new section (.sdround, RVA 0x35b4000, after
@@ -124,13 +127,28 @@
    gets the user as instigator, except the user and the user's teammate
    (TeamNumber > 0 and equal), who keep "no instigator".
 
+9. Team sizes: Trios and Quads (module of fix 5). The scoreboard refresh's
+   "mov rcx, rax; call 0x140243c80" (VA 0x140203b3a) keeps its mov and its
+   call goes to the module's sd_teams, which assigns
+   SetTeamNum(ps, index / N + 1, true) over PlayerArray and runs the sort.
+   N is the match URL's ?TeamSize= (read from the GameMode's OptionsString,
+   AGameModeBase +0x400, which AGameModeBase::InitGame sets from the URL's
+   options at 0x14133e2c3): 2-8 in ClassicTeams (2 without it: Duo), and in a
+   Lightning match only when it is given (team Showdown). The GameMode's call
+   of its bot spawner at match start (VA 0x14023330d) also goes to the module:
+   in team Showdown it sets BotsToSpawn (+0x518) to 2N - 1 first. Fix 7's
+   team win, fix 8's teammate check, DetermineMatchWinner and the
+   scoreboards already work by TeamNumber, for any team size. The HUD's own
+   teammate panel shows one teammate; in Trios and Quads the module reports
+   the others to the HUD page once a second ("TMS|", hud.js).
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it. The file is rewritten through a
 temporary file swapped in whole (os.replace): writing it in place would also
 rewrite every hard link of it (a release's files are hard links of the install).
 
 check(path) only reads: which fixes the exe has. verify(path) is what
-make_release.py asserts on the exe it ships: every fix (1-8), and exactly the
+make_release.py asserts on the exe it ships: every fix (1-9), and exactly the
 bytes of the stock Steam exe (STOCK_SHA256) with these fixes (PATCHED_SHA256).
 PATCHED_SHA256 changes whenever a fix or the native module (showdown_rounds.c,
 showdown_rounds_blob.py) changes: recompute it with
@@ -198,10 +216,10 @@ SCORE_STUB = bytes.fromhex(
 SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 
 # The Steam build of Victory.exe this patch is for, and the same exe with every
-# fix (1-8, the native module as showdown_rounds_blob.py has it) at the default
+# fix (1-9, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "28f3d1ccf645fc780cd5fe1a1090b04bd8af1a443d59cadfd70dc03b157148d2"
+PATCHED_SHA256 = "6331898403938b22f69e8905ba57d85af9ef99ef485d953bffdc833297da0ed8"
 
 
 def _cap(data, path, contestants):
@@ -242,16 +260,28 @@ def _slots(data, path):
     return True
 
 
-def _duoteam(data, path):
+def _module_hook(hook):
+    """The refresh's hook as fix 9 leaves it: the stock mov, then a call into the module's section."""
+    if hook[:4] != DUO_HOOK[:4]:
+        return False
+    target = TEAMS_CALL[2] + 5 + struct.unpack_from("<i", hook, 4)[0]
+    return IMAGE_BASE + ROUNDS.SECTION_RVA <= target < IMAGE_BASE + ROUNDS.SECTION_RVA + 0x100000
+
+
+def _duoteam(data, path, rounds=True):
+    """Fix 4's stub; with the module (rounds) the hook is left to it (fix 9: stock bytes, or
+    already the module's call; an older build's call of the stub goes back to stock), else the
+    hook calls the stub."""
     hook = bytes(data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)])
     stub = bytes(data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)])
-    if hook == DUO_HOOK_NEW and stub == DUO_STUB:
-        return False
-    if hook != DUO_HOOK or stub != DUO_PAD:
+    if (hook not in (DUO_HOOK, DUO_HOOK_NEW) and not _module_hook(hook)) or stub not in (DUO_STUB, DUO_PAD):
         raise ValueError("%s is not the Victory.exe this patch is for (team pairing %s / %s)"
                          % (path, hook.hex(), stub[:8].hex()))
+    want = (DUO_HOOK if hook == DUO_HOOK_NEW else hook) if rounds else DUO_HOOK_NEW
+    if hook == want and stub == DUO_STUB:
+        return False
     data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)] = DUO_STUB
-    data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = DUO_HOOK_NEW
+    data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = want
     return True
 
 
@@ -290,7 +320,15 @@ MODULE_CALLS = (
     # 8. AGasWound's two "call 0x141119150" (GetInstigatorController: the gas's EventInstigator)
     ("gas damage", 0x2E67E8, 0x1402E71E8, bytes.fromhex("e8631fe300"), ROUNDS.SD_GAS_INSTIGATOR),
     ("gas tick", 0x2E6B2F, 0x1402E752F, bytes.fromhex("e81c1ce300"), ROUNDS.SD_GAS_INSTIGATOR),
+    # 9. the scoreboard refresh's "call 0x140243c80" (after fix 4's mov rcx, rax: the team sizes)
+    ("teams", 0x20313D, 0x140203B3D, bytes.fromhex("e83e010400"), ROUNDS.SD_TEAMS),
+    # 9. the GameMode's "call 0x1402320f0" at match start (team Showdown's bot count)
+    ("bots", 0x23290D, 0x14023330D, bytes.fromhex("e8deedffff"), ROUNDS.SD_SPAWN_BOTS),
 )
+TEAMS_CALL = MODULE_CALLS[3]
+# Which MODULE_CALLS each fix's check needs (fix 8; fix 9).
+CHOKENING_CALLS = ("rating", "gas damage", "gas tick")
+TEAM_CALLS = ("teams", "bots")
 
 
 def module_calls():
@@ -378,25 +416,30 @@ def _rounds(data, path):
 
 
 def _module(data):
-    """(rounds, chokening) without changing data: the .sdround section holds
-    this build's module (fixes 5 and 7 live in it) and vtable slot 282,
-    RandomIntegerInRange and the spawn-with call lead to it; and fix 8's
-    rating and gas calls lead to it too. A file that isn't a PE (a test
-    stand-in) has neither."""
+    """{"section", "rounds", "chokening", "teams"} without changing data.
+    section: the .sdround section holds this build's module (the code of
+    fixes 5, 7 and the weather lives in it). rounds: and vtable slot 282,
+    RandomIntegerInRange and the spawn-with call lead to it. chokening: fix
+    8's rating and gas calls lead to it. teams: fix 9's refresh and bot
+    spawner calls lead to it. A file that isn't a PE (a test stand-in) has
+    none of them."""
+    none = {"section": False, "rounds": False, "chokening": False, "teams": False}
     try:
         pe, nsec_at, size_at, table = _pe(data, "")
     except ValueError:
-        return False, False
+        return none
     header, raw, slot, lea, image_size, call = rounds_layout()
     at = table + 40 * STOCK_NUM_SECTIONS
     if (struct.unpack_from("<H", data, nsec_at)[0] != STOCK_NUM_SECTIONS + 1 or bytes(data[at:at + 40]) != header
             or bytes(data[STOCK_FILE_SIZE:]) != raw or struct.unpack_from("<I", data, size_at)[0] != image_size):
-        return False, False
+        return none
     rounds = (struct.unpack_from("<Q", data, FFA_SLOT_AT)[0] == slot
               and bytes(data[RAND_LEA_AT:RAND_LEA_AT + len(lea)]) == lea
               and bytes(data[SPAWN_WITH_CALL_AT:SPAWN_WITH_CALL_AT + len(call)]) == call)
-    chokening = all(bytes(data[c_at:c_at + 5]) == patched for _n, c_at, _s, patched in module_calls())
-    return rounds, chokening
+    hooked = {name: bytes(data[c_at:c_at + 5]) == patched for name, c_at, _s, patched in module_calls()}
+    return {"section": True, "rounds": rounds,
+            "chokening": all(hooked[n] for n in CHOKENING_CALLS),
+            "teams": all(hooked[n] for n in TEAM_CALLS)}
 
 
 def _read(path):
@@ -417,32 +460,39 @@ FIXES = (("sha1", "the SHA-1 crash fix (2)"),
          ("slots", "the StartTraining URL slots (3)"),
          ("duoteam", "the Duo team pairing (4)"),
          ("rounds", "the Showdown rounds module (5)"),
+         ("weather", "the weather and night code in the module (5)"),
          ("scoreboard", "the big scoreboards (6)"),
          ("duowin", "the Duo team win (7)"),
-         ("chokening", "the Chokening kill credit (8)"))
+         ("chokening", "the Chokening kill credit (8)"),
+         ("teams", "the team sizes (9)"))
 
 
 def check(path):
     """Which fixes the exe has, without changing it: {"cap": contestants,
-    "sha1", "slots", "duoteam", "rounds", "scoreboard", "duowin", "chokening":
-    bool}. "duowin" (fix 7) is code in the native module behind slot 282, so
-    it is there exactly when the current module is. Raises ValueError for an
-    exe this patch isn't for."""
+    "sha1", "slots", "duoteam", "rounds", "weather", "scoreboard", "duowin",
+    "chokening", "teams": bool}. "duowin" (fix 7) and "weather" are code in
+    the native module behind slot 282 and its hooks, so they are there exactly
+    when the current module is (this build's blob, which includes weather.c).
+    "duoteam" (fix 4) is the pairing stub in place, with the refresh hook as
+    patch() leaves it (stock for the module's fix 9 to take, or calling the
+    stub without the module). Raises ValueError for an exe this patch isn't for."""
     data = _read(path)
     _cap(bytearray(data), path, MAX)                    # raises for another exe
-    rounds, chokening = _module(data)
+    m = _module(data)
     return {"cap": data[CAP_AT + 1],
             "sha1": not _sha1(bytearray(data), path),     # nothing to change = already fixed
             "slots": not _slots(bytearray(data), path),
-            "duoteam": not _duoteam(bytearray(data), path),
-            "rounds": rounds,
+            "duoteam": not _duoteam(bytearray(data), path, rounds=m["section"]),
+            "rounds": m["rounds"],
+            "weather": m["rounds"],
             "scoreboard": not _duoscore(bytearray(data), path),
-            "duowin": rounds,
-            "chokening": chokening}
+            "duowin": m["rounds"],
+            "chokening": m["chokening"],
+            "teams": m["teams"]}
 
 
 def verify(path, contestants=MAX):
-    """Raises ValueError unless the exe has every fix 1-8 (cap = contestants)
+    """Raises ValueError unless the exe has every fix 1-9 (cap = contestants)
     and, at the default cap, is byte for byte the patched Steam exe."""
     fixes = check(path)
     missing = [] if fixes["cap"] == contestants else ["contestant cap %d (has %d) (1)" % (contestants, fixes["cap"])]
@@ -465,7 +515,7 @@ def patch(path, contestants=MAX, rounds=True):
     changed = _cap(data, path, contestants)
     changed = _sha1(data, path) or changed
     changed = _slots(data, path) or changed
-    changed = _duoteam(data, path) or changed
+    changed = _duoteam(data, path, rounds) or changed
     changed = _duoscore(data, path) or changed
     if rounds:
         changed = _rounds(data, path) or changed
@@ -515,4 +565,4 @@ if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
     print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds, "
-          "big scoreboards, Duo team win, Chokening kills%s" % (sys.argv[1], n, "" if changed else " (already)"))
+          "big scoreboards, team win, Chokening kills, team sizes%s" % (sys.argv[1], n, "" if changed else " (already)"))

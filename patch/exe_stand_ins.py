@@ -19,6 +19,12 @@ import patch_exe as P  # noqa: E402
 
 def stand_in(path):
     data = bytearray(max(P.CAP_AT + 16, P.SCORE_JG_AT + len(P.SCORE_JG), P.SCORE_STUB_AT + len(P.SCORE_STUB)))
+    stock_bytes(data)
+    open(path, "wb").write(data)
+
+
+def stock_bytes(data):
+    """The stock bytes fixes 1-4 and 6 look for, written into data."""
     data[P.CAP_AT:P.CAP_AT + 5] = bytes.fromhex("b810000000")
     data[P.SHA_GATE_AT:P.SHA_GATE_AT + 7] = P.SHA_GATE
     data[P.SHA_GATE_AT + 7:P.SHA_GATE_AT + 13] = P.SHA_JUMP
@@ -29,7 +35,6 @@ def stand_in(path):
     data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
     data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] = P.SCORE_JG
     data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] = P.SCORE_PAD
-    open(path, "wb").write(data)
 
 
 def rounds_stand_in(path):

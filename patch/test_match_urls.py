@@ -37,6 +37,14 @@ m = re.search(r"var REMASTER_DUO_URLS = (\[.*?\]);", js, re.S)
 check(m and json.loads(m.group(1)) == [make_duo.URLS[0], make_duo.URLS[1]], "ClientWeb.js REMASTER_DUO_URLS != make_duo.URLS")
 m = re.search(r'var REMASTER_SHOWDOWN_URL = ("[^"]*");', js)
 check(m and json.loads(m.group(1)) == make_showdown.URL, "ClientWeb.js REMASTER_SHOWDOWN_URL != make_showdown.URL")
+m = re.search(r"var REMASTER_TEAM_URLS = (\{.*?\n\});", js, re.S)
+check(m and json.loads(m.group(1)) == {"trio": [make_duo.TEAM_URLS[3][0], make_duo.TEAM_URLS[3][1]],
+                                       "quad": [make_duo.TEAM_URLS[4][0], make_duo.TEAM_URLS[4][1]]},
+      "ClientWeb.js REMASTER_TEAM_URLS != make_duo.TEAM_URLS")
+for n in make_duo.TEAM_SIZES:
+    for url in make_duo.TEAM_URLS[n].values():
+        check(url.endswith("?TeamSize=%d" % n) and make_duo.MODE in url, "Trios/Quads URL %s" % url)
+check('engine.call("StartTraining", REMASTER_TEAM_URLS[' in js, "Trios/Quads aren't started with StartTraining(url)")
 check('engine.call("StartTraining", REMASTER_DUO_URLS' in js, "Duo isn't started with StartTraining(url)")
 check('engine.call("StartTraining", REMASTER_SHOWDOWN_URL' in js, "Showdown isn't started with StartTraining(url)")
 check('"ConnectToServer", REMASTER' not in js, "a match is opened with ConnectToServer")
@@ -74,5 +82,5 @@ if failures:
     for f in failures:
         print("FAIL", f)
     sys.exit(1)
-print("ok    Duo and Showdown open their own URLs; SURVIVAL's slots are stock%s"
+print("ok    Duo, Trios, Quads and Showdown open their own URLs; SURVIVAL's slots are stock%s"
       % ("" if len(sys.argv) > 1 else " (no Paks dir: stock compare skipped)"))

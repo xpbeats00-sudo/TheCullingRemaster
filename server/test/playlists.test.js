@@ -30,9 +30,9 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       ["prison", "jungle", null]);
   });
 
-  await test("only Solo, Lightning, Duos, Ranked Solo and Showdown Solo are enabled", () => {
+  await test("only Solo, Lightning, Duos, Trios, Quads, Ranked Solo and Showdown Solo are enabled", () => {
     const on = playlists.list().filter((p) => p.enabled).map((p) => p.id).sort();
-    assert.deepStrictEqual(on, ["coop2", "ffa", "lightning", "ranked_ffa", "showdown"]);
+    assert.deepStrictEqual(on, ["coop2", "coop3", "coop4", "ffa", "lightning", "ranked_ffa", "showdown"]);
     for (const p of playlists.list().filter((x) => !x.enabled)) {
       assert.ok(p.reason && p.message && p.message.length > 20, p.id + " says why it's disabled");
     }
@@ -56,8 +56,13 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     const sd = playlists.checkParty(P.showdown, 2);
     assert.strictEqual(sd.error, "party-too-large");
     assert.ok(/alone/.test(sd.message), sd.message);
-    // Disabled comes first: a solo player can't queue Trios either.
-    assert.strictEqual(playlists.checkParty(P.coop3, 1).error, "mode-not-supported");
+    // Trios and Quads: up to their team size (AI teammates fill the rest).
+    assert.ok(playlists.checkParty(P.coop3, 1).ok && playlists.checkParty(P.coop3, 3).ok);
+    assert.strictEqual(playlists.checkParty(P.coop3, 4).error, "party-too-large");
+    assert.ok(playlists.checkParty(P.coop4, 4).ok);
+    assert.strictEqual(playlists.checkParty(P.coop4, 5).error, "party-too-large");
+    // Disabled comes first: a solo player can't queue team Showdown or Ranked teams either.
+    assert.strictEqual(playlists.checkParty(P.ranked_coop3, 1).error, "queue-unavailable");
     assert.strictEqual(playlists.checkParty(P.showdown_duo, 2).error, "mode-not-supported");
     assert.strictEqual(playlists.checkParty(P.ranked_coop2, 1).error, "queue-unavailable");
     assert.strictEqual(playlists.checkParty(P.ranked_showdown, 1).error, "mode-not-supported");
@@ -83,7 +88,9 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(r.status, 200);
       const byId = Object.fromEntries(r.json.playlists.map((p) => [p.id, p]));
       assert.strictEqual(byId.coop2.enabled, true);
-      assert.strictEqual(byId.coop3.enabled, false);
+      assert.strictEqual(byId.coop3.enabled, true);
+      assert.strictEqual(byId.coop4.enabled, true);
+      assert.strictEqual(byId.ranked_coop3.enabled, false);
       assert.strictEqual(byId.showdown_quad.reason, "mode-not-supported");
     });
 
@@ -91,7 +98,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       let readies = 0;
       const count = () => readies++;
       a.on("match-ready", count);
-      for (const q of ["ffa_jungle_coop3", "ffa_prison_coop4", "showdown_duo", "showdown_trio", "showdown_quad", "ranked_showdown", "ranked_coop2"]) {
+      for (const q of ["ranked_ffa_jungle_coop3", "ranked_coop4", "showdown_duo", "showdown_trio", "showdown_quad", "ranked_showdown", "ranked_coop2"]) {
         const fail = next(a, "join-mm-fail");
         a.emit("join-mm", { queueName: q });
         const f = await fail;

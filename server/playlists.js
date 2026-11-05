@@ -5,7 +5,7 @@
 // dedicated game server and no netplay. A party queues together into one
 // lobby and gets one shared match record (lobby id, match id) on every
 // member's ticket, but each member plays their own local match; the game's
-// Duo puts an AI teammate beside each of them. So `teamSize` is what the game
+// Duo, Trios and Quads put AI teammates beside each of them. So `teamSize` is what the game
 // mode is built for, and `maxParty` is how many friends may queue it together
 // (never more than the team, so a party is never split across teams).
 //
@@ -19,10 +19,10 @@ const LIST = [
   { id: "ffa", name: "Solo", kind: "survival", teamSize: 1, maxParty: 4, ranked: false, enabled: true },
   { id: "lightning", name: "Lightning", kind: "survival", teamSize: 1, maxParty: 4, ranked: false, enabled: true },
   { id: "coop2", name: "Duos", kind: "survival", teamSize: 2, maxParty: 2, ranked: false, enabled: true },
-  { id: "coop3", name: "Trios", kind: "survival", teamSize: 3, maxParty: 3, ranked: false, enabled: false,
-    reason: "mode-not-supported", message: "Trios isn't playable yet: the game only runs teams of two (Duos)." },
-  { id: "coop4", name: "Quads", kind: "survival", teamSize: 4, maxParty: 4, ranked: false, enabled: false,
-    reason: "mode-not-supported", message: "Quads isn't playable yet: the game only runs teams of two (Duos)." },
+  // Trios and Quads: the pairs mode with teams of 3 and 4 (patch_exe.py fix 9,
+  // ?TeamSize= in the native module; docs/TEAM_SIZES_TRIOS_QUADS.md).
+  { id: "coop3", name: "Trios", kind: "survival", teamSize: 3, maxParty: 3, ranked: false, enabled: true },
+  { id: "coop4", name: "Quads", kind: "survival", teamSize: 4, maxParty: 4, ranked: false, enabled: true },
   // Ranked Survival: rated from server-issued tickets only.
   { id: "ranked_ffa", name: "Ranked Solo", kind: "survival", teamSize: 1, maxParty: 4, ranked: true, enabled: true },
   { id: "ranked_coop2", name: "Ranked Duos", kind: "survival", teamSize: 2, maxParty: 2, ranked: true, enabled: false,

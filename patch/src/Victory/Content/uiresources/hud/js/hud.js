@@ -329,6 +329,11 @@ engine.on('UpdateWeaponTooltip', function(title, text){
 });
 
 engine.on('ShowGameMessage', function(message, duration){
+	// Trios and Quads: the teammates beyond the game's own panel (never shown as a message).
+	if (typeof message == "string" && message.indexOf("TMS|") == 0) {
+		RemasterTeamStatus(message);
+		return;
+	}
 	AddGameMessage(message, duration);
 });
 
@@ -1694,6 +1699,8 @@ function ShowPauseMenu(bIsEnabled)
 		document.getElementById('hud-bottom-left-container').classList.add('blur-element');
 		document.getElementById('compass-container').classList.add('blur-element');
 		document.getElementById('party-member-container').classList.add('hidden');
+		remasterExtraMates.paused = true;
+		RemasterShowExtraMates();
 		document.getElementById('controls-footer').classList.remove('hidden');
 		PauseMenuBox.classList.remove("hidden");
 		PushScreen('PauseMain');
@@ -1708,6 +1715,8 @@ function ShowPauseMenu(bIsEnabled)
 		if(bHasPartyMember){
 			document.getElementById('party-member-container').classList.remove('hidden');
 		}
+		remasterExtraMates.paused = false;
+		RemasterShowExtraMates();
 		document.getElementById('hud-center-container').style.opacity = 1;
 		document.getElementById('hud-bottom-right-container').classList.remove('blur-element');
 		document.getElementById('compass-container').classList.remove('blur-element');
@@ -2050,6 +2059,8 @@ function OpenSurvey()
 function OnPlayerDied(){
 	//console.log("Got On PlayerDied");
 	OnTeamMemberDied();
+	remasterExtraMates.youDied = true;		// Trios/Quads: their panels go with the game's
+	RemasterShowExtraMates();
 	/*
 	SetUIModeEnabled();
 	$("#showSurveyModal").modal({backdrop: true} );
@@ -2338,12 +2349,13 @@ function RemasterPlacePartyBar()
 	if(!remasterPartyStyled){
 		remasterPartyStyled = true;
 		var css = document.createElement("style");
+		// The same for the Trios/Quads teammates' panels (.remaster-party-extra, below).
 		css.textContent =
-			"#party-member-container { top: auto; width: 15vw; height: auto; }" +
-			"#party-member-container .party-health-meter { height: 1.9vw; margin-bottom: 0.2vw; }" +
-			"#party-member-container .party-health-bar { height: 1.9vw; }" +
-			"#party-member-container .party-member-name { font-size: 1.15vw; height: 1.5vw; margin-top: 0.25vw; white-space: nowrap; }" +
-			"#party-member-container .party-stamina-meter-content { height: 0.6vw; }";
+			"#party-member-container, .remaster-party-extra { top: auto; width: 15vw; height: auto; }" +
+			"#party-member-container .party-health-meter, .remaster-party-extra .party-health-meter { height: 1.9vw; margin-bottom: 0.2vw; }" +
+			"#party-member-container .party-health-bar, .remaster-party-extra .party-health-bar { height: 1.9vw; }" +
+			"#party-member-container .party-member-name, .remaster-party-extra .party-member-name { font-size: 1.15vw; height: 1.5vw; margin-top: 0.25vw; white-space: nowrap; }" +
+			"#party-member-container .party-stamina-meter-content, .remaster-party-extra .party-stamina-meter-content { height: 0.6vw; }";
 		document.head.appendChild(css);
 	}
 	var a = armor.getBoundingClientRect(), r = row.getBoundingClientRect();
@@ -2354,11 +2366,94 @@ function RemasterPlacePartyBar()
 	var fr = func ? func.getBoundingClientRect() : null;
 	var left = (fr && fr.width) ? Math.max(a.right, fr.right) : a.right;
 	var gap = window.innerWidth * 0.004;
-	box.style.left = Math.round(left + gap * 2) + "px";
-	box.style.bottom = Math.round(window.innerHeight - Math.min(a.top, r.top) + gap) + "px";
+	var bottom = Math.round(window.innerHeight - Math.min(a.top, r.top) + gap);
+	left = Math.round(left + gap * 2);
+	box.style.left = left + "px";
+	box.style.bottom = bottom + "px";
+	// Trios and Quads: the other teammates' panels stacked above it, in order
+	// (the game's own panel keeps the lowest place while it is shown).
+	var step = box.offsetHeight || 0, slot = bHasPartyMember ? 1 : 0;
+	var panels = remasterExtraMates.panels;
+	for(var i = 0; i < panels.length && !step; i++) step = panels[i].box.offsetHeight || 0;
+	if(!step) step = Math.round(window.innerWidth * 0.045);
+	for(var k = 0; k < panels.length; k++){
+		panels[k].box.style.left = left + "px";
+		panels[k].box.style.bottom = (bottom + slot * (step + Math.round(gap))) + "px";
+		if(!panels[k].box.classList.contains("hidden")) slot++;
+	}
 	remasterPartyPlaced = true;
 }
-window.addEventListener("resize", function(){ remasterPartyPlaced = false; if(bHasPartyMember) RemasterPlacePartyBar(); });
+window.addEventListener("resize", function(){
+	remasterPartyPlaced = false;
+	if(bHasPartyMember || remasterExtraMates.panels.length) RemasterPlacePartyBar();
+});
+
+// Trios and Quads: the game's panel above shows one teammate (OnTeamMemberAdded,
+// SetTeamMemberStatus); the patched exe reports the others once a second as
+// "TMS|<k>|<health %>|<stamina %>|<alive 0/1>|<name>|..." in ShowGameMessage
+// (patch/showdown_rounds.c report_mates, PlayerArray order). Each gets a panel
+// like the game's, stacked above it; a teammate who is down has none.
+var remasterExtraMates = { panels: [], alive: 0, names: {}, paused: false, youDied: false };
+
+function RemasterExtraPanel(i)
+{
+	var p = remasterExtraMates.panels[i];
+	if(p) return p;
+	var box = document.createElement("div");
+	box.className = "hud-center-left-container remaster-party-extra hidden";
+	box.id = "remaster-party-" + (i + 1);
+	box.innerHTML =
+		'<div class="health-meter party-health-meter"><div class="health-meter-content">' +
+		'<div class="health-bar party-health-bar"></div><div class="party-member-name"></div></div></div>' +
+		'<div class="stamina-meter-content party-stamina-meter-content"><div class="stamina-bar party-stamina-bar"></div></div>';
+	var anchor = document.getElementById("party-member-container");
+	(anchor && anchor.parentNode ? anchor.parentNode : document.body).appendChild(box);
+	p = {
+		box: box,
+		health: box.querySelector(".party-health-bar"),
+		stam: box.querySelector(".party-stamina-bar"),
+		name: box.querySelector(".party-member-name")
+	};
+	remasterExtraMates.panels[i] = p;
+	return p;
+}
+
+function RemasterShowExtraMates()
+{
+	var show = !remasterExtraMates.paused && !remasterExtraMates.youDied;
+	for(var i = 0; i < remasterExtraMates.panels.length; i++){
+		var p = remasterExtraMates.panels[i];
+		if(show && p.bAlive) p.box.classList.remove("hidden");
+		else p.box.classList.add("hidden");
+	}
+	RemasterPlacePartyBar();
+}
+
+function RemasterTeamStatus(message)
+{
+	var f = message.split("|");
+	var n = parseInt(f[1], 10) || 0;
+	var alive = 0, i;
+	for(i = 0; i < n && 5 + i * 4 < f.length; i++){
+		var at = 2 + i * 4;
+		var p = RemasterExtraPanel(i);
+		var name = f[at + 3] || "";
+		p.bAlive = f[at + 2] == "1";
+		p.name.textContent = name;
+		p.health.style.width = (p.bAlive ? Math.max(0, Math.min(100, parseInt(f[at], 10) || 0)) : 0) + "%";
+		p.stam.style.width = (p.bAlive ? Math.max(0, Math.min(100, parseInt(f[at + 1], 10) || 0)) : 0) + "%";
+		if(p.bAlive) alive++;
+		if(p.bAlive && name && !remasterExtraMates.names[name]){
+			remasterExtraMates.names[name] = true;
+			AddGameMessage(name + " is your Teammate!");
+		}
+	}
+	for(; i < remasterExtraMates.panels.length; i++) remasterExtraMates.panels[i].bAlive = false;
+	remasterExtraMates.alive = alive;
+	if(n > 0) remasterTeam.bInTeam = true;
+	RemasterShowExtraMates();
+	RemasterUpdateMateAlive();
+}
 
 // The kill feed and game messages (centre column) end above the wound icons
 // at the bottom centre. Stock starts the column 7vw from the top and lets it
@@ -3010,7 +3105,7 @@ engine.on("OnViewResized", function(){
     document.body.style.display = "";
     RemasterFitGameMessages();
     remasterPartyPlaced = false;
-    if(bHasPartyMember) RemasterPlacePartyBar();
+    if(bHasPartyMember || remasterExtraMates.panels.length) RemasterPlacePartyBar();
   },10);
 });
 
@@ -3315,7 +3410,9 @@ function ShowRankedResult(ranked) {
 //     menu coming back (the server closes a match left open by then);
 //   - otherwise after 60 s, or, while your teammate is still alive, every
 //     60 s again up to 20 minutes.
-var remasterTeam = { bInTeam: false, bMateAlive: false };
+// Trios and Quads: a teammate is still alive while the game's panel's one or
+// any of the others ("TMS|", RemasterTeamStatus) is.
+var remasterTeam = { bInTeam: false, bMateAlive: false, bPanelMateAlive: false };
 var pendingTeamResult = null;               // { data, since, timer }
 var TEAM_RESULT_WAIT_MS = 60000;
 var TEAM_RESULT_MAX_WAIT_MS = 20 * 60000;
@@ -3323,14 +3420,21 @@ var TEAM_RESULT_MAX_WAIT_MS = 20 * 60000;
 function RemasterTeammateAdded()
 {
 	remasterTeam.bInTeam = true;
+	remasterTeam.bPanelMateAlive = true;
 	remasterTeam.bMateAlive = true;
 }
 
 function RemasterTeammateDied()
 {
-	remasterTeam.bMateAlive = false;
-	if (pendingTeamResult) {
-		PostPendingTeamResult(false);        // both of you are out: the team lost
+	remasterTeam.bPanelMateAlive = false;
+	RemasterUpdateMateAlive();
+}
+
+function RemasterUpdateMateAlive()
+{
+	remasterTeam.bMateAlive = remasterTeam.bPanelMateAlive || remasterExtraMates.alive > 0;
+	if (!remasterTeam.bMateAlive && pendingTeamResult) {
+		PostPendingTeamResult(false);        // your whole team is out: the team lost
 	}
 }
 

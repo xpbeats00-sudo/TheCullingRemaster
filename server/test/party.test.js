@@ -322,9 +322,22 @@ async function run(srv, label) {
       await finish(L); await finish(M); await finish(N);
     });
 
-    await test("Trio, Quad and team Showdown playlists are refused with a reason; Showdown Solo refuses a party", async () => {
-      for (const [q, reason] of [["ffa_jungle_coop3", "mode-not-supported"], ["ffa_jungle_coop4", "mode-not-supported"],
-        ["showdown_duo", "mode-not-supported"], ["showdown_trio", "mode-not-supported"], ["showdown_quad", "mode-not-supported"],
+    await test("a party of three queues Trios and Quads as one: one match, trio:/quad:<map> for every member", async () => {
+      const N = h.N;
+      for (const [q, mode, want] of [["ffa_jungle_coop3", "coop3", "trio:0"], ["ffa_prison_coop4", "coop4", "quad:1"]]) {
+        clear(L, M, N);
+        const rs = [waitFor(L, "match-ready"), waitFor(M, "match-ready"), waitFor(N, "match-ready")];
+        M.socket.emit("join-mm", { queueName: q });
+        const got = await Promise.all(rs);
+        assert.strictEqual(new Set(got.map((g) => g.matchId)).size, 1, q + ": one match");
+        assert.ok(got.every((g) => g.gameServer === want && g.playlist === mode), q + ": " + JSON.stringify(got));
+        await finish(L); await finish(M); await finish(N);
+      }
+    });
+
+    await test("Ranked teams and team Showdown are refused with a reason; Duos and Showdown Solo refuse a party of three", async () => {
+      for (const [q, reason] of [["ranked_ffa_jungle_coop3", "queue-unavailable"], ["ranked_coop4", "queue-unavailable"],
+        ["ffa_jungle_coop2", "party-too-large"], ["showdown_duo", "mode-not-supported"], ["showdown_trio", "mode-not-supported"], ["showdown_quad", "mode-not-supported"],
         ["ranked_showdown", "mode-not-supported"], ["showdown", "party-too-large"]]) {
         const fail = waitFor(M, "join-mm-fail");
         M.socket.emit("join-mm", { queueName: q });

@@ -1167,6 +1167,11 @@ function lobbyQueue(raw) {
   return { mode: r.playlist.id, map: r.map };
 }
 
+// The team modes: the team size, and the prefix of the match the menu opens
+// ("duo:<map>", "trio:<map>", "quad:<map>"; patch/make_duo.py's URLs). A party
+// never holds more than its team (playlists.js maxParty = teamSize).
+const TEAM_MODES = { coop2: { size: 2, start: 'duo:' }, coop3: { size: 3, start: 'trio:' }, coop4: { size: 4, start: 'quad:' } };
+
 // A socket that is logged in and connected now, for a player.
 function liveSocket(userID) {
   const s = socketsByUser.get(userID);
@@ -1376,9 +1381,9 @@ function allocateMatch(lobby) {
 function launchMatch(socket, queue, map, shared = {}) {
   const showdown = queue === SHOWDOWN.queue;
   const mode = showdown ? SHOWDOWN.queue : lobbyQueue(queue).mode;
-  // Duo: the pairs mode, you and a teammate (patch/make_duo.py); the menu
-  // starts it from "duo:<map>".
-  const duo = mode === 'coop2';
+  // Duo, Trios, Quads: the pairs mode with you and 1-3 teammates
+  // (patch/make_duo.py); the menu starts it from "duo:<map>" ("trio:", "quad:").
+  const team = TEAM_MODES[mode] || null;
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   let rankedId = null;
   if (playlists.PLAYLISTS[mode] && playlists.PLAYLISTS[mode].ranked) {
@@ -1402,10 +1407,10 @@ function launchMatch(socket, queue, map, shared = {}) {
     partyId: shared.partyId || null
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode });
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex,
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '');
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (duo ? 'duo:' : 'offline:') + mapIndex,
+    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (team ? team.start : 'offline:') + mapIndex,
     nonce: crypto.randomBytes(8).toString('hex'),
     serverNonce: crypto.randomBytes(8).toString('hex'),
     // The shared record. Each player's match still runs on their own PC with
@@ -1445,7 +1450,8 @@ function sendShowdown(socket, loginAt) {
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
 const MATCH_PRESENCE_MS = 45 * 60 * 1000;
-const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning', custom: 'Custom' };
+const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', coop3: 'Trios', coop4: 'Quads', ranked_ffa: 'Ranked', showdown: 'Showdown',
+  lightning: 'Lightning', custom: 'Custom' };
 
 function usernameOf(userID) {
   const key = accounts.keyForUserID(userID);
@@ -1657,7 +1663,8 @@ io.on('connection', (socket) => {
     socket.emit('player-online-response', { data: socketsByUser.size });
     socket.emit('player-counts', { online: socketsByUser.size, inQueue: 0 });
     socket.emit('update-queue-status', {
-      ffa: { isActive: true }, coop2: { isActive: true }, lightning: { isActive: true }, ranked_ffa: { isActive: true }
+      ffa: { isActive: true }, coop2: { isActive: true }, coop3: { isActive: true }, coop4: { isActive: true },
+      lightning: { isActive: true }, ranked_ffa: { isActive: true }
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);

@@ -46,6 +46,15 @@ function gameBody(queue) {
       assert.strictEqual(ready.gameServer, "duo:1");
     });
 
+    await test("Trios and Quads start the pairs mode with their team size (trio:/quad:<map>)", async () => {
+      for (const [name, mode, want] of [["ffa_jungle_coop3", "coop3", "trio:0"], ["ffa_prison_coop3", "coop3", "trio:1"],
+        ["ffa_jungle_coop4", "coop4", "quad:0"], ["ffa_prison_coop4", "coop4", "quad:1"]]) {
+        const { lobby, ready } = await queue(name, "application/x-www-form-urlencoded");
+        assert.strictEqual(lobby.queue, mode, name);
+        assert.strictEqual(ready.gameServer, want, name);
+      }
+    });
+
     await test("Solo stays Solo", async () => {
       const { lobby, ready } = await queue("ffa_jungle", "application/x-www-form-urlencoded");
       assert.strictEqual(lobby.queue, "ffa");
