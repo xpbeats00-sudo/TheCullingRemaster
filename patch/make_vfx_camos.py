@@ -40,9 +40,14 @@ mesh, given to the skin through GeoSkin (as the stock special skins do):
 The earlier animated attempt shipped copies of Chainsaw_A_MI, i.e. new
 packages carrying an inline shader map; none is made here.
 
-Skins are the weapon's stock GeoSkin skin (CompoundBow_14, Katana_15,
-FiremansAxe_15) with GeoSkin pointed at the copy and the store fields
-rewritten. Mesh copies keep every name's length, so their header and export
+Every camo-capable weapon (make_camos' 37) gets every look whose route fits
+its mesh (weapon_setups checks: one export, one LOD, the layout round-trips,
+the body slot - the one drawing the most triangles - is a MIC or Material,
+the shell fits 16-bit indices); anything left out is listed in the manifest
+(patch/registry/vfx_camos_manifest.json, also read by the tests). Skins are
+the weapon's stock GeoSkin skin when it has one (e.g. CompoundBow_14,
+Katana_15), else its _01 camo skin, with GeoSkin pointed at the copy and the
+store fields rewritten. Mesh copies keep every name's length, so their header and export
 offsets are byte-identical to the stock mesh (Dark Matter's shell meshes
 grow: one import, one material slot, one section and its vertex data).
 
@@ -103,30 +108,42 @@ SRGB_TEMPLATE = C + "Character/Weapons/TwoHanded_Melee_Desert_BC.uasset"
 MASK_TEMPLATE = C + "Character/Weapons/digicamo_A_GP.uasset"
 GP_TEMPLATE = C + "Character/Weapons/Chainsaw_A_GP.uasset"
 
-# weapon skin prefix -> (stock GeoSkin skin used as template, default mesh, body material)
-WEAPONS = {
-    "CompoundBow": ("CompoundBow_14", "CompoundBow_A", "Bow_Compound_A_MI"),
-    "Katana": ("Katana_15", "Katana", "Katana_MI"),
-    "FiremansAxe": ("FiremansAxe_15", "FireAxe_A", "TwoHanded_Melee_MI"),
+# Every camo-capable weapon (make_camos' skin prefixes) -> its default mesh
+# (from the weapon blueprints; research/weapon_meshes.json).
+WEAPON_MESHES = {
+    "357Magnum": "Revolver_A", "AlarmGun": "ManAlarm_A", "AutoBow": "AutoBow_A", "BaseballBat": "MetalBat_A",
+    "BowieKnife": "BowieKnife_A", "BrassKnuckles": "BrassKnuckles_A", "CampHatchet": "Hatchet_A",
+    "Chainsaw": "Chainsaw_A", "Cleaver": "Cleaver_A", "CompoundBow": "CompoundBow_A", "Crowbar": "Crowbar_A",
+    "FiremansAxe": "FireAxe_A", "Hammer_BallPein": "Hammer_Bambi_A", "IceAxe": "IceAxe_A",
+    "Javelin": "Javelin_A", "Katana": "Katana", "Kukri": "Kukri_A", "Machete": "Machete_A",
+    "ManTracker": "mantracker_A", "Pike": "Pike_A", "PipeWrench": "PipeWrench_A", "PitchFork": "PitchFork_A",
+    "RecurveBow": "Bow_Recurve_A", "Rifle": "M15-Rifle_A", "SMG": "SMG_A", "Sabre": "Sabre_A",
+    "Sledgehammer": "Sledgehammer_A", "SteelPipe": "Steel_Pipe_A", "StunGun": "StunGun_A",
+    "SurvivalAxe": "Survival_Axe_A", "SurvivalSpear": "Survival_Spear_A", "TacticalMachete": "Tactical_Machete",
+    "TantoKnife": "Knife", "Tomahawk": "Tomahawk_Tactical_A", "Tonfa": "Tonfa_A", "Trident": "Trident_A",
+    "Yari": "Yari_A",
 }
-WEAPON_LETTER = {"CompoundBow": "B", "Katana": "K", "FiremansAxe": "F"}
+ALL = "all"                        # a camo on every weapon whose setup supports it
+MANIFEST = os.path.join(HERE, "registry", "vfx_camos_manifest.json")
+# Files this generator writes: skins, mesh copies and MICs (V<camo><weapon>...), the mist MIC, textures.
+VFX_FILE = r"(_XP_VFX_|Character[/\\](Weapons|Items)[/\\]V[a-p][01][0-9a-z][_A-Z]|[/\\]T_VFX_|[/\\]MI_VFX_)"
 
 # (label, kind, colour (linear, max 1), description, weapons)
 CAMOS = [
     ("Dark Matter", "dark", (0.55, 0.30, 1.00),
-     "Void-black metal veined with violet starlight that breathes.", list(WEAPONS)),
+     "Void-black metal veined with violet starlight that breathes.", ALL),
     ("Dark Matter Popper", "popper", (0.80, 0.20, 1.00),
      "The FUNC Popper, its glow turned to pulsing dark-matter violet.", ["CompoundBow"]),
     ("Wave Abyss Blue", "wave", (0.15, 0.62, 1.00),
-     "Bands of abyss-blue light flowing along the weapon.", list(WEAPONS)),
+     "Bands of abyss-blue light flowing along the weapon.", ALL),
     ("Wave Violet", "wave", (0.55, 0.10, 1.00),
-     "Bands of violet light flowing along the weapon.", list(WEAPONS)),
+     "Bands of violet light flowing along the weapon.", ALL),
     ("Wave Toxic Green", "wave", (0.30, 1.00, 0.05),
-     "Bands of toxic-green light flowing along the weapon.", list(WEAPONS)),
+     "Bands of toxic-green light flowing along the weapon.", ALL),
     ("Wave Ember", "wave", (1.00, 0.30, 0.02),
-     "Bands of ember light flowing along the weapon.", list(WEAPONS)),
+     "Bands of ember light flowing along the weapon.", ALL),
     ("Dark Matter Drift", "drift", (0.55, 0.30, 1.00),
-     "A dark-matter galaxy drifting across the weapon.", list(WEAPONS)),
+     "A dark-matter galaxy drifting across the weapon.", ALL),
 ]
 WAVE_SPEED = 0.12                  # UV widths per second (ChainsawSpeed)
 DARK_PULSE = (0.15, 0.3, 7.0)      # PulseFrequency (Hz), PulseRange (exponent), Emissive Intensity
@@ -137,7 +154,7 @@ DRIFT_SPEED = 0.05                 # Dark Matter Drift: UV widths per second
 # opacity faded by scene depth over "Fade Distance" and by a Fresnel term).
 MIST_PARENT = "/Game/Character/Materials/M_NecroMist"
 MIST_MIC = WEAPONS_PKG + "MI_VFX_Galaxy_Mist"
-SHELL_OFFSET = {"CompoundBow": 0.15, "Katana": 0.12, "FiremansAxe": 0.15}   # units along the normals
+SHELL_SCALE, SHELL_MIN, SHELL_MAX = 0.0014, 0.08, 0.2   # shell offset = longest bounds half-extent x scale
 MIST_SCALARS = [("Opacity", 0.9), ("Fade Distance", 0.05), ("ExIn", 3.0), ("BRF", 0.05),
                 ("SX", 0.03), ("SY", -0.08), ("U1", 0.04), ("U2", -0.05)]
 # The two Fog Tints share a name: FName "Fog Tint" numbers 0 and 2 (shown as "Fog Tint_1").
@@ -188,12 +205,18 @@ def same_length_name(code, stock):
 
 
 # ---- names of the generated assets
-def mesh_path(ci, weapon, mesh):
-    return WEAPONS_PKG + same_length_name("X%d%s" % (ci, WEAPON_LETTER[weapon]), mesh)
+def short_name(code, stock):
+    """A new name of exactly len(stock) characters starting with `code`, so
+    renamed package paths keep their length."""
+    name = (code + "_" + stock)[:len(stock)] if len(stock) > len(code) + 1 else (code + stock)[:len(stock)]
+    assert len(name) == len(stock) and len(stock) >= len(code) + 1, (code, stock)
+    return name
 
 
-def mic_path(ci, weapon, material):
-    return WEAPONS_PKG + same_length_name("X%d%s" % (ci, WEAPON_LETTER[weapon]), material)
+def asset_code(ci, wi):
+    """V + camo letter + weapon index in base 36 (2 characters)."""
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    return "V" + "abcdefghijklmnop"[ci - VFX_FIRST] + digits[wi // 36] + digits[wi % 36]
 
 
 def texture_path(name):
@@ -486,21 +509,119 @@ def weapon_index(catalog, weapon):
     return ids.pop()
 
 
-def plan(catalog):
+def camo_weapons(catalog):
+    """make_camos' weapons (skin prefixes), by weapon index."""
+    out = {}
+    for t in catalog:
+        if t.get("source") == "xp-camos":
+            out[t["asset"][len(SKINS_PKG):].split("_XP_")[0]] = (t["tid"] - FIRST_ID) // 100
+    return sorted(out, key=out.get)
+
+
+def stock_entries(paks_dir):
+    from build_catalog import pak_entries
+    names = []
+    for pk in sorted(os.listdir(paks_dir)):
+        if pk.endswith(".pak") and not pk.startswith("LocalServer"):
+            names += [e[1].replace("../../../", "") for e in pak_entries(os.path.join(paks_dir, pk))]
+    return names
+
+
+def weapon_setups(paks_dir, catalog):
+    """({weapon: setup}, {weapon: why not}) for the camo-capable weapons.
+    A setup: the stock mesh, its body material (the slot drawing the most
+    triangles), that material's normal map, the skin template (the weapon's
+    stock GeoSkin skin when it has one, else its _01 camo skin), whether a
+    galaxy shell fits (16-bit indices) and the shell offset."""
+    import skeletal_mesh
+    entries = stock_entries(paks_dir)
+    by_lower = {e.lower(): e for e in entries}
+    skins = [e for e in entries if e.startswith(C + "Cosmetics/WeaponSkins/") and e.count("/") == 4]
+    weapons = camo_weapons(catalog)
+    want, mesh_rel = set(), {}
+    for w in weapons:
+        r = next((by_lower[k] for k in ((C + "Character/%s/%s.uasset" % (d, WEAPON_MESHES.get(w, "?"))).lower()
+                                         for d in ("Weapons", "Items")) if k in by_lower), None)
+        if r:
+            mesh_rel[w] = r
+            want.add(r)
+    for w in weapons:
+        want |= {e for e in skins if re.match(re.escape(C + "Cosmetics/WeaponSkins/" + w) + r"_\d\d\.uasset$", e)}
+    data = find_in_paks(paks_dir, want)
+    setups, skipped = {}, {}
+    for w in weapons:
+        if w not in mesh_rel:
+            skipped[w] = "default mesh %s not found in the paks" % WEAPON_MESHES.get(w)
+            continue
+        up = UPackage(data[mesh_rel[w]])
+        if len(up.exports) != 1:
+            skipped[w] = "mesh package has %d exports" % len(up.exports)
+            continue
+        x = up.exports[0]["data"]
+        try:
+            mesh = skeletal_mesh.SkeletalMesh(x, tags_end(up, x))
+            assert mesh.write() == x, "does not round-trip"
+        except (AssertionError, struct.error, SystemExit) as ex:
+            skipped[w] = "mesh layout not supported (%s)" % ex
+            continue
+        if len(mesh.lods) != 1:
+            skipped[w] = "%d LODs" % len(mesh.lods)
+            continue
+        lod = mesh.lods[0]
+        tris = {}
+        for sec in lod.sections:
+            tris[sec.material] = tris.get(sec.material, 0) + sec.num_triangles
+        slot = max(tris, key=tris.get)
+        imp = struct.unpack_from("<i", mesh.materials[slot])[0]
+        raw = struct.unpack("<iiiiiii", up.imports[-imp - 1])
+        cls, obj, outer = up.names[raw[2]][0], up.names[raw[5]][0], raw[4]
+        mat_pkg = up.names[struct.unpack_from("<i", up.imports[-outer - 1], 20)[0]][0]
+        if cls not in ("MaterialInstanceConstant", "Material"):
+            skipped[w] = "body material %s is a %s" % (obj, cls)
+            continue
+        body_verts = sum(sec.num_vertices for sec in lod.sections if sec.material == slot)
+        geo = [e for e in skins if re.match(re.escape(C + "Cosmetics/WeaponSkins/" + w) + r"_\d\d\.uasset$", e)
+               and not e.endswith("_00.uasset") and b"GeoSkin" in data[e]
+               and any(n == "GeoSkin" for n, *_ in iter_tags(UPackage(data[e]), UPackage(data[e]).exports[0]["data"]))]
+        template = sorted(geo)[-1] if geo else next(e for e in skins if e.lower() == (C + "Cosmetics/WeaponSkins/%s_01.uasset" % w).lower())
+        extent = max(struct.unpack_from("<3f", mesh.head, 6 + 12))
+        setups[w] = {
+            "mesh_rel": mesh_rel[w], "mesh_pkg": "/Game/" + mesh_rel[w][len(C):-len(".uasset")],
+            "mesh_obj": up.names[up.exports[0]["fields"][4]][0], "mat_pkg": mat_pkg, "mat_obj": obj, "mat_class": cls,
+            "template": template, "template_kind": "stock GeoSkin skin" if geo else "_01 camo skin",
+            "shell": lod.num_vertices + body_verts < (1 << (8 * lod.index_size)),
+            "shell_offset": round(min(SHELL_MAX, max(SHELL_MIN, extent * SHELL_SCALE)), 3),
+            "vertices": lod.num_vertices, "body_vertices": body_verts, "sections": len(lod.sections),
+        }
+        if not setups[w]["shell"]:
+            skipped.setdefault(w + " (Dark Matter)", "a galaxy shell would pass 65535 vertices (16-bit indices)")
+    return setups, skipped
+
+
+def plan(catalog, setups):
     """[(camo index, camo, weapon, asset, item id)]"""
     rows = []
     for k, camo in enumerate(CAMOS):
         ci = VFX_FIRST + k
-        for weapon in camo[4]:
+        weapons = camo[4] if camo[4] != ALL else [w for w in setups if camo[1] != "dark" or setups[w]["shell"]]
+        for weapon in weapons:
             rows.append((ci, camo, weapon, "%s_XP_%s" % (weapon, slug(camo[0])),
                          FIRST_ID + weapon_index(catalog, weapon) * 100 + ci))
     return rows
 
 
 def stock_material_of(src, material_rel):
-    """{parameter: texture package path} of a stock weapon MIC."""
+    """{parameter: texture package path} of a stock weapon MIC (for a
+    Material: its Texture2D imports by suffix, e.g. NM)."""
     up = UPackage(src[material_rel])
     out = {}
+    if "MaterialInstanceConstant" not in export_classes(up):
+        for raw in up.imports:
+            cp, _, cn, _, outer, obj, _ = struct.unpack("<iiiiiii", raw)
+            name = up.names[obj][0]
+            if up.names[cn][0] == "Texture2D" and name.lower().endswith("_nm"):
+                out.setdefault("NM", up.names[struct.unpack_from("<i", up.imports[-outer - 1], 20)[0]][0])
+        return out
     for f in struct_array(up, up.exports[0]["data"], "TextureParameterValues"):
         n, _ = name_value(up, f["ParameterName"])
         idx = struct.unpack("<i", f["ParameterValue"])[0]
@@ -511,10 +632,10 @@ def stock_material_of(src, material_rel):
 
 
 def main(paks_dir):
-    rows = plan(json.load(open(CATALOG)))
-    weapon_rels = {}
-    for weapon, (skin, mesh, material) in WEAPONS.items():
-        weapon_rels[weapon] = (C + "Cosmetics/WeaponSkins/%s.uasset" % skin, rel(WEAPONS_PKG + mesh), rel(WEAPONS_PKG + material))
+    catalog_in = json.load(open(CATALOG))
+    setups, skipped = weapon_setups(paks_dir, catalog_in)
+    rows = plan(catalog_in, setups)
+    weapon_rels = {w: (st["template"], st["mesh_rel"], rel(st["mat_pkg"])) for w, st in setups.items()}
     need = {SRGB_TEMPLATE, MASK_TEMPLATE, GP_TEMPLATE, rel(DARK_PARENT), rel(DARK_ROOT), rel(WAVE_PARENT), rel(WAVE_ROOT),
             rel(POPPER_PARENT), rel(POPPER_MESH), rel(MIST_PARENT),
             C + "Character/Weapons/Crafted_Smoke_Grenade_3p_MI.uasset"}     # build_mic's package template
@@ -527,7 +648,10 @@ def main(paks_dir):
         p = out_path(SKINS_PKG + asset)
         if os.path.exists(p):
             os.remove(p)
-    for f in glob.glob(os.path.join(CONTENT, "Character", "Weapons", "X[0-9][0-9][BKF]_*.uasset")) \
+    for f in glob.glob(os.path.join(CONTENT, "Cosmetics", "WeaponSkins", "*_XP_VFX_*.uasset")) \
+            + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "X[0-9][0-9][BKF]_*.uasset")) \
+            + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "V[a-p][01][0-9a-z][_A-Z]*.uasset")) \
+            + glob.glob(os.path.join(CONTENT, "Character", "Items", "V[a-p][01][0-9a-z][_A-Z]*.uasset")) \
             + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "T_VFX_*.uasset")) \
             + glob.glob(os.path.join(CONTENT, "Character", "Weapons", "MI_VFX_*.uasset")):
         os.remove(f)
@@ -557,14 +681,16 @@ def main(paks_dir):
     by_asset = {t["asset"]: t for t in catalog}
     taken = {t["tid"] for t in catalog}
     stock_templates = weapon_templates(paks_dir)
-    records = []
+    records, manifest = [], []
+    stock_names = {e.rsplit("/", 1)[1][:-len(".uasset")].lower() for e in stock_entries(paks_dir)}
     for ci, (label, kind, color, description, _), weapon, asset, item_id in rows:
         skin_rel, mesh_rel, mat_rel = weapon_rels[weapon]
-        _, mesh, material = WEAPONS[weapon]
+        st = setups[weapon]
+        code = asset_code(ci, weapon_index(catalog_in, weapon))
         if kind == "popper":
             old_mesh, old_mat = POPPER_MESH, POPPER_PARENT
-            new_mesh = mesh_path(ci, weapon, "Bow_Compound_B")
-            new_mat = mic_path(ci, weapon, "Bow_Compound_B_PM")
+            new_mesh = WEAPONS_PKG + short_name(code, "Bow_Compound_B")
+            new_mat = WEAPONS_PKG + short_name(code, "Bow_Compound_B_PM")
             f, r, glow = POPPER_PULSE
             write(new_mat, build_mic(template_mic, new_mat, POPPER_PARENT, "Material", popper_guids,
                                      scalars=[("Glow INT", glow), ("PulseFrequency", f), ("PulseRange", r)],
@@ -573,10 +699,13 @@ def main(paks_dir):
                                       material_class="MaterialInstanceConstant"))
             geo = "%s.Bow_Compound_B" % new_mesh
         else:
-            old_mesh, old_mat = WEAPONS_PKG + mesh, WEAPONS_PKG + material
-            new_mesh, new_mat = mesh_path(ci, weapon, mesh), mic_path(ci, weapon, material)
+            old_mesh, old_mat = st["mesh_pkg"], st["mat_pkg"]
+            mesh, material = old_mesh.rsplit("/", 1)[1], st["mat_obj"]
+            new_mesh = old_mesh.rsplit("/", 1)[0] + "/" + short_name(code, mesh)
+            new_mat = old_mat.rsplit("/", 1)[0] + "/" + short_name(code, old_mat.rsplit("/", 1)[1])
+            assert material == old_mat.rsplit("/", 1)[1], (material, old_mat)
             if kind == "dark":
-                normal = stock_material_of(src, mat_rel)["NM"]
+                normal = stock_material_of(src, mat_rel).get("NM", FLAT_NORMAL)
                 f, r, intensity = DARK_PULSE
                 m = texture_path("T_VFX_Dark_Matter_M")
                 mic = build_mic(template_mic, new_mat, DARK_PARENT, "MaterialInstanceConstant", dark_guids,
@@ -593,11 +722,18 @@ def main(paks_dir):
                                 textures=[("BC", texture_path(bc)),
                                           ("GP", texture_path("T_VFX_Wave_GP")), ("NM", FLAT_NORMAL), ("CM", BLACK)])
             write(new_mat, mic)
-            mesh_data = mesh_copy(src[mesh_rel], old_mesh, new_mesh, old_mat, new_mat)
+            mesh_data = mesh_copy(src[mesh_rel], old_mesh, new_mesh, old_mat, new_mat,
+                                  material_class="MaterialInstanceConstant" if st["mat_class"] != "MaterialInstanceConstant" else None)
             if kind == "dark":
-                mesh_data = shell_mesh(mesh_data, new_mat, MIST_MIC, SHELL_OFFSET[weapon])
+                mesh_data = shell_mesh(mesh_data, new_mat, MIST_MIC, st["shell_offset"])
             write(new_mesh, mesh_data)
-            geo = "%s.%s" % (new_mesh, mesh)
+            geo = "%s.%s" % (new_mesh, st["mesh_obj"])
+        for p in (new_mesh, new_mat):
+            assert p.rsplit("/", 1)[1].lower() not in stock_names, p
+        manifest.append({"weapon": weapon, "camo": label, "kind": kind, "camo_index": ci, "item_id": item_id,
+                         "skin": SKINS_PKG + asset, "template": skin_rel, "mesh": new_mesh,
+                         "stock_mesh": POPPER_MESH if kind == "popper" else old_mesh, "mic": new_mat,
+                         "shell_offset": st["shell_offset"] if kind == "dark" else None})
         write(SKINS_PKG + asset, skin_asset(src[skin_rel], asset, item_id, label, description, geo))
         records.append(asset_registry.record(SKINS_PKG + asset, "WeaponCustomizationDataAsset"))
         assert item_id not in taken, item_id
@@ -610,6 +746,12 @@ def main(paks_dir):
         catalog.append(entry)
         print("%-12s %-20s %d  %s" % (weapon, label, item_id, geo))
 
+    for k, why in sorted(skipped.items()):
+        print("  not covered: %-24s %s" % (k, why))
+    os.makedirs(os.path.dirname(MANIFEST), exist_ok=True)
+    with open(MANIFEST, "w") as f:
+        json.dump({"rows": manifest, "skipped": skipped,
+                   "setups": {w: {k: v for k, v in st.items()} for w, st in setups.items()}}, f, indent=1)
     asset_registry.save(REGISTRY_NAME, records)
     asset_registry.build(paks_dir)
     with open(CATALOG, "w") as f:
@@ -652,7 +794,7 @@ def test_pak(base_src, out_pak, records):
         root = os.path.join(stage, "src")
         mine = [os.path.relpath(p, os.path.join(HERE, "src"))
                 for p in glob.glob(os.path.join(CONTENT, "**", "*.uasset"), recursive=True)
-                if re.search(r"(_XP_VFX_|[/\\]X\d\d[BKF]_|[/\\]T_VFX_|[/\\]MI_VFX_)", p)]
+                if re.search(VFX_FILE, p)]
         for r in mine:
             dst = os.path.join(root, r)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -665,6 +807,17 @@ def test_pak(base_src, out_pak, records):
         for p in ("force_steamid.txt", "force_account_name.txt"):
             for hit in glob.glob(os.path.join(root, "**", p), recursive=True):
                 os.remove(hit)
+        # The base tree may still hold the old animated-camo experiment's
+        # unreferenced packages (*_XPAnim*, IceAxe_A_XPTest): leave them out,
+        # as a release build does. A skin flagged by the gate is a real
+        # problem (it would vanish from the game), so stop instead.
+        found = make_pak.test_content(root)
+        skins = [r for r, why in found if "/WeaponSkins/" in r or not make_pak.TEST_NAMES.search(r)]
+        if skins:
+            raise SystemExit("base tree has diagnostic content that is referenced: %s" % skins[:10])
+        for r, _ in found:
+            os.remove(os.path.join(root, r))
+        print("left out %d test/diagnostic files of the base tree" % len(found))
         make_pak.main(root, out_pak)
         print("test pak: %s (%d VFX files added)" % (out_pak, len(mine)))
     finally:

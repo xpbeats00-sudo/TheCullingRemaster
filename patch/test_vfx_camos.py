@@ -100,7 +100,7 @@ def generated_files():
     for d, _, names in os.walk(vfx.CONTENT):
         for n in names:
             p = os.path.join(d, n)
-            if re.search(r"(_XP_VFX_|^X\d\d[BKF]_|^T_VFX_|^MI_VFX_)", n):
+            if re.search(vfx.VFX_FILE, p):
                 out[os.path.relpath(p, root).replace(os.sep, "/")] = open(p, "rb").read()
     return out
 
@@ -245,13 +245,12 @@ def check_stock_round_trip(stock):
     print("ok    skeletal_mesh round-trips %d stock weapon meshes byte for byte" % n)
 
 
-def check_shell_mesh(rel, data, stock):
+def check_shell_mesh(rel, data, stock, row, setup):
     """Dark Matter: the stock mesh plus one galaxy-shell section per body
     section, everything else unchanged."""
     import numpy as np
-    weapon = next(w for w, l in vfx.WEAPON_LETTER.items() if re.search(r"/X\d\d%s_" % l, rel))
     up, mesh = mesh_parts(data)
-    sup, smesh = mesh_parts(stock.get(vfx.rel(vfx.WEAPONS_PKG + vfx.WEAPONS[weapon][1])))
+    sup, smesh = mesh_parts(stock.get(vfx.rel(row["stock_mesh"])))
     check(mesh.write() == up.exports[0]["data"], "%s: re-serializes byte for byte" % rel)
     check(mesh.head == smesh.head and mesh.skeleton == smesh.skeleton and mesh.tail == smesh.tail,
           "%s: bounds, skeleton and trailing data = stock" % rel)
@@ -262,7 +261,11 @@ def check_shell_mesh(rel, data, stock):
           "%s: one added material slot -> %s (%s)" % (rel, vfx.MIST_MIC, slot_obj))
     lod, slod = mesh.lods[0], smesh.lods[0]
     n0 = slod.num_vertices
-    body = [i for i, s in enumerate(slod.sections) if s.material == 0]
+    simps = imports(sup)
+    body_slot = next(i for i, m in enumerate(smesh.materials)
+                     if simps[-struct.unpack_from("<i", m)[0] - 1][3] == setup["mat_obj"])
+    check(slot_obj[body_slot] == row["mic"].rsplit("/", 1)[1], "%s: body slot -> %s" % (rel, row["mic"]))
+    body = [i for i, s in enumerate(slod.sections) if s.material == body_slot]
     shells = lod.sections[len(slod.sections):]
     check(len(shells) == len(body) == 1, "%s: one shell section per body section" % rel)
     check(lod.vertices[:len(slod.vertices)] == slod.vertices and lod.indices[:len(slod.indices)] == slod.indices
@@ -285,7 +288,7 @@ def check_shell_mesh(rel, data, stock):
         pos = vb[:, 8:20].copy().view("<f4").reshape(-1, 3)
         d = np.linalg.norm(pos[n0:n0 + src.num_vertices] - pos[src.base_vertex:src.base_vertex + src.num_vertices], axis=1)
         same = (vb[n0:n0 + src.num_vertices, :8] == vb[src.base_vertex:src.base_vertex + src.num_vertices, :8]).all()
-        off = vfx.SHELL_OFFSET[weapon]
+        off = row["shell_offset"]
         check(same and abs(d.min() - off) < 0.02 and abs(d.max() - off) < 0.02,
               "%s: shell = body pushed %.2f along the normals (%.3f..%.3f)" % (rel, off, d.min(), d.max()))
     from uasset import Package
@@ -297,21 +300,60 @@ def check_shell_mesh(rel, data, stock):
           "%s: LODInfo has a triangle-sort entry per section" % rel)
 
 
+def check_release_gate(gen):
+    """make_pak.py refuses test content and lets the VFX camos through."""
+    import shutil
+    import tempfile
+    import make_pak
+    d = tempfile.mkdtemp(prefix="vfx_gate_")
+    try:
+        skins = os.path.join(d, "Victory", "Content", "Cosmetics", "WeaponSkins")
+        weapons = os.path.join(d, "Victory", "Content", "Character", "Weapons")
+        os.makedirs(skins)
+        os.makedirs(weapons)
+        vfx_skin = next(r for r in sorted(gen) if "_XP_VFX_" in r)
+        for r in sorted(gen)[:40] + [vfx_skin]:
+            dst = os.path.join(d, r)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            open(dst, "wb").write(gen[r])
+        check(make_pak.test_content(d) == [], "release gate passes the VFX camo files")
+        # an Ice Axe diagnostic: a plain camo skin carrying GeoSkin
+        open(os.path.join(skins, "IceAxe_XP_Teal_Current.uasset"), "wb").write(gen[vfx_skin])
+        open(os.path.join(weapons, "IceAxe_A_XPTest.uasset"), "wb").write(b"x")
+        open(os.path.join(weapons, "Note.txt"), "wb").write(b"see Camo_XP_Anim_Lava_Storm")
+        found = {os.path.basename(r) for r, _ in make_pak.test_content(d)}
+        check(found == {"IceAxe_XP_Teal_Current.uasset", "IceAxe_A_XPTest.uasset", "Note.txt"},
+              "release gate flags diagnostic skins, test names and test mentions (%s)" % sorted(found))
+        try:
+            make_pak.main(d, os.path.join(d, "out.pak"))
+            check(False, "make_pak refuses a tree with test content")
+        except SystemExit:
+            check(not os.path.exists(os.path.join(d, "out.pak")), "make_pak refuses a tree with test content")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main(paks_dir):
     stock = Stock(paks_dir)
     gen = generated_files()
     catalog = json.load(open(vfx.CATALOG))
-    rows = vfx.plan(catalog)
+    manifest = json.load(open(vfx.MANIFEST))
+    setups = manifest["setups"]
+    rows = vfx.plan(catalog, setups)
     disasm = _disassembler()
 
     skins = {vfx.rel(vfx.SKINS_PKG + asset): (ci, camo, weapon, asset, tid) for ci, camo, weapon, asset, tid in rows}
-    check(len(skins) == 19, "19 VFX skins planned (%d)" % len(skins))
+    by_mesh = {vfx.rel(r["mesh"]): r for r in manifest["rows"]}
+    expected = sum(len(setups) if c[4] == vfx.ALL and c[1] != "dark" else
+                   sum(st["shell"] for st in setups.values()) if c[4] == vfx.ALL else len(c[4]) for c in vfx.CAMOS)
+    check(len(skins) == expected == len(manifest["rows"]), "%d VFX skins planned and generated (%d)" % (expected, len(skins)))
     check(set(skins) <= set(gen), "every planned skin was generated")
-    meshes = [r for r in gen if re.search(r"/X\d\d[BKF]_", r) and b"SkeletalMesh" in gen[r]]
-    mics = [r for r in gen if re.search(r"/(X\d\d[BKF]|MI_VFX)_", r) and r not in meshes]
+    meshes = [r for r in gen if r in by_mesh]
+    mics = sorted({vfx.rel(r["mic"]) for r in manifest["rows"]} | {vfx.rel(vfx.MIST_MIC)})
     textures = [r for r in gen if "/T_VFX_" in r]
-    check(len(meshes) == 19 and len(mics) == 20 and len(textures) == 8,
-          "19 meshes, 20 MICs, 8 textures (%d, %d, %d)" % (len(meshes), len(mics), len(textures)))
+    check(len(meshes) == len(skins) and set(mics) <= set(gen) and len(textures) == 8
+          and len(gen) == len(skins) + len(meshes) + len(mics) + len(textures),
+          "%d skins, %d meshes, %d MICs, %d textures, nothing else" % (len(skins), len(meshes), len(mics), len(textures)))
     check_stock_round_trip(stock)
 
     for rel, data in sorted(gen.items()):
@@ -353,16 +395,14 @@ def main(paks_dir):
         print("skip  shader disassembly (d3dcompiler_47 not available)")
 
     for rel in meshes:
-        if re.search(r"/X67[BKF]_", rel):
-            check_shell_mesh(rel, gen[rel], stock)
+        row = by_mesh[rel]
+        if row["kind"] == "dark":
+            check_shell_mesh(rel, gen[rel], stock, row, setups[row["weapon"]])
             continue
         new = UPackage(gen[rel])
         new_path = "/Game/" + rel[len(vfx.C):-len(".uasset")]
-        popper = "/X68B_" in rel
-        stock_path = vfx.POPPER_MESH if popper else None
-        if not popper:
-            weapon = next(w for w, l in vfx.WEAPON_LETTER.items() if re.search(r"/X\d\d%s_" % l, rel))
-            stock_path = vfx.WEAPONS_PKG + vfx.WEAPONS[weapon][1]
+        stock_path = row["stock_mesh"]
+        popper = row["kind"] == "popper" or setups[row["weapon"]]["mat_class"] != "MaterialInstanceConstant"
         old = UPackage(stock.get(vfx.rel(stock_path)))
         check([e["data"] for e in old.exports] == [e["data"] for e in new.exports], "%s: export data = stock %s" % (rel, stock_path))
         if not popper:
@@ -370,7 +410,7 @@ def main(paks_dir):
                   [e["fields"][7:9] for e in old.exports] == [e["fields"][7:9] for e in new.exports],
                   "%s: header and export offsets identical to the stock mesh" % rel)
         mats = [(cn, o, imports(new)[-outer - 1][3]) for cp, cn, outer, o in imports(new) if cn in ("MaterialInstanceConstant", "Material")]
-        ours = [m for m in mats if re.search(r"/X\d\d[BKF]_", m[2])]
+        ours = [m for m in mats if m[2] == row["mic"]]
         check(len(ours) == 1 and ours[0][0] == "MaterialInstanceConstant", "%s: one material import -> generated MIC (%s)" % (rel, mats))
         check(new_path.rsplit("/", 1)[1] not in [n for n, _ in old.names], "%s: new package name is not a stock name" % rel)
 
@@ -402,6 +442,8 @@ def main(paks_dir):
     check(sum(t.get("source") == vfx.CATALOG_TAG for t in catalog) == len(skins), "catalog has exactly the VFX skins")
     reg = open(os.path.join(HERE, "registry", vfx.REGISTRY_NAME + ".bin"), "rb").read()
     check(struct.unpack_from("<i", reg)[0] == len(skins), "registry record set has one record per skin")
+
+    check_release_gate(gen)
 
     print("%d checks failed" % len(FAILS) if FAILS else "all VFX camo checks passed (%d files)" % len(gen))
     return not FAILS
