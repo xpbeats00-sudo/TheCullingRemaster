@@ -22,3 +22,6 @@ backups/
 .claude/
 server/data/sessions.json*
 releases/
+# Remote Desktop connection files and archives (credentials, game copies)
+*.rdp
+*.rar
