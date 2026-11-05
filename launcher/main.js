@@ -19,6 +19,7 @@ const account = require("./lib/account");
 const selfupdate = require("./lib/selfupdate");
 const discord = require("./lib/discord");
 const build = require("./lib/build");
+const status = require("./lib/status");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
 
@@ -413,20 +414,17 @@ function registerIpc() {
   handle("ping-servers", async () => Promise.all(state().servers.map(ping)));
 
   handle("play", async () => {
-    if (busy) throw new Error("Wait for Game Sync to finish");
     const check = game.check(settings.gamePath);
-    if (!check.ok) throw new Error(check.reason);
-    // Only a finished install starts: a paused one has some files but not all.
-    if (!sync.installedVersion(settings.gamePath)) throw new Error("The game isn't fully installed yet: press Resume to finish it");
-    // Online play needs a Remaster account: the server lets the game in as
-    // the account's Steam ID from this connection, and the username is the
-    // name the game shows.
     const server = currentServer();
     const signedIn = accounts.get(server.id);
-    if (!signedIn) throw new Error("Sign in or create an account first");
-    if (!playername.supported(settings.gamePath)) {
-      throw new Error("This install uses your Steam account, so it can't use a Remaster account. Choose an install made by the launcher in Settings");
-    }
+    const why = status.playBlocker({
+      busy,
+      check,
+      installed: check.ok && !!sync.installedVersion(settings.gamePath),
+      supported: check.ok && playername.supported(settings.gamePath),
+      signedIn: !!signedIn
+    });
+    if (why) throw new Error(why);
     let grant;
     try {
       grant = await accountApi.play(server.api, signedIn.token);
