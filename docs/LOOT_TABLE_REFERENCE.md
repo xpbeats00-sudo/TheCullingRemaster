@@ -408,49 +408,51 @@ Blank: inherited from the parent mode or the engine default.
 
 ## Airdrop kits
 
-| Kit | ID | FUNC | Items |
-|---|---|---:|---|
-| Surprise Me! | 140144 |  | Call in a Random Air Drop (`WeapZRandom_C`) |
-| Addict | 140101 | 125 | Orange Juice (`OrangeJuice_C`), Hemo Blast (`HemoBlast_C`), Hemo Drip (`HemoDrip_C`), Silent But Deadly (`StealthyShot_C`) |
-| Archer | 140102 | 85 | Recurve Bow (`WeapRecurveBow_C`), X-plosive Runs (`ExplosiveRuns_C`), Lung Butter (`LungButter_C`) |
-| Bait Crate | 140103 | 70 | Bait Crate (`DepDecoyExplosive_C`) |
-| Bandito | 140104 | 175 | SMG (`WeapSMG_C`), Remote Explosive (`WeapRemoteExplosive_C`) |
-| Boar Hunter | 140105 | 115 | Survival Spear (`WeapSurvivalSpear_C`), Survival Spear (`WeapSurvivalSpear_C`), X-plosive Runs (`ExplosiveRuns_C`), Backpack (`Backpack_C`) |
-| Car Jacker | 140106 | 70 | Crowbar (`WeapCrowbar_C`), Remote Explosive (`WeapRemoteExplosive_C`) |
-| Chef | 140107 | 85 | Cleaver (`WeapCleaver_C`), Crafted Armor (`HardenedArmor_C`), Muscle Man Milk (`MuscleManMilk_C`), Pepper Spray (`WeapPepperSpray_C`) |
-| Chimney Sweep | 140108 | 85 | Pike (`WeapPike_C`), Steel Snare (`WeapSteelSnare_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`) |
-| Climber | 140109 | 80 | Ice Axe (`WeapIceAxe_C`), Backpack (`Backpack_C`), Steel Snare (`WeapSteelSnare_C`), Pepper Spray (`WeapPepperSpray_C`) |
-| Commando | 140110 | 155 | Compound Bow (`WeapCompoundBow_C`), Impact Grenade (`WeapImpactGrenade_C`), Bowie Knife (`WeapBowieKnife_C`) |
-| Cyclops | 140111 | 135 | Trident (`WeapTrident_C`), Tactical Body Armor (`BodyArmor_C`), Steel Snare (`WeapSteelSnare_C`) |
-| Demon Hunter | 140112 | 70 | Auto Bow (`WeapAutoBow_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Caltrops (`WeapCraftedCaltrops_C`), Crafted Caltrops (`WeapCraftedCaltrops_C`) |
-| Dwarf | 140113 | 155 | Fireman's Axe (`WeapFiremansAxe_C`), Dynamite (`WeapDynamite_C`), Iron-4-Skin (`Iron4Skin_C`) |
-| Guerilla | 140114 | 80 | Machete (`WeapMachete_C`), Explosive Mine (`WeapExplosiveMine_C`), Crafted Punji Sticks (`WeapCraftedPunjiSticks_C`), Crafted Punji Sticks (`WeapCraftedPunjiSticks_C`) |
-| Hawks Eye | 140115 | 100 | Compound Bow (`WeapCompoundBow_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Gas Grenade (`WeapGasGrenade_C`) |
-| Hoodlum | 140116 | 115 | Brass Knuckles (`WeapBrassKnuckles_C`), Iron-4-Skin (`Iron4Skin_C`), Crafted Satchel (`Satchel_C`) |
-| Hunter | 140117 | 175 | Alarm Gun (`WeapAlarmGun_C`), Man Tracker (`WeapManTracker_C`), Rifle (`WeapRifle_C`) |
-| Javelineer | 140118 | 75 | Javelin (`WeapJavelin_C`), Javelin (`WeapJavelin_C`), Javelin (`WeapJavelin_C`), Crafted Satchel (`Satchel_C`) |
-| Juggler | 140119 | 120 | Tomahawk (`WeapTomahawk_C`), Tomahawk (`WeapTomahawk_C`), Tomahawk (`WeapTomahawk_C`), Backpack (`Backpack_C`) |
-| Lizzie | 140120 | 110 | Survival Axe (`WeapSurvivalAxe_C`), Backpack (`Backpack_C`), Muscle Man Milk (`MuscleManMilk_C`), Hemo Drip (`HemoDrip_C`) |
-| Lumber Jack | 140121 | 150 | Chainsaw (`WeapChainsaw_C`), Iron-4-Skin (`Iron4Skin_C`), Lung Butter (`LungButter_C`) |
-| Medic | 140122 | 140 | Backpack (`Backpack_C`), Med Kit (`Medkit_C`), Hemo Blast (`HemoBlast_C`), Tactical Body Armor (`BodyArmor_C`) |
-| Ninja | 140123 | 130 | Katana (`WeapKatana_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Caltrops (`WeapCraftedCaltrops_C`) |
-| Pirate | 140124 | 145 | Sabre (`WeapSabre_C`), .357 Magnum (`Weap357Magnum_C`) |
-| Plumber | 140125 | 105 | Pipe Wrench (`WeapPipeWrench_C`), Iron-4-Skin (`Iron4Skin_C`), Muscle Man Milk (`MuscleManMilk_C`), Crafted Explosive (`WeapCraftedExplosive_C`) |
-| Polecat | 140126 | 130 | Trident (`WeapTrident_C`), Survival Spear (`WeapSurvivalSpear_C`), Yari (`WeapYari_C`) |
-| Police | 140127 | 185 | .357 Magnum (`Weap357Magnum_C`), Tonfa (`WeapTonfa_C`), Tactical Body Armor (`BodyArmor_C`) |
-| Pothead | 140128 | 95 | Steel Pipe (`WeapSteelPipe_C`), Orange Juice (`OrangeJuice_C`), Crafted Explosive (`WeapCraftedExplosive_C`) |
-| Sapper | 140129 | 205 | Dynamite (`WeapDynamite_C`), Dynamite (`WeapDynamite_C`), Dynamite (`WeapDynamite_C`), Iron-4-Skin (`Iron4Skin_C`) |
-| Self Defense | 140130 | 80 | Pepper Spray (`WeapPepperSpray_C`), Crafted Satchel (`Satchel_C`), Stun Gun (`WeapStunGun_C`) |
-| Slugger | 140131 | 80 | Baseball Bat (`WeapBaseballBat_C`), Muscle Man Milk (`MuscleManMilk_C`), X-plosive Runs (`ExplosiveRuns_C`) |
-| Smuggler | 140132 | 75 | Sabre (`WeapSabre_C`), Backpack (`Backpack_C`), Man Tracker (`WeapManTracker_C`) |
-| Sniper | 140133 | 175 | Rifle (`WeapRifle_C`), Explosive Mine (`WeapExplosiveMine_C`) |
-| Stalker | 140134 | 95 | Kukri (`WeapKukri_C`), Man Tracker (`WeapManTracker_C`), Stun Gun (`WeapStunGun_C`) |
-| Survivalist | 140135 | 140 | Tactical Machete (`WeapTacticalMachete_C`), Tactical Body Armor (`BodyArmor_C`), Med Kit (`Medkit_C`), Lung Butter (`LungButter_C`) |
-| Swat | 140136 | 200 | SMG (`WeapSMG_C`), Tactical Body Armor (`BodyArmor_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`) |
-| Swiss Guard | 140137 | 130 | Yari (`WeapYari_C`), Tactical Body Armor (`BodyArmor_C`), Hemo Blast (`HemoBlast_C`), Iron-4-Skin (`Iron4Skin_C`) |
-| The Imp | 140138 | 105 | Auto Bow (`WeapAutoBow_C`), Crafted Armor (`HardenedArmor_C`), Iron-4-Skin (`Iron4Skin_C`), Tomahawk (`WeapTomahawk_C`) |
-| Thief | 140139 | 90 | Bowie Knife (`WeapBowieKnife_C`), Pepper Spray (`WeapPepperSpray_C`), Backpack (`Backpack_C`), Steel Snare (`WeapSteelSnare_C`) |
-| Tough | 140140 | 145 | Sledgehammer (`WeapSledgehammer_C`), Tactical Body Armor (`BodyArmor_C`), Iron-4-Skin (`Iron4Skin_C`) |
-| Trapper | 140141 | 85 | Steel Snare (`WeapSteelSnare_C`), Steel Caltrops (`WeapSteelCaltrops_C`), Explosive Mine (`WeapExplosiveMine_C`), Steel Punji Sticks (`WeapSteelPunjiSticks_C`) |
-| Viking | 140142 | 80 | Tomahawk (`WeapTomahawk_C`), Crafted Armor (`HardenedArmor_C`), Muscle Man Milk (`MuscleManMilk_C`) |
-| Witch Doctor | 140143 | 85 | Crafted Blowgun (`WeapCraftedBlowgun_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Gas Grenade (`WeapGasGrenade_C`), Crafted Explosive (`WeapCraftedExplosive_C`) |
+FUNC is the Remaster's price, 25% off the stock one (`patch/make_airdrop_prices.py`, `docs/AIRDROP_PRICES.md`).
+
+| Kit | ID | FUNC | Stock FUNC | Items |
+|---|---|---:|---:|---|
+| Surprise Me! | 140144 |  |  | Call in a Random Air Drop (`WeapZRandom_C`) |
+| Addict | 140101 | 94 | 125 | Orange Juice (`OrangeJuice_C`), Hemo Blast (`HemoBlast_C`), Hemo Drip (`HemoDrip_C`), Silent But Deadly (`StealthyShot_C`) |
+| Archer | 140102 | 64 | 85 | Recurve Bow (`WeapRecurveBow_C`), X-plosive Runs (`ExplosiveRuns_C`), Lung Butter (`LungButter_C`) |
+| Bait Crate | 140103 | 53 | 70 | Bait Crate (`DepDecoyExplosive_C`) |
+| Bandito | 140104 | 131 | 175 | SMG (`WeapSMG_C`), Remote Explosive (`WeapRemoteExplosive_C`) |
+| Boar Hunter | 140105 | 86 | 115 | Survival Spear (`WeapSurvivalSpear_C`), Survival Spear (`WeapSurvivalSpear_C`), X-plosive Runs (`ExplosiveRuns_C`), Backpack (`Backpack_C`) |
+| Car Jacker | 140106 | 53 | 70 | Crowbar (`WeapCrowbar_C`), Remote Explosive (`WeapRemoteExplosive_C`) |
+| Chef | 140107 | 64 | 85 | Cleaver (`WeapCleaver_C`), Crafted Armor (`HardenedArmor_C`), Muscle Man Milk (`MuscleManMilk_C`), Pepper Spray (`WeapPepperSpray_C`) |
+| Chimney Sweep | 140108 | 64 | 85 | Pike (`WeapPike_C`), Steel Snare (`WeapSteelSnare_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`) |
+| Climber | 140109 | 60 | 80 | Ice Axe (`WeapIceAxe_C`), Backpack (`Backpack_C`), Steel Snare (`WeapSteelSnare_C`), Pepper Spray (`WeapPepperSpray_C`) |
+| Commando | 140110 | 116 | 155 | Compound Bow (`WeapCompoundBow_C`), Impact Grenade (`WeapImpactGrenade_C`), Bowie Knife (`WeapBowieKnife_C`) |
+| Cyclops | 140111 | 101 | 135 | Trident (`WeapTrident_C`), Tactical Body Armor (`BodyArmor_C`), Steel Snare (`WeapSteelSnare_C`) |
+| Demon Hunter | 140112 | 53 | 70 | Auto Bow (`WeapAutoBow_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Caltrops (`WeapCraftedCaltrops_C`), Crafted Caltrops (`WeapCraftedCaltrops_C`) |
+| Dwarf | 140113 | 116 | 155 | Fireman's Axe (`WeapFiremansAxe_C`), Dynamite (`WeapDynamite_C`), Iron-4-Skin (`Iron4Skin_C`) |
+| Guerilla | 140114 | 60 | 80 | Machete (`WeapMachete_C`), Explosive Mine (`WeapExplosiveMine_C`), Crafted Punji Sticks (`WeapCraftedPunjiSticks_C`), Crafted Punji Sticks (`WeapCraftedPunjiSticks_C`) |
+| Hawks Eye | 140115 | 75 | 100 | Compound Bow (`WeapCompoundBow_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Gas Grenade (`WeapGasGrenade_C`) |
+| Hoodlum | 140116 | 86 | 115 | Brass Knuckles (`WeapBrassKnuckles_C`), Iron-4-Skin (`Iron4Skin_C`), Crafted Satchel (`Satchel_C`) |
+| Hunter | 140117 | 131 | 175 | Alarm Gun (`WeapAlarmGun_C`), Man Tracker (`WeapManTracker_C`), Rifle (`WeapRifle_C`) |
+| Javelineer | 140118 | 56 | 75 | Javelin (`WeapJavelin_C`), Javelin (`WeapJavelin_C`), Javelin (`WeapJavelin_C`), Crafted Satchel (`Satchel_C`) |
+| Juggler | 140119 | 90 | 120 | Tomahawk (`WeapTomahawk_C`), Tomahawk (`WeapTomahawk_C`), Tomahawk (`WeapTomahawk_C`), Backpack (`Backpack_C`) |
+| Lizzie | 140120 | 83 | 110 | Survival Axe (`WeapSurvivalAxe_C`), Backpack (`Backpack_C`), Muscle Man Milk (`MuscleManMilk_C`), Hemo Drip (`HemoDrip_C`) |
+| Lumber Jack | 140121 | 113 | 150 | Chainsaw (`WeapChainsaw_C`), Iron-4-Skin (`Iron4Skin_C`), Lung Butter (`LungButter_C`) |
+| Medic | 140122 | 105 | 140 | Backpack (`Backpack_C`), Med Kit (`Medkit_C`), Hemo Blast (`HemoBlast_C`), Tactical Body Armor (`BodyArmor_C`) |
+| Ninja | 140123 | 98 | 130 | Katana (`WeapKatana_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Crafted Caltrops (`WeapCraftedCaltrops_C`) |
+| Pirate | 140124 | 109 | 145 | Sabre (`WeapSabre_C`), .357 Magnum (`Weap357Magnum_C`) |
+| Plumber | 140125 | 79 | 105 | Pipe Wrench (`WeapPipeWrench_C`), Iron-4-Skin (`Iron4Skin_C`), Muscle Man Milk (`MuscleManMilk_C`), Crafted Explosive (`WeapCraftedExplosive_C`) |
+| Polecat | 140126 | 98 | 130 | Trident (`WeapTrident_C`), Survival Spear (`WeapSurvivalSpear_C`), Yari (`WeapYari_C`) |
+| Police | 140127 | 139 | 185 | .357 Magnum (`Weap357Magnum_C`), Tonfa (`WeapTonfa_C`), Tactical Body Armor (`BodyArmor_C`) |
+| Pothead | 140128 | 71 | 95 | Steel Pipe (`WeapSteelPipe_C`), Orange Juice (`OrangeJuice_C`), Crafted Explosive (`WeapCraftedExplosive_C`) |
+| Sapper | 140129 | 154 | 205 | Dynamite (`WeapDynamite_C`), Dynamite (`WeapDynamite_C`), Dynamite (`WeapDynamite_C`), Iron-4-Skin (`Iron4Skin_C`) |
+| Self Defense | 140130 | 60 | 80 | Pepper Spray (`WeapPepperSpray_C`), Crafted Satchel (`Satchel_C`), Stun Gun (`WeapStunGun_C`) |
+| Slugger | 140131 | 60 | 80 | Baseball Bat (`WeapBaseballBat_C`), Muscle Man Milk (`MuscleManMilk_C`), X-plosive Runs (`ExplosiveRuns_C`) |
+| Smuggler | 140132 | 56 | 75 | Sabre (`WeapSabre_C`), Backpack (`Backpack_C`), Man Tracker (`WeapManTracker_C`) |
+| Sniper | 140133 | 131 | 175 | Rifle (`WeapRifle_C`), Explosive Mine (`WeapExplosiveMine_C`) |
+| Stalker | 140134 | 71 | 95 | Kukri (`WeapKukri_C`), Man Tracker (`WeapManTracker_C`), Stun Gun (`WeapStunGun_C`) |
+| Survivalist | 140135 | 105 | 140 | Tactical Machete (`WeapTacticalMachete_C`), Tactical Body Armor (`BodyArmor_C`), Med Kit (`Medkit_C`), Lung Butter (`LungButter_C`) |
+| Swat | 140136 | 150 | 200 | SMG (`WeapSMG_C`), Tactical Body Armor (`BodyArmor_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`) |
+| Swiss Guard | 140137 | 98 | 130 | Yari (`WeapYari_C`), Tactical Body Armor (`BodyArmor_C`), Hemo Blast (`HemoBlast_C`), Iron-4-Skin (`Iron4Skin_C`) |
+| The Imp | 140138 | 79 | 105 | Auto Bow (`WeapAutoBow_C`), Crafted Armor (`HardenedArmor_C`), Iron-4-Skin (`Iron4Skin_C`), Tomahawk (`WeapTomahawk_C`) |
+| Thief | 140139 | 68 | 90 | Bowie Knife (`WeapBowieKnife_C`), Pepper Spray (`WeapPepperSpray_C`), Backpack (`Backpack_C`), Steel Snare (`WeapSteelSnare_C`) |
+| Tough | 140140 | 109 | 145 | Sledgehammer (`WeapSledgehammer_C`), Tactical Body Armor (`BodyArmor_C`), Iron-4-Skin (`Iron4Skin_C`) |
+| Trapper | 140141 | 64 | 85 | Steel Snare (`WeapSteelSnare_C`), Steel Caltrops (`WeapSteelCaltrops_C`), Explosive Mine (`WeapExplosiveMine_C`), Steel Punji Sticks (`WeapSteelPunjiSticks_C`) |
+| Viking | 140142 | 60 | 80 | Tomahawk (`WeapTomahawk_C`), Crafted Armor (`HardenedArmor_C`), Muscle Man Milk (`MuscleManMilk_C`) |
+| Witch Doctor | 140143 | 64 | 85 | Crafted Blowgun (`WeapCraftedBlowgun_C`), Crafted Smoke Bomb (`WeapCraftedSmokeBomb_C`), Gas Grenade (`WeapGasGrenade_C`), Crafted Explosive (`WeapCraftedExplosive_C`) |
