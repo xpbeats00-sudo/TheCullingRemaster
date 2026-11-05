@@ -276,6 +276,8 @@ function state() {
     // player's own edit, a damaged file): "Repair needed", and PLAY may go
     // ahead without it.
     drift: check.ok && status.isDrift(sync.installedVersion(settings.gamePath), manifest && manifest.version, todo),
+    // A restored previous version: a newer release is offered, PLAY still plays it.
+    held: check.ok && sync.isHeld(settings.gamePath),
     freeBytes: (() => { try { return sync.freeBytes(settings.gamePath); } catch { return null; } })(),
     servers: (manifest && manifest.servers && manifest.servers.length) ? manifest.servers : settings.servers,
     // A Remaster account works unless the installed game uses a real Steam account.
@@ -495,6 +497,21 @@ function registerIpc() {
   });
 
   handle("play", async () => {
+    // A release published while the launcher stayed open: look first (a few
+    // seconds at most; offline or slow, PLAY goes ahead with what is installed).
+    if (!busy) {
+      const before = manifest && manifest.version;
+      try {
+        await Promise.race([latestManifest(), new Promise((_, no) => setTimeout(() => no(new Error("slow")), 4000))]);
+        if (manifest && manifest.version !== before) {
+          await refreshPlan();
+          send("state-changed");
+          if (todo && todo.length && !sync.isHeld(settings.gamePath)) throw new Error("A new release is out: press Update to get it");
+        }
+      } catch (e) {
+        if (/new release is out/.test(e.message)) throw e;
+      }
+    }
     const check = checkGame();
     const server = currentServer();
     const signedIn = accounts.get(server.id);

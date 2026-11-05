@@ -615,6 +615,7 @@ function finishCommit(gameRoot, state, journal, opts = {}) {
   for (const rel of journal.obsolete) delete state.files[rel];
   if (!journal.repair) state.previous = journal.from;
   state.version = journal.version;
+  delete state.held;              // the player updated: no longer held back
   saveState(gameRoot, state);
   const dir = stateDir(gameRoot);
   if (!journal.repair) {
@@ -735,13 +736,20 @@ function rollback(gameRoot) {
   const last = readJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE));
   if (!last || !last.from) throw new SyncError("there is no previous version to restore");
   const state = loadState(gameRoot);
+  // Each file put back is noted in last-commit.json, so a restore that stops
+  // part-way (a locked file) can simply be run again.
+  const restored = new Set(Array.isArray(last.restored) ? last.restored : []);
+  const note = (rel) => { restored.add(rel); last.restored = [...restored]; writeJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), last); };
   for (const e of last.files) {
     const target = targetPath(gameRoot, e.path);
     const backup = holdPath(gameRoot, last, e.path);
-    if (e.hadOld && !fs.existsSync(backup)) throw new SyncError("the previous version's files are no longer kept");
-    fs.rmSync(target, { force: true });
-    if (e.hadOld) move(backup, target);
-    if (last.oldRecords[e.path]) state.files[e.path] = recordOf(target, last.oldRecords[e.path].sha256);
+    if (!restored.has(e.path)) {
+      if (e.hadOld && !fs.existsSync(backup)) throw new SyncError("the previous version's files are no longer kept");
+      fs.rmSync(target, { force: true });
+      if (e.hadOld) move(backup, target);
+      note(e.path);
+    }
+    if (last.oldRecords[e.path] && fs.existsSync(target)) state.files[e.path] = recordOf(target, last.oldRecords[e.path].sha256);
     else delete state.files[e.path];
   }
   for (const rel of last.obsolete) {
@@ -753,6 +761,8 @@ function rollback(gameRoot) {
   }
   state.version = last.from;
   state.previous = null;
+  // Restored on purpose: PLAY plays it until the player chooses to update.
+  state.held = true;
   saveState(gameRoot, state);
   fs.rmSync(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), { force: true });
   removeEmptyDirs(holdDir(gameRoot, last));
@@ -949,6 +959,12 @@ function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
 
-module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion,
+// The installed version was restored by rollback() and is kept until the
+// player updates (a newer release is then offered, not forced).
+function isHeld(gameRoot) {
+  return Boolean(loadState(gameRoot).held);
+}
+
+module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion, isHeld,
   freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
   SyncError, SyncPaused, ConnectionLost, STATE_DIR, REPLACED_DIR, PARALLEL };

@@ -114,7 +114,26 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(!fs.existsSync(path.join(root, "Victory", "d.pak")), "file new in 1.1.0 removed");
       assert.strictEqual(sync.installedVersion(root), "1.0.0");
       assert.deepStrictEqual(await sync.plan(await get("v1"), root), [], "1.0.0 verifies");
+      assert.ok(sync.isHeld(root), "the restored version is kept until the player updates");
       assert.throws(() => sync.rollback(root), /no previous version/);
+      await install("v2", root);
+      assert.ok(!sync.isHeld(root), "updating ends the hold");
+    });
+
+    await test("a restore that stopped part-way can be run again", async () => {
+      // One file already put back, as a restore interrupted after it leaves it:
+      // moved from the backup and noted in last-commit.json.
+      const kept = backups(root).find((n) => fs.existsSync(path.join(root, ".remaster", n, "Victory", "c.ini")));
+      const held = path.join(root, ".remaster", kept, "Victory", "c.ini");
+      fs.rmSync(path.join(root, "Victory", "c.ini"));
+      fs.renameSync(held, path.join(root, "Victory", "c.ini"));
+      const lastFile = path.join(root, ".remaster", "last-commit.json");
+      const last = JSON.parse(fs.readFileSync(lastFile, "utf8"));
+      last.restored = ["Victory/c.ini"];
+      fs.writeFileSync(lastFile, JSON.stringify(last));
+      assert.strictEqual(sync.rollback(root), "1.0.0");
+      assert.ok(read(root, "Victory/c.ini").equals(C));
+      assert.deepStrictEqual(await sync.plan(await get("v1"), root), [], "1.0.0 verifies");
       await install("v2", root);
     });
 

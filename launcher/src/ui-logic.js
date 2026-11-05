@@ -86,7 +86,7 @@
     if (state.gameRunning) return "none";
     if (f.notInstalled) return "sync";
     if (!state.game.ok) return "folder";
-    if (state.pending && state.pending.files) return state.drift ? "choose" : "sync";
+    if (state.pending && state.pending.files) return state.drift || state.held ? "choose" : "sync";
     if (f.accountNeeded) return "signin";
     return "launch";
   }
@@ -109,7 +109,7 @@
     if (f.notInstalled) return v("Offline", "secondary", true);
     if (!state.game.ok) return v("Set game folder", "secondary");
     // Only local changes: PLAY stays PLAY (it offers Repair or Play anyway).
-    if (state.pending && state.pending.files && !state.drift) return v("Update", "working");
+    if (state.pending && state.pending.files && !state.drift && !state.held) return v("Update", "working");
     if (f.accountNeeded) return v("Sign in", "secondary");
     return v("Play");
   }

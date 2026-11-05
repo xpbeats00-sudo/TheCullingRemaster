@@ -567,8 +567,20 @@
 
   function openDrift() {
     const n = state.pending.files;
-    $("#drift-text").textContent = `${n} game file${n === 1 ? "" : "s"} here ${n === 1 ? "doesn't" : "don't"} match release ${state.installed}. ` +
-      "Repair downloads the release's copies (the replaced files are kept in the game folder's .remaster\\replaced folder), or play with them as they are.";
+    if (state.held && !state.drift) {
+      // A restored previous version: update to the latest, or keep playing it.
+      $("#drift-title").textContent = "Update available";
+      $("#drift-text").textContent = `You restored release ${state.installed}. ` +
+        `Update to the latest release, or keep playing ${state.installed}.`;
+      $("#drift-play").textContent = "Play this version";
+      $("#drift-repair").textContent = "Update";
+    } else {
+      $("#drift-title").textContent = "Repair needed";
+      $("#drift-text").textContent = `${n} game file${n === 1 ? "" : "s"} here ${n === 1 ? "doesn't" : "don't"} match release ${state.installed}. ` +
+        "Repair downloads the release's copies (the replaced files are kept in the game folder's .remaster\\replaced folder), or play with them as they are.";
+      $("#drift-play").textContent = "Play anyway";
+      $("#drift-repair").textContent = "Repair";
+    }
     $("#drift-modal").hidden = false;
     $("#drift-repair").focus();
   }

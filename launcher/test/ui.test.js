@@ -85,4 +85,11 @@ test("local changes at the current release: 'Repair needed', and PLAY offers Rep
   assert.strictEqual(ui.playAction(st({ gameRunning: true }), idle), "none");
 });
 
+test("a restored previous version: a newer release is offered, PLAY still plays it", () => {
+  const held = st({ held: true, release: "1.1.0", pending: { files: 3, bytes: 900, partial: 0, releaseBytes: 100 } });
+  assert.strictEqual(ui.statusView(held, sIdle).title, "Update available");
+  assert.strictEqual(ui.playView(held, idle).label, "Play", "not forced to Update");
+  assert.strictEqual(ui.playAction(held, idle), "choose", "Update or Play this version");
+});
+
 console.log("all %d ui tests passed", passed);
