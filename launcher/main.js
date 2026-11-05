@@ -267,7 +267,11 @@ function registerIpc() {
     if (app.isPackaged && game.inside(r.filePaths[0], path.dirname(process.execPath))) {
       throw new Error("Choose a folder outside the launcher's own folder (uninstalling the launcher would delete the game)");
     }
+    // Steam's own copy is refused, as at start-up, unless the launcher
+    // already manages it: a release would replace Steam's files there.
+    if (game.isSteamFolder(r.filePaths[0])) throw new Error(game.STEAM_FOLDER);
     const gamePath = game.installTarget(r.filePaths[0]);
+    if (game.isSteamFolder(gamePath)) throw new Error(game.STEAM_FOLDER);
     settings = config.save(SETTINGS(), Object.assign(settings, { gamePath }));
     await refreshPlan();
     return state();

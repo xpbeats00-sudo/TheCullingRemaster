@@ -85,6 +85,28 @@ try {
     assert.ok(!game.defaultInstallDir().includes(path.join("Programs", game.INSTALL_NAME)), "not inside the launcher's own folder");
   });
 
+  test("Steam's own copy, picked by hand, is refused unless the launcher manages it", () => {
+    const steamGame = path.join(tmp, "Games", "SteamLibrary", "steamapps", "common", "Culling Custom Dir");
+    assert.ok(game.check(steamGame).ok, "the Steam copy from the first test");
+    assert.strictEqual(game.isSteamFolder(steamGame), true);
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "Games", "SteamLibrary", "steamapps", "common")), true, "inside a library");
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "Games", "SteamLibrary", "STEAMAPPS", "common", "New")), true, "any case, not made yet");
+    // Moved out of steamapps but still next to Steam's manifest for the game.
+    const odd = path.join(tmp, "Odd", "lib", "TheCulling");
+    fakeGame(odd);
+    fs.writeFileSync(path.join(tmp, "Odd", "lib", "appmanifest_437220.acf"), "\"AppState\" {}");
+    assert.strictEqual(game.isSteamFolder(odd), true);
+    // A Steam copy the launcher already manages is used, as at start-up.
+    fs.mkdirSync(path.join(steamGame, ".remaster"));
+    assert.strictEqual(game.isSteamFolder(steamGame), false);
+    fs.rmSync(path.join(steamGame, ".remaster"), { recursive: true });
+    // Ordinary folders, including a sibling of a Steam library, are fine.
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "TheCulling")), false);
+    assert.strictEqual(game.isSteamFolder(path.join(tmp, "Games", "SteamLibrary", "My Remaster")), false);
+    assert.strictEqual(game.isSteamFolder(game.defaultInstallDir()), false);
+    assert.match(game.STEAM_FOLDER, /Steam's copy/);
+  });
+
   console.log("all %d game tests passed", passed);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -116,6 +116,29 @@ function detect(libraries = steamLibraries()) {
   return null;
 }
 
+// A folder that belongs to Steam: inside a Steam library's steamapps folder,
+// or next to Steam's manifest for The Culling (appmanifest_437220.acf). A
+// release installed there would replace Steam's own files (its Steam API
+// among them), so the launcher only uses such a folder when it already
+// manages it (a .remaster folder in it), as at start-up.
+function isSteamFolder(folder) {
+  let full = path.resolve(folder);
+  if (fs.existsSync(path.join(full, STATE_DIR))) return false;
+  try { full = fs.realpathSync.native(full); } catch { /* doesn't exist yet */ }
+  if (full.split(/[\\/]+/).some((p) => p.toLowerCase() === "steamapps")) return true;
+  // The folder, or its parent or grandparent (steamapps\common\<game>), next
+  // to Steam's manifest for the game.
+  const acf = "appmanifest_" + APP_ID + ".acf";
+  for (let dir = full, i = 0; i < 3; i++, dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, acf))) return true;
+    if (path.dirname(dir) === dir) break;
+  }
+  return false;
+}
+
+const STEAM_FOLDER = "That folder is Steam's copy of The Culling (or inside a Steam library): installing there would replace Steam's files. " +
+  "Choose another folder, for example an empty one in your user folder";
+
 // Start the game; resolves once the Func launcher process has spawned.
 function launch(root, logDir) {
   const status = check(root);
@@ -155,4 +178,5 @@ function inside(child, dir) {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-module.exports = { check, detect, launch, steamLibraries, win64, defaultInstallDir, installTarget, isRunning, inside, INSTALL_NAME };
+module.exports = { check, detect, launch, steamLibraries, win64, defaultInstallDir, installTarget, isRunning, inside, isSteamFolder,
+  INSTALL_NAME, STEAM_FOLDER };
