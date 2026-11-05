@@ -84,9 +84,23 @@ def check_unique_tids(catalog):
         seen[item["tid"]] = item.get("asset")
 
 
+# The generators' catalog sections, in the order catalog.json keeps them
+# (after the stock items), so the file comes out the same whichever order the
+# generators ran in: a clean build leaves the committed catalog unchanged.
+SOURCE_ORDER = ("xp-calling-cards", "xp-camos", "xp-ranked", "xp-eye-skins")
+
+
 def write_catalog(path, catalog):
-    """server/data/catalog.json, refusing a catalog with an item ID twice."""
+    """server/data/catalog.json, refusing a catalog with an item ID twice.
+    The stock items first, in their order; then each generator's section
+    (SOURCE_ORDER, then any other source) by item ID."""
     check_unique_tids(catalog)
+    def key(item):
+        source = item.get("source")
+        if not source:
+            return (0, 0)                        # stable sort: the stock order is kept
+        return (SOURCE_ORDER.index(source) + 1 if source in SOURCE_ORDER else len(SOURCE_ORDER) + 1, item["tid"])
+    catalog = sorted(catalog, key=key)
     with open(path, "w") as f:
         json.dump(catalog, f, indent=1)
 
