@@ -44,12 +44,34 @@
    pair up (0,1 -> team 1; 2,3 -> team 2; ...), then runs the original sort.
    It reasserts each refresh, so join order and timing don't matter.
 
+5. Showdown rounds (showdown_rounds.c, built by build_showdown_rounds.py into
+   showdown_rounds_blob.py). A new section (.sdround, RVA 0x35b4000, after
+   .reloc) holds a small native module, and two pointers lead to it:
+   - AShooterGame_FreeForAll's vtable slot 282 (VA 0x1425a81e8, stock
+     0x140244d30, the "should the match end" check AShooterGameMode::Tick
+     calls once a second): in a Lightning-type match (Showdown) a round ends
+     when one fighter is down, the screen goes black, both fighters are reset
+     and respawned at the arena starts with the next kit, and only the 4th
+     round win ends the match. Every other mode calls the stock function.
+   - The native registration of KismetMathLibrary.RandomIntegerInRange (the
+     "lea r8, exec" at VA 0x14172be72): in a Showdown match the one call
+     RandomIntegerInRange(0, 6) - PlayerPawn's pick of the spawn-with melee
+     weapon - returns the round's kit, the same for both fighters.
+   The vtable slot already has a base relocation (the exe is ASLR-enabled), so
+   the new value is relocated like the old one; the blob itself has no
+   absolute addresses.
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it.
 
 usage: python patch_exe.py <Victory.exe> [max contestants, default 24]
 """
+import os
+import struct
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import showdown_rounds_blob as ROUNDS  # noqa: E402
 
 CAP_AT = 0x231790                   # file offset of "mov eax, 16" (b8 10 00 00 00)
 STOCK = 16
@@ -134,7 +156,76 @@ def _duoteam(data, path):
     return True
 
 
-def patch(path, contestants=MAX):
+IMAGE_BASE = 0x140000000
+ROUNDS_NAME = b".sdround"
+ROUNDS_FLAGS = 0xE0000060           # code, initialized data, execute, read, write
+STOCK_NUM_SECTIONS = 9
+STOCK_IMAGE_SIZE = 0x35B4000
+STOCK_FILE_SIZE = 0x332F400         # the end of .reloc's raw data
+FFA_SLOT_AT = 0x25A71E8             # file offset of AShooterGame_FreeForAll vtable slot 282 (VA 0x1425a81e8)
+FFA_SLOT = 0x140244D30
+RAND_LEA_AT = 0x172B472             # file offset of "lea r8, [execRandomIntegerInRange]" (VA 0x14172be72)
+RAND_LEA_VA = 0x14172BE72
+RAND_LEA = bytes.fromhex("4c8d05b7af0c00")
+
+
+def _align(n, a):
+    return (n + a - 1) // a * a
+
+
+def rounds_layout():
+    """What the rounds patch writes: (section header, raw data, slot value, lea bytes, image size)."""
+    blob = ROUNDS.BLOB
+    raw = blob + bytes(_align(len(blob), 0x200) - len(blob))
+    header = ROUNDS_NAME + struct.pack("<IIIIIIHHI", len(blob), ROUNDS.SECTION_RVA, len(raw), STOCK_FILE_SIZE,
+                                       0, 0, 0, 0, ROUNDS_FLAGS)
+    slot = IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SHOULD_END
+    target = IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_RAND_EXEC
+    lea = RAND_LEA[:3] + struct.pack("<i", target - (RAND_LEA_VA + len(RAND_LEA)))
+    return header, raw, slot, lea, ROUNDS.SECTION_RVA + _align(len(blob), 0x1000)
+
+
+def _pe(data, path):
+    if data[:2] != b"MZ" or len(data) < 0x400:
+        raise ValueError("%s is not the Victory.exe this patch is for (not a PE file)" % path)
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0" or struct.unpack_from("<H", data, pe + 4)[0] != 0x8664:
+        raise ValueError("%s is not the Victory.exe this patch is for (not x64)" % path)
+    optsz = struct.unpack_from("<H", data, pe + 20)[0]
+    return pe, pe + 6, pe + 24 + 56, pe + 24 + optsz      # header, NumberOfSections, SizeOfImage, section table
+
+
+def _rounds(data, path):
+    pe, nsec_at, size_at, table = _pe(data, path)
+    header, raw, slot, lea, image_size = rounds_layout()
+    nsec = struct.unpack_from("<H", data, nsec_at)[0]
+    at = table + 40 * STOCK_NUM_SECTIONS
+    cur_slot = struct.unpack_from("<Q", data, FFA_SLOT_AT)[0] if len(data) >= FFA_SLOT_AT + 8 else None
+    cur_lea = bytes(data[RAND_LEA_AT:RAND_LEA_AT + len(RAND_LEA)])
+    if nsec == STOCK_NUM_SECTIONS:
+        if (struct.unpack_from("<I", data, size_at)[0] != STOCK_IMAGE_SIZE or len(data) != STOCK_FILE_SIZE
+                or cur_slot != FFA_SLOT or cur_lea != RAND_LEA or any(data[at:at + 40])
+                or at + 40 > struct.unpack_from("<I", data, pe + 24 + 60)[0]):
+            raise ValueError("%s is not the Victory.exe this patch is for (Showdown rounds: section table, "
+                             "vtable slot %s or RandomIntegerInRange %s)" % (path, cur_slot and hex(cur_slot), cur_lea.hex()))
+    elif nsec == STOCK_NUM_SECTIONS + 1 and data[at:at + 8] == ROUNDS_NAME:
+        if (data[at:at + 40] == header and data[STOCK_FILE_SIZE:] == raw and cur_slot == slot and cur_lea == lea
+                and struct.unpack_from("<I", data, size_at)[0] == image_size):
+            return False
+        # An older build of the module: replace it.
+        del data[STOCK_FILE_SIZE:]
+    else:
+        raise ValueError("%s is not the Victory.exe this patch is for (%d sections)" % (path, nsec))
+    struct.pack_into("<H", data, nsec_at, STOCK_NUM_SECTIONS + 1)
+    struct.pack_into("<I", data, size_at, image_size)
+    data[at:at + 40] = header
+    data += raw
+    struct.pack_into("<Q", data, FFA_SLOT_AT, slot)
+    data[RAND_LEA_AT:RAND_LEA_AT + len(lea)] = lea
+    return True
+
+
+def patch(path, contestants=MAX, rounds=True):
     """Apply every fix; returns True when the file changed."""
     if not STOCK <= contestants <= 64:
         raise ValueError("contestants must be 16-64")
@@ -143,6 +234,8 @@ def patch(path, contestants=MAX):
     changed = _sha1(data, path) or changed
     changed = _slots(data, path) or changed
     changed = _duoteam(data, path) or changed
+    if rounds:
+        changed = _rounds(data, path) or changed
     if changed:
         with open(path, "wb") as f:
             f.write(data)
@@ -152,4 +245,5 @@ def patch(path, contestants=MAX):
 if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
-    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing%s" % (sys.argv[1], n, "" if changed else " (already)"))
+    print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds%s"
+          % (sys.argv[1], n, "" if changed else " (already)"))

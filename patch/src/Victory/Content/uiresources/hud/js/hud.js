@@ -3108,7 +3108,9 @@ function LocalMatchResultBody(_deathData, bIsVictory)
 		placement: parseInt(_deathData.Rank, 10) || 0,
 		// This build's limit on players plus bots (patch_exe.py): the server
 		// scores placements out of the contestants the map really has.
-		cap: 24
+		cap: 24,
+		// Showdown: the series' round this result ends (ShowdownHud.js).
+		showdownRound: (window.ShowdownHud && ShowdownHud.round) ? ShowdownHud.round() : 0
 	};
 }
 
