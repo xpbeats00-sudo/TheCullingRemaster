@@ -22,6 +22,69 @@ var REMASTER_DUO_URLS = [
 ];
 var REMASTER_SHOWDOWN_URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C";
 
+// Remaster: CUSTOM matches (patch/custom_match.py). START is answered with
+// "custom:<map>:<mods>"; the match is Solo's URL for that map (0 Jungle,
+// 1 Prison) plus the stock ?mods=<index>=<value>|... option, which the game
+// reads into its custom-match settings. The game doesn't check the index, so
+// only the indexes and values below are ever passed on. Copies of
+// custom_match.URLS and custom_match.MODS ([key, stock value, min, max] per
+// index; CustomMatchSettings.js builds its screen from it);
+// patch/test_custom_match.py checks they match.
+var REMASTER_CUSTOM_URLS = [
+  "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C",
+  "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C"
+];
+var REMASTER_CUSTOM_MODS = [
+  ["NumGreenCrateSpawn", 12, 0, 200],
+  ["NumBlueCrateSpawn", 24, 0, 200],
+  ["NumRedCrateSpawn", 3, 0, 200],
+  ["NumRedBarrelSpawn", 15, 0, 200],
+  ["NumGasPylonSpawn", 22, 0, 200],
+  ["NumFuncBarrelSpawn", 15, 0, 200],
+  ["NumToiletGoodiesSpawn", 5, 0, 200],
+  ["NumSmallBuildingItemSpawn", 2, 0, 200],
+  ["NumMediumBuildingItemSpawn", 4, 0, 200],
+  ["NumLargeBuildingItemSpawn", 8, 0, 200],
+  ["NumExtraLargeBuildingItemSpawn", 12, 0, 200],
+  ["ChancesExtraGreenCrateSpawn", 50, 0, 100],
+  ["ChancesLockerPreOpened", 50, 0, 100],
+  ["HealthGivenFromHealthStation", 4, 0, 100],
+  ["FuncCostForHealth", 1, 0, 100],
+  ["FreqHealthGivenInSeconds", 1, 1, 60],
+  ["RecyclerUseTime", 5, 1, 60]
+];
+
+// "custom:<map>:<mods>" -> the URL StartTraining opens, or null when anything
+// in it is not one of the maps, indexes or values above.
+function RemasterCustomMatchURL(gameServer) {
+  var m = /^custom:([01]):([0-9=|]{0,200})$/.exec(typeof gameServer == "string" ? gameServer : "");
+  if (!m) {
+    return null;
+  }
+  var url = REMASTER_CUSTOM_URLS[Number(m[1])];
+  if (m[2] === "") {
+    return url;
+  }
+  var parts = m[2].split("|");
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var kv = /^(\d{1,2})=(\d{1,3})$/.exec(parts[i]);
+    if (!kv) {
+      return null;
+    }
+    var index = Number(kv[1]);
+    var value = Number(kv[2]);
+    var mod = REMASTER_CUSTOM_MODS[index];
+    if (!mod || seen[index] || value < mod[2] || value > mod[3]) {
+      return null;
+    }
+    seen[index] = true;
+    out.push(index + "=" + value);
+  }
+  return url + "?mods=" + out.join("|");
+}
+
 var socketConnection = null;
 var bSentInvite = false;
 var bCheckDLCAtLogin = false;
@@ -314,7 +377,9 @@ var LobbyData = {
                     //TODO: use steamID instead of nickname to verify identity
                     var IAmTheOwner = IsLobbyOwner(member.user);
                     this.ShowStartMatchButton = IAmTheOwner && !this.MatchIsStarting;
-                    this.CanStartMatch = IAmTheOwner && this.Members.length > 1;
+                    // Remaster: a custom match is played on your PC, so
+                    // its owner starts it alone (stock: two members).
+                    this.CanStartMatch = IAmTheOwner && this.Members.length >= 1;
                     console.log("ShowStartMatchButton: " + this.ShowStartMatchButton);
                     console.log("IAmTheOwner: " + IAmTheOwner);
                     console.log("CanStartMatch: " + this.CanStartMatch);
@@ -338,7 +403,9 @@ var LobbyData = {
     mapIndex: 0,
     Owner: "",
     Code: "",
-    Members : []
+    Members : [],
+    // Remaster: the custom-match settings the server holds ({key: value}).
+    Mods: null
 };
 
 function IsLobbyOwner(UserID) {
@@ -1462,6 +1529,24 @@ function BindClientwebEvents(deferred) {
           engine.call("StartTraining", REMASTER_SHOWDOWN_URL);
           return;
       }
+      // CUSTOM (patch/custom_match.py): the lobby's map with its settings,
+      // opened the same way as Duo.
+      if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("custom:") == 0) {
+          var customUrl = RemasterCustomMatchURL(msg.gameServer);
+          if (!customUrl) {
+              console.error("match-ready:: unusable custom match " + msg.gameServer);
+              LobbyData.MatchIsStarting = false;
+              LobbyData.UpdateDerivedProperties();
+              ShowError("The custom match could not start. Please try again.");
+              return;
+          }
+          console.log("match-ready:: custom " + customUrl);
+          Matchmaking.MatchmakingState = "JOINING";
+          Matchmaking.SetMatchmaking(false);
+          engine.call("PostSoundEvent", "Stop_MenuMusic");
+          engine.call("StartTraining", customUrl);
+          return;
+      }
 
 
       if (msg.hasOwnProperty("gameServer") &&
@@ -1690,6 +1775,8 @@ function BindClientwebEvents(deferred) {
           LobbyData.Owner = lobby.owner;
           LobbyData.mapName = lobby.mapName;
           LobbyData.Members = lobby.members;
+          // Remaster: the lobby's custom-match settings (CustomMatchSettings.js).
+          if (lobby.mods && typeof lobby.mods == "object") LobbyData.Mods = lobby.mods;
           LobbyData.UpdateDerivedProperties();
           //openPlayModalIfWaiting();
 
@@ -1699,14 +1786,14 @@ function BindClientwebEvents(deferred) {
           if (IsLobbyOwner(PlayerProfileData.UserID))
           {
             LobbyData.ShowStartMatchButton = !LobbyData.MatchIsStarting;
-            LobbyData.CanStartMatch = LobbyData.Members.length > 1;
+            LobbyData.CanStartMatch = LobbyData.Members.length >= 1;   // Remaster: alone too
           }
           else
           {
             LobbyData.ShowStartMatchButton = false;
             LobbyData.CanStartMatch = false;
           }
-          if(LobbyData.Members.length > 1){
+          if(LobbyData.CanStartMatch){
             document.getElementById("start_btn").classList.remove("start-disabled");
             document.getElementById("start_btn").classList.add("start");
           }
@@ -1744,6 +1831,7 @@ function BindClientwebEvents(deferred) {
     LobbyData.Code = "";
     LobbyData.Owner = null;
     LobbyData.Members = [];
+    LobbyData.Mods = null;
     LobbyData.UpdateDerivedProperties();
   });
   socketConnection.on("lobby-leave-fail", function (err) {
@@ -1756,6 +1844,13 @@ function BindClientwebEvents(deferred) {
       CustomScreen.OnLobbyJoinFail(err);
 
       CancelCustomGameInviteAcceptModal();
+  });
+  // Remaster: the settings the server keeps for this custom lobby.
+  socketConnection.on("lobby-set-mods-ack", function (msg) {
+    if (msg && msg.mods && typeof msg.mods == "object") LobbyData.Mods = msg.mods;
+  });
+  socketConnection.on("lobby-set-mods-fail", function (err) {
+    console.log("lobby-set-mods-fail " + (err && err.reason));
   });
   socketConnection.on("lobby-change-team-fail", function (err) {
     LobbyData.OutstandingRequest = false;

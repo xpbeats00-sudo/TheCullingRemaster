@@ -89,7 +89,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       s.emit("purchase-entitlement", null);
       assert.strictEqual((await next(s, "purchase-fail")).reason, "unknown-item");
       s.emit("lobby-create", { mapName: ["Prison"] });
-      assert.strictEqual((await next(s, "lobby-update")).mapName, "Jungle_P");
+      assert.strictEqual((await next(s, "lobby-update")).mapName, "Jungle/Jungle_P", "the stock CUSTOM screen's Jungle");
       for (const u of ["steam:someone-else", "__proto__", 12345, { x: 1 }]) {
         s.emit("get-season-summary", { userID: u });
         await next(s, "season-summary-response");
