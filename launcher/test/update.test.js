@@ -62,6 +62,9 @@ async function install(name, root, opts = {}) {
   return { m, todo, r };
 }
 const read = (root, p) => fs.readFileSync(path.join(root, ...p.split("/")));
+// The backup folders of the last update, and the folders of kept repair files.
+const backups = (root) => fs.readdirSync(path.join(root, ".remaster")).filter((n) => n === "backup" || n.startsWith("backup-"));
+const replaced = (root) => { const d = path.join(root, ".remaster", sync.REPLACED_DIR); return fs.existsSync(d) ? fs.readdirSync(d).map((n) => path.join(d, n)) : []; };
 
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
@@ -115,6 +118,49 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       await install("v2", root);
     });
 
+    await test("Verify & Sync with nothing to do keeps the previous version and its backup", async () => {
+      assert.strictEqual(sync.previousVersion(root), "1.0.0");
+      const before = backups(root);
+      assert.strictEqual(before.length, 1);
+      const { todo, r } = await install("v2", root);
+      assert.deepStrictEqual(todo, []);
+      assert.strictEqual(r.files, 0);
+      assert.strictEqual(sync.previousVersion(root), "1.0.0", "Restore previous version still offers 1.0.0");
+      assert.deepStrictEqual(backups(root), before, "backup untouched");
+      assert.ok(!fs.existsSync(path.join(root, ".remaster", "journal.json")));
+    });
+
+    await test("a same-version repair keeps the backup, and the player's replaced file in replaced/", async () => {
+      fs.writeFileSync(path.join(root, "Victory", "c.ini"), "my own edit");
+      const before = backups(root);
+      const { todo, r } = await install("v2", root);
+      assert.deepStrictEqual(todo.map((f) => f.path), ["Victory/c.ini"]);
+      assert.strictEqual(r.kept, 1);
+      assert.ok(read(root, "Victory/c.ini").equals(C2), "repaired");
+      assert.strictEqual(sync.installedVersion(root), "1.1.0");
+      assert.strictEqual(sync.previousVersion(root), "1.0.0", "previous isn't pointed at the current version");
+      assert.deepStrictEqual(backups(root), before, "the last update's backup survives a repair");
+      assert.strictEqual(fs.readFileSync(path.join(replaced(root)[0], "Victory", "c.ini"), "utf8"), "my own edit");
+      // A second repair: only the newest one's files are kept.
+      fs.writeFileSync(path.join(root, "Victory", "c.ini"), "second edit");
+      await install("v2", root);
+      assert.strictEqual(replaced(root).length, 1, "newest repair only");
+      assert.strictEqual(fs.readFileSync(path.join(replaced(root)[0], "Victory", "c.ini"), "utf8"), "second edit");
+      // Bounded: over the size limit, the biggest kept files go.
+      fs.writeFileSync(path.join(root, "Victory", "c.ini"), "third edit");
+      fs.writeFileSync(path.join(root, "Victory", "a.pak"), Buffer.alloc(200000, 0xee));
+      const { r: r3 } = await install("v2", root, { replacedMax: 1000 });
+      assert.strictEqual(r3.kept, 1, "the big file isn't kept");
+      assert.strictEqual(fs.readFileSync(path.join(replaced(root)[0], "Victory", "c.ini"), "utf8"), "third edit");
+      assert.ok(read(root, "Victory/a.pak").equals(A));
+      // Restore previous version still brings back 1.0.0 exactly.
+      assert.strictEqual(sync.rollback(root), "1.0.0");
+      assert.ok(read(root, "Victory/c.ini").equals(C) && read(root, "Victory/old.pak").equals(OLD));
+      assert.deepStrictEqual(await sync.plan(await get("v1"), root), []);
+      await install("v2", root);
+      assert.strictEqual(backups(root).length, 1, "an update replaces the old backup once it has committed");
+    });
+
     await test("a locked file during commit puts everything back and keeps the downloads", async () => {
       const C3 = Buffer.from("config v3"), A3 = Buffer.alloc(200000, 9);
       release("v3", "1.2.0", { "Victory/a.pak": A3, "Victory/b.pak": B, "Victory/c.ini": C3, "Victory/d.pak": D });
@@ -132,6 +178,8 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       }
       assert.strictEqual(sync.installedVersion(root), "1.1.0");
       assert.ok(read(root, "Victory/c.ini").equals(C2) && read(root, "Victory/a.pak").equals(A), "1.1.0 files back in place");
+      assert.strictEqual(sync.previousVersion(root), "1.0.0", "a failed commit leaves the last update's backup");
+      assert.ok(backups(root).some((n) => fs.existsSync(path.join(root, ".remaster", n, "Victory", "c.ini"))), "1.0.0's files still kept");
       for (const k of Object.keys(hits)) delete hits[k];
       const m = await get("v3");
       const todo = await sync.plan(m, root);

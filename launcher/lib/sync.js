@@ -17,12 +17,17 @@
 //      and SHA-256 as it completes;
 //   2. once every file is staged, a journal is written and the files are moved
 //      into place, the files they replace (and launcher-managed files the new
-//      release no longer has) going to <game>/.remaster/backup/;
+//      release no longer has) going to a backup folder of the commit's own
+//      (<game>/.remaster/backup-<id>/);
 //   3. the release is marked installed only when the commit finishes. A crash
 //      mid-commit is finished from the journal on the next start; a locked
 //      file (the game running) rolls the commit back, keeping the downloads.
-// The previous version's replaced files stay in backup/ until the next update,
-// so it can be restored (rollback()).
+// The previous version's replaced files stay in their backup folder until the
+// next update has committed, so it can be restored (rollback()). A repair at
+// the installed version (Verify & Sync, Verify & Repair) doesn't touch that
+// backup: the files it replaces, a player's own edits among them, are kept in
+// <game>/.remaster/replaced/ (the newest repair's only). Nothing to replace
+// means nothing is committed.
 //
 // The manifest comes from the network, so it is trusted only after its
 // signature verifies, every path must stay inside the game folder (never the
@@ -113,7 +118,14 @@ function targetPath(gameRoot, rel) {
 const stateDir = (gameRoot) => path.join(gameRoot, STATE_DIR);
 // Where a file is staged; its path was checked by targetPath first.
 const stagedPath = (gameRoot, rel) => path.join(stateDir(gameRoot), "staging", ...rel.split("/"));
-const backupPath = (gameRoot, rel) => path.join(stateDir(gameRoot), "backup", ...rel.split("/"));
+// Where a commit keeps the files it replaces: the journal names the folder
+// (journals of the first launchers didn't: "backup").
+const holdDir = (gameRoot, journal) => path.join(stateDir(gameRoot), ...String(journal.hold || "backup").split("/"));
+const holdPath = (gameRoot, journal, rel) => path.join(holdDir(gameRoot, journal), ...rel.split("/"));
+// A same-version repair keeps the files it replaced (a player's own edits)
+// here, the newest repair only, up to this many bytes.
+const REPLACED_DIR = "replaced";
+const REPLACED_MAX = 1024 * 1024 * 1024;
 
 function validateManifest(m) {
   if (!m || typeof m !== "object" || !Array.isArray(m.files) || typeof m.version !== "string") {
@@ -510,52 +522,97 @@ async function download(manifest, f, gameRoot, onBytes, o) {
 // ---------------------------------------------------------------- commit
 // Moves every staged file of the journal into place. Idempotent: after a
 // crash, running it again finishes the job. For each file, in order: the
-// current file goes to backup (once), then the staged one takes its place.
+// current file goes to the journal's hold folder (once), then the staged one
+// takes its place.
 function commitFiles(gameRoot, journal) {
   for (const e of journal.files) {
     const target = targetPath(gameRoot, e.path);
     const staged = stagedPath(gameRoot, e.path);
-    const backup = backupPath(gameRoot, e.path);
+    const held = holdPath(gameRoot, journal, e.path);
     if (!fs.existsSync(staged)) continue;                       // already in place
-    if (fs.existsSync(target) && !fs.existsSync(backup)) move(target, backup);
+    if (fs.existsSync(target) && !fs.existsSync(held)) move(target, held);
     move(staged, target);
     fs.rmSync(target + ".part", { force: true });                // left by the first launchers
   }
   for (const rel of journal.obsolete) {
     const target = targetPath(gameRoot, rel);
-    if (fs.existsSync(target)) move(target, backupPath(gameRoot, rel));
+    if (fs.existsSync(target)) move(target, holdPath(gameRoot, journal, rel));
   }
 }
 
 // Undoes commitFiles for the files already moved (a failed commit): the new
-// file goes back to staging, the backup back into place.
+// file goes back to staging, the held one back into place.
 function uncommitFiles(gameRoot, journal) {
   for (const e of journal.files) {
     const target = targetPath(gameRoot, e.path);
     const staged = stagedPath(gameRoot, e.path);
-    const backup = backupPath(gameRoot, e.path);
+    const held = holdPath(gameRoot, journal, e.path);
     if (!fs.existsSync(staged) && fs.existsSync(target)) move(target, staged);
-    if (fs.existsSync(backup) && !fs.existsSync(target)) move(backup, target);
+    if (fs.existsSync(held) && !fs.existsSync(target)) move(held, target);
   }
   for (const rel of journal.obsolete) {
-    const backup = backupPath(gameRoot, rel);
-    if (fs.existsSync(backup) && !fs.existsSync(targetPath(gameRoot, rel))) move(backup, targetPath(gameRoot, rel));
+    const held = holdPath(gameRoot, journal, rel);
+    if (fs.existsSync(held) && !fs.existsSync(targetPath(gameRoot, rel))) move(held, targetPath(gameRoot, rel));
   }
+  removeEmptyDirs(holdDir(gameRoot, journal));
 }
 
 // Marks a finished commit in the state, and keeps what rollback() needs.
-function finishCommit(gameRoot, state, journal) {
+// An update (a new version) replaces the previous update's backup, only now
+// that it has succeeded. A same-version repair leaves the backup, the
+// previous version and "Restore previous version" alone: the files it
+// replaced (a player's own edits) are kept in replaced/ instead.
+function finishCommit(gameRoot, state, journal, opts = {}) {
   for (const e of journal.files) {
     state.files[e.path] = recordOf(targetPath(gameRoot, e.path), e.sha256);
     delete state.staged[e.path];
   }
   for (const rel of journal.obsolete) delete state.files[rel];
-  state.previous = journal.from;
+  if (!journal.repair) state.previous = journal.from;
   state.version = journal.version;
   saveState(gameRoot, state);
-  writeJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), journal);
-  fs.rmSync(path.join(stateDir(gameRoot), JOURNAL_FILE), { force: true });
-  removeEmptyDirs(path.join(stateDir(gameRoot), "staging"));
+  const dir = stateDir(gameRoot);
+  if (!journal.repair) {
+    writeJson(path.join(dir, LAST_COMMIT_FILE), journal);
+    const keep = path.basename(holdDir(gameRoot, journal));
+    for (const name of safeReaddir(dir)) {
+      if ((name === "backup" || name.startsWith("backup-")) && name !== keep) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    }
+  } else {
+    pruneReplaced(gameRoot, journal, opts.replacedMax);
+  }
+  fs.rmSync(path.join(dir, JOURNAL_FILE), { force: true });
+  removeEmptyDirs(path.join(dir, "staging"));
+}
+
+const safeReaddir = (dir) => { try { return fs.readdirSync(dir); } catch { return []; } };
+
+// replaced/ keeps the newest repair's files only (when it replaced any), and
+// at most REPLACED_MAX bytes of them: the biggest go first.
+function pruneReplaced(gameRoot, journal, max = REPLACED_MAX) {
+  if (max == null) max = REPLACED_MAX;
+  const root = path.join(stateDir(gameRoot), REPLACED_DIR);
+  const mine = holdDir(gameRoot, journal);
+  removeEmptyDirs(mine);
+  if (!fs.existsSync(mine)) return;
+  for (const name of safeReaddir(root)) {
+    if (path.join(root, name) !== mine) fs.rmSync(path.join(root, name), { recursive: true, force: true });
+  }
+  const files = [];
+  const walk = (d) => {
+    for (const e of (() => { try { return fs.readdirSync(d, { withFileTypes: true }); } catch { return []; } })()) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p); else { const st = statOrNull(p); if (st) files.push({ p, size: st.size }); }
+    }
+  };
+  walk(mine);
+  let total = files.reduce((s, f) => s + f.size, 0);
+  for (const f of files.sort((a, b) => b.size - a.size)) {
+    if (total <= max) break;
+    fs.rmSync(f.p, { force: true });
+    total -= f.size;
+  }
+  removeEmptyDirs(mine);
 }
 
 // Removes a folder tree's empty folders (left in staging after a commit);
@@ -576,26 +633,37 @@ function recover(gameRoot) {
   return true;
 }
 
-// Commits the staged release. Throws (with everything put back as it was, the
-// downloads kept) when a file can't be replaced, e.g. the game is running.
-function commit(gameRoot, manifest, todo, state, onProgress) {
+// Launcher-managed files the release doesn't have. Files the launcher never
+// installed (the player's own) are never touched.
+function obsoleteFiles(gameRoot, manifest, state) {
   const wanted = new Set(manifest.files.map((f) => f.path));
-  // Launcher-managed files the new release doesn't have. Files the launcher
-  // never installed (the player's own) are never touched.
-  const obsolete = Object.keys(state.files).filter((p) => !wanted.has(p)).filter((p) => {
+  return Object.keys(state.files).filter((p) => !wanted.has(p)).filter((p) => {
     try { targetPath(gameRoot, p); return true; } catch { return false; }
   });
+}
+
+// Commits the staged release. Throws (with everything put back as it was, the
+// downloads kept) when a file can't be replaced, e.g. the game is running.
+// Returns the journal, or null when there was nothing to commit (a Verify &
+// Sync that found every file in place: the backup and the previous version
+// stay as they are).
+function commit(gameRoot, manifest, todo, state, onProgress, opts = {}) {
+  const obsolete = obsoleteFiles(gameRoot, manifest, state);
+  const repair = !!state.version && state.version === manifest.version;
+  if (repair && !todo.length && !obsolete.length) return null;
+  const id = Date.now().toString(36) + crypto.randomBytes(3).toString("hex");
   const journal = {
     version: manifest.version,
     from: state.version,
+    repair,
+    // Each commit holds what it replaces in a folder of its own, so the last
+    // update's backup survives until this commit has succeeded.
+    hold: repair ? `${REPLACED_DIR}/${id}` : `backup-${id}`,
     files: todo.map((f) => ({ path: f.path, sha256: f.sha256, size: f.size, hadOld: fs.existsSync(targetPath(gameRoot, f.path)) })),
     obsolete,
     oldRecords: Object.fromEntries(todo.concat(obsolete.map((p) => ({ path: p })))
       .filter((f) => state.files[f.path]).map((f) => [f.path, state.files[f.path]]))
   };
-  // The previous update's backups make way for this one's.
-  fs.rmSync(path.join(stateDir(gameRoot), "backup"), { recursive: true, force: true });
-  fs.rmSync(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), { force: true });
   writeJson(path.join(stateDir(gameRoot), JOURNAL_FILE), journal);
   onProgress({ phase: "install", done: 0, total: journal.files.length });
   try {
@@ -608,11 +676,12 @@ function commit(gameRoot, manifest, todo, state, onProgress) {
       ? `a game file is in use (${path.basename(e.path || "")}): close the game, then press Resume`
       : `installing the update failed (${e.code || e.message}); your previous files were put back`, "commit");
   }
-  finishCommit(gameRoot, state, journal);
+  finishCommit(gameRoot, state, journal, opts);
   onProgress({ phase: "install", done: journal.files.length, total: journal.files.length });
+  return journal;
 }
 
-// Restores the version before the last update from backup/. Returns the
+// Restores the version before the last update from its backup. Returns the
 // restored version, or throws when there is nothing to restore.
 function rollback(gameRoot) {
   recover(gameRoot);
@@ -621,7 +690,7 @@ function rollback(gameRoot) {
   const state = loadState(gameRoot);
   for (const e of last.files) {
     const target = targetPath(gameRoot, e.path);
-    const backup = backupPath(gameRoot, e.path);
+    const backup = holdPath(gameRoot, last, e.path);
     if (e.hadOld && !fs.existsSync(backup)) throw new SyncError("the previous version's files are no longer kept");
     fs.rmSync(target, { force: true });
     if (e.hadOld) move(backup, target);
@@ -629,7 +698,7 @@ function rollback(gameRoot) {
     else delete state.files[e.path];
   }
   for (const rel of last.obsolete) {
-    const backup = backupPath(gameRoot, rel);
+    const backup = holdPath(gameRoot, last, rel);
     if (fs.existsSync(backup)) {
       move(backup, targetPath(gameRoot, rel));
       if (last.oldRecords[rel]) state.files[rel] = recordOf(targetPath(gameRoot, rel), last.oldRecords[rel].sha256);
@@ -639,6 +708,7 @@ function rollback(gameRoot) {
   state.previous = null;
   saveState(gameRoot, state);
   fs.rmSync(path.join(stateDir(gameRoot), LAST_COMMIT_FILE), { force: true });
+  removeEmptyDirs(holdDir(gameRoot, last));
   return last.from;
 }
 
@@ -750,9 +820,11 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     e.failed = failed;
     throw e;
   }
-  commit(gameRoot, manifest, todo, state, onProgress);
-  log("commit", { version: manifest.version, files: todo.length });
-  return { files: todo.length, bytes: totalBytes, seconds, retries };
+  const journal = commit(gameRoot, manifest, todo, state, onProgress, { replacedMax: opts.replacedMax });
+  // A repair keeps the files it replaced (see finishCommit): how many are kept.
+  const kept = journal && journal.repair ? countFiles(holdDir(gameRoot, journal)) : 0;
+  log("commit", { version: manifest.version, files: todo.length, committed: !!journal, repair: !!(journal && journal.repair), kept });
+  return { files: todo.length, bytes: totalBytes, seconds, retries, kept };
 }
 
 // Compares dotted versions ("1.10.0" > "1.9.2"); non-numeric parts as text.
@@ -785,10 +857,18 @@ function stagedBytes(gameRoot) {
   return n;
 }
 
+function countFiles(dir) {
+  let n = 0;
+  for (const e of (() => { try { return fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; } })()) {
+    n += e.isDirectory() ? countFiles(path.join(dir, e.name)) : 1;
+  }
+  return n;
+}
+
 function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
 
 module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion,
   freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
-  SyncError, SyncPaused, STATE_DIR, PARALLEL };
+  SyncError, SyncPaused, STATE_DIR, REPLACED_DIR, PARALLEL };
