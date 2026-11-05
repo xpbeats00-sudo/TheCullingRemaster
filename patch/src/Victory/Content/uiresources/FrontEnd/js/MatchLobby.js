@@ -109,6 +109,10 @@
       else if (typeof LeaveMatchmaking == "function") LeaveMatchmaking();
       if (last) cancelButton(last.state);
     });
+    // Only the pill's button, the map cards and the player rows take the
+    // mouse (pointer-events: all); a press on them stays here, so a right
+    // click isn't the stock menu's Back and a drag doesn't turn the character.
+    panel.addEventListener("mousedown", function (e) { e.stopPropagation(); });
     document.body.appendChild(panel);
     return panel;
   }
