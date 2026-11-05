@@ -70,12 +70,34 @@ FULL_EXCLUDE = {
     "Victory/Binaries/Win64/Func.Client.Online.dll",
     "Victory/Content/Paks/" + PAK,
     "InstallScript.vdf",
+    # Dead weight (checked 2026-11-04, docs/UPDATE_INFRASTRUCTURE.md):
+    # make_loading_bar.py's movie, not in use (DefaultGame.ini's loading
+    # screen plays no movie; only LoadingScreen.mp4 is a startup movie) ...
+    "Victory/Content/Movies/LoadingBar.mp4",
+    # ... and Goldberg's tool that writes steam_interfaces.txt (nothing loads it).
+    "Engine/Binaries/ThirdParty/Steamworks/Steamv136/Win64/generate_interfaces_file.exe",
 }
+# Never shipped either: a loose extraction of the paks under the Paks folder
+# (3,482 files: WwiseAudio banks and Config, byte-for-byte copies of files
+# inside the pakchunk paks, which is where the game reads them: Wwise from
+# Content/WwiseAudio, config from Victory/Config; nothing reads
+# Content/Paks/Victory/), and backups of edited config (*.original).
+FULL_EXCLUDE_PREFIXES = ("Victory/Content/Paks/Victory/",)
+FULL_EXCLUDE_SUFFIXES = (".original",)
+# Func.Launcher.exe refuses to start without Victory/Binaries/Win64/
+# pakchunk99-WindowsClient_P.pak next to the client DLL, and Func.Client.dll
+# mounts it, so it ships (it isn't on the engine's own pak path).
 GAME_EXE = "Victory/Binaries/Win64/Victory.exe"
-# A full release's game dir must have these, and the release at least
-# MIN_FULL_FILES files (the stock install has about 3,560).
+# A full release's game dir must have these, and it must ship at least
+# MIN_FULL_FILES files of MIN_FULL_BYTES in all, SHIPPED among them. The stock
+# install ships 73 files, 5.1 GB (the loose copies above excluded; with them it
+# was about 3,560, which is why the first version of this check asked for 3,000).
 REQUIRED = (GAME_EXE, "Victory/Content/Paks/pakchunk0-WindowsClient.pak")
-MIN_FULL_FILES = 3000
+MIN_FULL_FILES = 60
+MIN_FULL_BYTES = 4 << 30
+SHIPPED = tuple("Victory/Content/Paks/pakchunk%d-WindowsClient.pak" % n for n in (0, 1, 2, 3, 5, 6, 7, 11)) + (
+    "Victory/Binaries/Win64/Func.Launcher.exe", "Victory/Binaries/Win64/Func.Client.dll",
+    "Victory/Binaries/Win64/pakchunk99-WindowsClient_P.pak", GAME_EXE)
 SETTINGS_README_PATH = STEAM_SETTINGS + "/README.txt"
 # Files of a release the build writes itself, so never linked from the install.
 WRITTEN = {SETTINGS_README_PATH, "Victory/Content/Paks/" + PAK}
@@ -124,7 +146,8 @@ def game_files(game):
     for folder, _, files in os.walk(game):
         for name in files:
             rel = os.path.relpath(os.path.join(folder, name), game).replace(os.sep, "/")
-            if rel in FULL_EXCLUDE or rel.startswith(".remaster/") or rel.endswith(".part"):
+            if (rel in FULL_EXCLUDE or rel.startswith(".remaster/") or rel.endswith(".part")
+                    or rel.startswith(FULL_EXCLUDE_PREFIXES) or rel.endswith(FULL_EXCLUDE_SUFFIXES)):
                 continue
             out.append(rel)
     return sorted(out)
@@ -258,6 +281,13 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_d
         if len(files) < MIN_FULL_FILES:
             raise ReleaseError("--full: %s has only %d files to ship (a full release has at least %d): nothing built"
                                % (game, len(files), MIN_FULL_FILES))
+        missing = sorted(set(SHIPPED) - set(files))
+        if missing:
+            raise ReleaseError("--full: %s lacks %s: nothing built" % (game, ", ".join(missing)))
+        size = sum(os.path.getsize(os.path.join(game, *rel.split("/"))) for rel in files)
+        if size < MIN_FULL_BYTES:
+            raise ReleaseError("--full: %s ships only %.2f GB (a full release is at least %.0f GB): nothing built"
+                               % (game, size / 2 ** 30, MIN_FULL_BYTES / 2 ** 30))
         check_source_exe(game)
     releases = os.path.join(ROOT, "releases")
     out = out or os.path.join(releases, version)

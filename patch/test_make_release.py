@@ -98,19 +98,27 @@ try:
     @test
     def not_steam_exe():
         """a Victory.exe that isn't the Steam build patch_exe.py is for is refused"""
-        saved, mr.MIN_FULL_FILES = mr.MIN_FULL_FILES, 5       # enough files: the exe is checked next
+        saved = mr.MIN_FULL_FILES, mr.SHIPPED, mr.MIN_FULL_BYTES
+        mr.MIN_FULL_FILES = 5                                 # enough files ...
         try:
+            refuses("lacks Victory/Binaries/Win64/Func.Client.dll, Victory/Binaries/Win64/Func.Launcher.exe", build, game)
+            mr.SHIPPED = ()                                   # ... everything a release needs ...
+            refuses("ships only 0.00 GB", build, game)
+            mr.MIN_FULL_BYTES = 0                             # ... and enough bytes: the exe is checked next
             refuses("is not the Steam Victory.exe", build, game)
         finally:
-            mr.MIN_FULL_FILES = saved
+            mr.MIN_FULL_FILES, mr.SHIPPED, mr.MIN_FULL_BYTES = saved
         assert not os.path.exists(out), "the out folder was written"
 
     @test
     def excluded():
         """excluded files don't count towards a full release"""
-        for rel in mr.FULL_EXCLUDE:
+        for rel in mr.FULL_EXCLUDE | {"Victory/Content/Paks/Victory/Content/WwiseAudio/Windows/1.wem",
+                                      "Victory/Content/Paks/Victory/Config/DefaultEngine.ini.original",
+                                      "Victory/Config/DefaultGame.ini.original"}:
             touch(game, rel)
         files = mr.game_files(game)
+        assert not [f for f in files if "Paks/Victory/" in f or f.endswith(".original")], files
         assert not set(files) & set(mr.FULL_EXCLUDE), set(files) & set(mr.FULL_EXCLUDE)
         assert len(files) == len(mr.REQUIRED) + 10, files
     @test
