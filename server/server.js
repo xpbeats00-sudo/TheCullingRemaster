@@ -65,6 +65,7 @@ const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
 const { Friends } = require('./friends');
 const { Leaderboard } = require('./leaderboard');
+const custom = require('./custommatch');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -1255,7 +1256,7 @@ function sendShowdown(socket, loginAt) {
 // What each player is doing, for their friends: menu, searching, lobby or
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
-const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning' };
+const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning', custom: 'Custom' };
 
 function usernameOf(userID) {
   const key = accounts.keyForUserID(userID);
@@ -1679,28 +1680,45 @@ io.on('connection', (socket) => {
     socket.emit('remaster-leaderboard', leaderboard.view(usernameOf(socket.userID) ? socket.userID : null));
   });
 
-  // Private ("custom") lobbies also go straight to a local bot match.
+  // CUSTOM (custommatch.js): a private lobby of one, played on the player's
+  // PC with the map and the settings the CUSTOM screen picked. Nobody can join
+  // one (there is no multiplayer hosting): the menu says to use a party.
   on('lobby-create', (msg) => {
     socket.lobby = {
       code: crypto.randomBytes(3).toString('hex'),
       owner: socket.userID,
-      mapName: shortString(msg && msg.mapName, 64, '') || 'Jungle_P',
-      members: [{ user: socket.userID, team: 0 }]
+      mapName: custom.mapName(msg && msg.mapName),
+      members: [{ user: socket.userID, team: 0 }],
+      mods: custom.defaults()
     };
     socket.emit('lobby-update', socket.lobby);
   });
-  on('lobby-join', () => socket.emit('lobby-join-fail', { reason: 'not-found' }));
+  on('lobby-join', () => socket.emit('lobby-join-fail', { reason: custom.JOIN_REFUSED }));
   on('lobby-set-map', (msg) => {
     if (!socket.lobby) return socket.emit('lobby-update-fail', {});
-    socket.lobby.mapName = shortString(msg && msg.mapName, 64, '') || socket.lobby.mapName;
+    socket.lobby.mapName = custom.mapName(msg && msg.mapName, socket.lobby.mapName);
     socket.emit('lobby-update', socket.lobby);
+  });
+  // The CUSTOM MATCH SETTINGS screen: whole numbers within each setting's
+  // bounds; anything else keeps the setting as it was. Acknowledged on its
+  // own event (a lobby-update would reset the settings screen's focus).
+  on('lobby-set-mods', (msg) => {
+    if (!socket.lobby) return socket.emit('lobby-set-mods-fail', { reason: 'not-in-lobby' });
+    socket.lobby.mods = custom.cleanMods(msg && msg.mods, socket.lobby.mods);
+    socket.emit('lobby-set-mods-ack', { mods: socket.lobby.mods });
   });
   on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   on('lobby-start-match', () => {
-    if (!socket.lobby) return socket.emit('lobby-update-fail', {});
-    const map = socket.lobby && /prison|jungle2/i.test(socket.lobby.mapName) ? 1 : 0;
-    tickets.start(socket.userID, socket.ip, { map: map ? 'prison' : 'jungle', mode: 'custom' });
-    socket.emit('match-ready', { gameServer: 'offline:' + map, nonce: 'x', serverNonce: 'x' });
+    if (!socket.lobby) return socket.emit('lobby-start-match-fail', { reason: 'not-in-lobby' });
+    // Out of any matchmaking lobby: its match-ready would land on top of this one.
+    lobbies.leave(socket.userID);
+    const map = custom.mapIndex(socket.lobby.mapName);
+    const gameServer = custom.gameServer(socket.lobby.mapName, socket.lobby.mods);
+    tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom' });
+    setPresence(socket.userID, 'match', { mode: 'custom' });
+    log('match-ready ->', socket.userID, gameServer);
+    socket.emit('match-ready', { gameServer, nonce: crypto.randomBytes(8).toString('hex'),
+      serverNonce: crypto.randomBytes(8).toString('hex') });
   });
 
   socket.on('disconnect', (reason) => {
