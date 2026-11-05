@@ -27,6 +27,7 @@ Steps (each one's output is shown; the first failure stops the build):
        Arena_Moon and places the sky effects, and drops levels it doesn't know),
        make_showdown_tile.py      the menu visuals
        make_camos.py              camo skins (Necro Mist included), registry camos.bin
+       make_vfx_camos.py          VFX camos (Dark Matter, Wave), registry vfx_camos.bin
        make_eye_skins.py          Necro Mist outfits, registry eye_skins.bin
        make_calling_cards.py      calling cards, hud.html, registry calling_cards.bin
        make_ranked.py             rank emblems and cards, registry ranked.bin
@@ -115,6 +116,7 @@ def generators(a, stage, frontend):
         steps.append(g("make_showdown_tile.py", a.showdown_tile))
     steps += [
         g("make_camos.py", stage, a.camos),
+        g("make_vfx_camos.py", stage),
         g("make_eye_skins.py", stage),
         g("make_calling_cards.py", stage, a.cards),
         g("make_ranked.py", stage),
@@ -134,6 +136,7 @@ def tests(a, stage):
         p("test_patch_exe.py", exe), p("test_make_pak.py"), p("test_make_release.py"), p("test_stock_paks.py"),
         p("test_release_gate.py"), p("test_extract_func_anims.py"), p("test_menu_items.py"),
         p("test_match_urls.py", stage), p("test_eye_skins.py", stage), p("test_loot_tables.py"),
+        p("test_vfx_camos.py", stage),
         d("stage_objects.test.js"), d("publish.test.js"), d("make_manifest.test.js"),
         ("launcher: npm test", [NPM, "test"], os.path.join(ROOT, "launcher")),
     ]

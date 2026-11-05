@@ -39,7 +39,8 @@ def tree(root):
     src, reg, cat = os.path.join(root, "src"), os.path.join(root, "registry"), os.path.join(root, "catalog.json")
     os.makedirs(reg)
     catalog = [{"tid": 100100, "asset": "/Game/Cosmetics/Clothing/Hair_DefaultM", "displayName": "Stock hair"}]
-    folders = {"camos": "WeaponSkins/IceAxe_XP_Frost_Plasma", "eye_skins": "Clothing/XP_EyeMask_Blood_Red",
+    folders = {"camos": "WeaponSkins/IceAxe_XP_Frost_Plasma", "vfx_camos": "WeaponSkins/Katana_XP_VFX_Dark_Matter",
+               "eye_skins": "Clothing/XP_EyeMask_Blood_Red",
                "calling_cards": "CullingCards/CullingCardXP_Akira_Slide", "ranked": "CullingCards/CullingCardXP_Ranked_Scrapper"}
     blobs = b""
     for k, (name, source) in enumerate(sorted(gate.RECORD_SETS.items())):

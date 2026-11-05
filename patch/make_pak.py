@@ -7,11 +7,20 @@ layout the game's own paks use, so src/Victory/Content/... overrides the
 matching file inside the base paks.
 
 Test and diagnostic content is refused before anything is written (unless
---allow-test-content, for a local diagnostics build only): the animated-camo
-experiment's assets (<Mesh>_XPAnim*, Camo_XP_Anim_*, made by
-diagnostics/make_animated_camos.py), the Ice Axe test mesh (IceAxe_A_XPTest,
-diagnostics/make_camo_tests.py), any package that still references them, and
-anything saying "TEST BUILD". test_content() lists what it finds.
+--allow-test-content, for a local diagnostics build only):
+- the animated-camo experiment's assets (<Mesh>_XPAnim*, Camo_XP_Anim_*, made
+  by diagnostics/make_animated_camos.py) and the Ice Axe test mesh
+  (IceAxe_A_XPTest, diagnostics/make_camo_tests.py), by path;
+- any file that mentions them or says "TEST BUILD" (ASCII or UTF-16);
+- a custom camo skin (Cosmetics/WeaponSkins/*_XP_*.uasset) carrying a
+  GeoSkin, BC or BC2 tag, except the VFX camos (*_XP_VFX_*,
+  make_vfx_camos.py): those tags on a plain camo are make_camo_tests.py's Ice
+  Axe diagnostics (Teal Current points at the stock FireAxe_C, so no name
+  gives it away).
+The released camos (make_camos.py's <Weapon>_XP_<Camo>, Necro Mist included,
+and make_vfx_camos.py's <Weapon>_XP_VFX_*) are none of these. Rebuild with the
+release generators (patch/build_release.py) to clear them. test_content()
+lists what it finds.
 """
 import hashlib
 import os
@@ -31,6 +40,20 @@ TEST_NAMES = re.compile(r"XPAnim|XPTest|Camo_XP_Anim_", re.I)
 # logs "XPAnimate".
 TEST_TEXT = [b"_XPAnim", b"_XPTest", b"Camo_XP_Anim_", b"TEST BUILD"]
 TEST_TEXT += [t.decode("ascii").encode("utf-16le") for t in TEST_TEXT]
+# ... and so is a plain custom camo skin with one of these tags (not a VFX camo).
+DIAGNOSTIC_TAGS = {"GeoSkin", "BC", "BC2"}
+
+
+def diagnostic_tags(data):
+    """The GeoSkin/BC/BC2 tags stored in a weapon skin package (empty if it doesn't parse)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_camos import iter_tags
+    from ue_package import UPackage
+    try:
+        up = UPackage(data)
+        return {name for name, *_ in iter_tags(up, up.exports[0]["data"])} & DIAGNOSTIC_TAGS
+    except Exception:
+        return set()
 
 
 def test_content(src):
@@ -48,6 +71,11 @@ def test_content(src):
             hit = next((t for t in TEST_TEXT if t in data), None)
             if hit:
                 found.append((rel, "mentions %r" % hit.replace(b"\0", b"").decode("ascii")))
+            elif ("/Cosmetics/WeaponSkins/" in rel and "_XP_" in name and "_XP_VFX_" not in name
+                  and rel.endswith(".uasset")):
+                tags = diagnostic_tags(data)
+                if tags:
+                    found.append((rel, "camo skin with diagnostic tags %s" % ", ".join(sorted(tags))))
     return sorted(found)
 
 

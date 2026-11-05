@@ -87,7 +87,7 @@ def check_unique_tids(catalog):
 # The generators' catalog sections, in the order catalog.json keeps them
 # (after the stock items), so the file comes out the same whichever order the
 # generators ran in: a clean build leaves the committed catalog unchanged.
-SOURCE_ORDER = ("xp-calling-cards", "xp-camos", "xp-ranked", "xp-eye-skins")
+SOURCE_ORDER = ("xp-calling-cards", "xp-camos", "xp-vfx-camos", "xp-ranked", "xp-eye-skins")
 
 
 def write_catalog(path, catalog):

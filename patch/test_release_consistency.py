@@ -7,9 +7,10 @@ doesn't list. This checks, on what is on disk now:
 
 - catalog.json: every item ID once; nothing from the test/diagnostic content
   (XPTest, XPAnim, Camo_XP_Anim_, TEST BUILD);
-- patch/registry: exactly the record sets camos, eye_skins, calling_cards
-  and ranked, each listing exactly the catalog items of its source
-  (xp-camos, xp-eye-skins, xp-calling-cards, xp-ranked), and every record
+- patch/registry: exactly the record sets camos, vfx_camos, eye_skins,
+  calling_cards and ranked, each listing exactly the catalog items of its
+  source (xp-camos, xp-vfx-camos, xp-eye-skins, xp-calling-cards,
+  xp-ranked), and every record
   in the built src/Victory/AssetRegistry.bin (with the stock paks: its count
   is the stock count plus the records);
 - every catalog item's asset exists: a sourced item in patch/src, a stock one
@@ -40,7 +41,8 @@ SRC = os.path.join(HERE, "src")
 REGISTRY = os.path.join(HERE, "registry")
 CATALOG = os.path.join(HERE, "..", "server", "data", "catalog.json")
 # patch/registry/<name>.bin -> the catalog source whose items it lists
-RECORD_SETS = {"camos": "xp-camos", "eye_skins": "xp-eye-skins", "calling_cards": "xp-calling-cards", "ranked": "xp-ranked"}
+RECORD_SETS = {"camos": "xp-camos", "vfx_camos": "xp-vfx-camos", "eye_skins": "xp-eye-skins",
+               "calling_cards": "xp-calling-cards", "ranked": "xp-ranked"}
 TEST_WORDS = ("XPTest", "XPAnim", "Camo_XP_Anim_", "TEST BUILD")
 UI = "Victory/Content/uiresources"
 FRONTEND = UI + "/FrontEnd/FrontEnd.html"
