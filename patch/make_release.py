@@ -49,6 +49,9 @@ FULL_EXCLUDE = {
     "Victory/Binaries/Win64/Func.Client.Online.dll",
     "Victory/Content/Paks/" + PAK,
     "InstallScript.vdf",
+    # The progress-bar loading movie from make_loading_bar.py, tried and
+    # reverted: no config or asset plays it (docs/LOADING_TIME_OPTIMIZATION_REPORT.md).
+    "Victory/Content/Movies/LoadingBar.mp4",
 }
 GAME_EXE = "Victory/Binaries/Win64/Victory.exe"
 SETTINGS_README = (
@@ -103,6 +106,11 @@ def main(base, version, out=None, game=None, setup=True):
                                os.path.join(HERE, "src"), os.path.join(paks, PAK)])
     finally:
         make_server_config.main(LOCAL)
+    # Test content that must not reach players (pak_report.py): said loudly,
+    # the release still builds (rebuild patch/src without make_camo_tests.py).
+    import pak_report
+    for name, why in pak_report.diagnostics(pak_report.inventory(os.path.join(paks, PAK))):
+        print("WARNING: diagnostic content in the pak: %s (%s)" % (name, why))
     servers = [{"id": "xplab", "name": "The Culling Remaster", "region": "USA",
                 "api": base + "/api", "status": base + "/health"}]
     with open(os.path.join(out, "servers.json"), "w") as f:

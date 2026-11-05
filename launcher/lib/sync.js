@@ -186,8 +186,11 @@ async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 150
   let ok = false;
   for (let i = 0; i < 2 && !ok; i++) {
     if (i) await sleep(retryMs);
-    body = await get(url);
-    const sig = Buffer.from((await get(new URL(url.href + ".sig"))).toString("utf8").trim(), "base64");
+    // The manifest and its signature at once: one round trip to the server
+    // instead of two at every start (measured: docs/LOADING_TIME_OPTIMIZATION_REPORT.md).
+    const [b, s] = await Promise.all([get(url), get(new URL(url.href + ".sig"))]);
+    body = b;
+    const sig = Buffer.from(s.toString("utf8").trim(), "base64");
     try { ok = crypto.verify(null, body, publicKey, sig); } catch { ok = false; }
   }
   if (!ok) throw new SyncError("the release's signature doesn't match: refusing it", "signature");
