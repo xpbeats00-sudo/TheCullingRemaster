@@ -59,6 +59,51 @@ function RefreshScoreboardWithData(Data)
 	scoreData.teams = Data;
 	scoreData.bShowScoreboard = true;
 	EndOfMatchScreen.RebindEOMScoreboard();
+	setTimeout(RemasterFitScoreboard, 0);
+}
+
+// The end-of-match scoreboard was made for 16 contestants; the Remaster has
+// up to 24, and stock cuts the rows that don't fit (overflow hidden). The
+// rows' list fills the scoreboard box and scrolls, and when the rows are
+// taller than the box their text is scaled down to fit (to no less than 85%,
+// so it stays readable; the rest scrolls), measured from the box's real size.
+// Done whenever the tab is shown.
+var remasterBoardStyle = null;
+function RemasterFitScoreboard()
+{
+	var list = document.getElementById("scoreboard-players-container");
+	var tab = document.getElementById("EOMScoreboard-container");
+	if(!list || !tab) return;
+	if(!remasterBoardStyle){
+		var css = document.createElement("style");
+		css.textContent =
+			"#EOMScoreboard-container .container-scoreboard { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }" +
+			"#EOMScoreboard-container .scoreboard-header { flex: 0 0 auto; }" +
+			"#EOMScoreboard-container #scoreboard-players-container { flex: 1 1 auto; min-height: 0; overflow-y: auto; }";
+		document.head.appendChild(css);
+		remasterBoardStyle = document.createElement("style");
+		document.head.appendChild(remasterBoardStyle);
+	}
+	remasterBoardStyle.textContent = "";
+	if(tab.classList.contains("hidden") || !list.clientHeight) return;		// measured when shown
+	var need = list.scrollHeight, have = list.clientHeight;
+	if(need <= have) return;
+	var base = window.innerWidth * 0.011;		// stock row text: 1.1vw
+	var size = Math.max(base * 0.85, base * have / need);
+	remasterBoardStyle.textContent = "#scoreboard-players-container .scoreboard-players { font-size: " + size.toFixed(1) + "px; }";
+	// Rows don't shrink exactly with their text (icons, padding): once more.
+	need = list.scrollHeight;
+	if(need > have) size = Math.max(base * 0.85, size * have / need);
+	remasterBoardStyle.textContent = "#scoreboard-players-container .scoreboard-players { font-size: " + size.toFixed(1) + "px; }";
+}
+window.addEventListener("resize", function(){ setTimeout(RemasterFitScoreboard, 0); });
+if(typeof BaseMenuScreen != "undefined"){
+	var remasterSetTabFocus = BaseMenuScreen.prototype.SetTabFocus;
+	BaseMenuScreen.prototype.SetTabFocus = function(id){
+		var r = remasterSetTabFocus.apply(this, arguments);
+		if(id == "EOMScoreboard") setTimeout(RemasterFitScoreboard, 0);
+		return r;
+	};
 }
 
 //////////////////////////////
@@ -541,6 +586,7 @@ function OnStartPlaying()
 	document.getElementById('spectator-player-element').classList.add("hidden");
 	SetUsableVisible(true);
 	SetCrosshair(weaponCrosshairStyle);
+	RemasterFitGameMessages();
 	/*engine.call("GetActivityRating").then(function(result){
 		matchData.currRating = result;*/
 //		engine.call("RequestSpawnSync");
@@ -1951,6 +1997,7 @@ function OnUIBoundDeferred()
 								document.getElementById("hud-bottom-left-container").classList.remove("hidden");
 								document.getElementById("hud-bottom-right-container").classList.remove("hidden");
 								document.body.classList.remove("hidden");
+								RemasterFitGameMessages();
 								//console.log(WeaponSlots[0].getAttribute("data-slot-item"));
 								WeaponSlots[0].ShowTooltip(WeaponSlots[0].getAttribute("data-slot-item"));
 							});
@@ -2277,13 +2324,16 @@ function SetTeamMemberStatus(health, maxHealth, stam, maxStam)
 
 // Duo: the teammate's panel sits bottom left, in the empty space right of
 // your movement icon: from your armor bar's right edge, ending just above
-// its top (your armor and health stay visible). Placed from the elements'
-// real positions, so it fits any screen.
+// your armor and buff row (your armor, buffs and health stay visible).
+// Placed from the elements' real positions, so it fits any screen.
+// (The page has two #armor-icon-container: the spectator panel's comes first
+// and is hidden while you play, so the row is found inside the bottom left.)
 var remasterPartyStyled = false, remasterPartyPlaced = false;
 function RemasterPlacePartyBar()
 {
 	var box = document.getElementById("party-member-container");
-	var armor = document.getElementById("armor-icon-container");
+	var row = document.querySelector("#hud-bottom-left-container .buff-armor");
+	var armor = row && row.querySelector(".armor-icon-container");
 	if(!box || !armor) return;
 	if(!remasterPartyStyled){
 		remasterPartyStyled = true;
@@ -2292,18 +2342,41 @@ function RemasterPlacePartyBar()
 			"#party-member-container { top: auto; width: 15vw; height: auto; }" +
 			"#party-member-container .party-health-meter { height: 1.9vw; margin-bottom: 0.2vw; }" +
 			"#party-member-container .party-health-bar { height: 1.9vw; }" +
-			"#party-member-container .party-member-name { font-size: 1.15vw; height: 1.5vw; margin-top: 0.25vw; }" +
+			"#party-member-container .party-member-name { font-size: 1.15vw; height: 1.5vw; margin-top: 0.25vw; white-space: nowrap; }" +
 			"#party-member-container .party-stamina-meter-content { height: 0.6vw; }";
 		document.head.appendChild(css);
 	}
-	var a = armor.getBoundingClientRect();
+	var a = armor.getBoundingClientRect(), r = row.getBoundingClientRect();
 	if(!a.height || !a.width) return;		// the bottom left isn't shown yet: placed on a later update
+	// Right of the FUNC counter too: its box (where "+5 Structures" pops up)
+	// reaches down to the panel's height on most screens.
+	var func = document.getElementById("func");
+	var fr = func ? func.getBoundingClientRect() : null;
+	var left = (fr && fr.width) ? Math.max(a.right, fr.right) : a.right;
 	var gap = window.innerWidth * 0.004;
-	box.style.left = Math.round(a.right + gap * 2) + "px";
-	box.style.bottom = Math.round(window.innerHeight - a.top + gap) + "px";
+	box.style.left = Math.round(left + gap * 2) + "px";
+	box.style.bottom = Math.round(window.innerHeight - Math.min(a.top, r.top) + gap) + "px";
 	remasterPartyPlaced = true;
 }
 window.addEventListener("resize", function(){ remasterPartyPlaced = false; if(bHasPartyMember) RemasterPlacePartyBar(); });
+
+// The kill feed and game messages (centre column) end above the wound icons
+// at the bottom centre. Stock starts the column 7vw from the top and lets it
+// grow with its messages (its 75% height is of a box sized by its content),
+// so a few messages on a 21:9 screen run into the wound icons. It gets a
+// max-height of the space above them (newest messages are on top, so the
+// oldest are the ones cut).
+function RemasterFitGameMessages()
+{
+	var feed = document.getElementById("game-message-container");
+	var wounds = document.getElementById("player-wound-container");
+	if(!feed) return;
+	var f = feed.getBoundingClientRect();
+	var w = wounds ? wounds.getBoundingClientRect() : null;
+	var limit = (w && w.height) ? w.top : window.innerHeight * 0.9;
+	feed.style.maxHeight = Math.max(0, Math.floor(limit - f.top - window.innerWidth * 0.005)) + "px";
+}
+window.addEventListener("resize", RemasterFitGameMessages);
 
 function OnTeamMemberAdded(playername){
 	bHasPartyMember = true;
@@ -2935,6 +3008,9 @@ engine.on("OnViewResized", function(){
   document.body.style.display = "none";
   setTimeout(function(){
     document.body.style.display = "";
+    RemasterFitGameMessages();
+    remasterPartyPlaced = false;
+    if(bHasPartyMember) RemasterPlacePartyBar();
   },10);
 });
 

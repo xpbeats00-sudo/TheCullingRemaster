@@ -39,7 +39,7 @@
   var CSS = [
     "#sd-hud { position: absolute; right: 2vw; top: 6.5vh; width: 23vw; z-index: 30; font-family: Sucrose-Regular, Arial, sans-serif; color: #ececec; opacity: 0; transform: translateX(2vw); transition: opacity 0.35s ease, transform 0.35s ease; pointer-events: none; }",
     "#sd-hud.on { opacity: 1; transform: none; }",
-    "#sd-hud .sd-panel { background: linear-gradient(180deg, rgba(14, 10, 12, 0.9), rgba(8, 6, 8, 0.82)); border-right: 0.3vw solid #cc0000; border-radius: 1.2vh 0 0 1.2vh; padding: 1.2vh 1vw 1vh; box-shadow: 0 0.8vh 2.4vh rgba(0, 0, 0, 0.55); }",
+    "#sd-hud .sd-panel { -webkit-transform-origin: 100% 0; transform-origin: 100% 0; background: linear-gradient(180deg, rgba(14, 10, 12, 0.9), rgba(8, 6, 8, 0.82)); border-right: 0.3vw solid #cc0000; border-radius: 1.2vh 0 0 1.2vh; padding: 1.2vh 1vw 1vh; box-shadow: 0 0.8vh 2.4vh rgba(0, 0, 0, 0.55); }",
     "#sd-hud .sd-head { display: flex; justify-content: space-between; align-items: baseline; }",
     "#sd-hud .sd-mode { font: 0.8vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.25vw; color: #ff463c; }",
     "#sd-hud .sd-round { font: 1.9vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.1vw; }",
@@ -47,14 +47,16 @@
     "#sd-hud .sd-kit { font-size: 0.8vw; opacity: 0.7; margin: 0.2vh 0 0.6vh; letter-spacing: 0.08vw; }",
     "#sd-hud .sd-sec { font: 0.7vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.22vw; opacity: 0.6; margin: 0.8vh 0 0.3vh; }",
     "#sd-hud .sd-item { display: flex; align-items: center; background: rgba(255, 255, 255, 0.05); border-radius: 0.8vh; padding: 0.35vh 0.5vw; margin-bottom: 0.35vh; border-left: 0.22vw solid #9aa0a6; }",
-    "#sd-hud .sd-item img { width: 4.6vw; height: 2.6vw; object-fit: contain; margin-right: 0.7vw; }",
+    // Coherent GT has no object-fit: the item art is a background, scaled to fit.
+    "#sd-hud .sd-item .sd-art { width: 4.6vw; height: 2.6vw; background-position: center; background-size: contain; background-repeat: no-repeat; margin-right: 0.7vw; flex-shrink: 0; }",
     "#sd-hud .sd-item .sd-name { font: 0.95vw Sucrose-Bold, Arial, sans-serif; }",
     "#sd-hud .sd-item .sd-desc { font-size: 0.72vw; opacity: 0.7; line-height: 1.2; }",
     "#sd-hud .sd-tag { display: inline-block; margin-left: 0.4vw; padding: 0 0.4vw; border-radius: 0.6vh; font: 0.6vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; vertical-align: middle; background: rgba(255, 255, 255, 0.12); }",
     "#sd-hud .sd-tag.auto { background: #e0a030; color: #111; }",
     "#sd-hud .sd-none { font: 0.68vw Sucrose-Regular, Arial, sans-serif; letter-spacing: 0.05vw; opacity: 0.7; margin-left: 0.6vw; }",
-    "#sd-hud .sd-carry { display: flex; gap: 0.35vw; margin-top: 0.4vh; }",
-    "#sd-hud .sd-slot { width: 2.2vw; height: 2.2vw; border-radius: 0.6vh; background: rgba(255, 255, 255, 0.07) center / 80% no-repeat; }",
+    // ...and no flex gap: the slots are spaced by their margins.
+    "#sd-hud .sd-carry { display: flex; margin-top: 0.4vh; }",
+    "#sd-hud .sd-slot { width: 2.2vw; height: 2.2vw; margin-right: 0.35vw; border-radius: 0.6vh; background: rgba(255, 255, 255, 0.07) center / 80% no-repeat; }",
     "#sd-hud .sd-help { font-size: 0.74vw; margin-top: 0.8vh; padding-top: 0.7vh; border-top: 1px solid rgba(255, 255, 255, 0.1); }",
     "#sd-hud .sd-help b { color: #ff463c; }",
     "#sd-black { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 29; background: #000; opacity: 0; transition: opacity 0.7s ease; pointer-events: none; }",
@@ -99,9 +101,9 @@
   function itemRow(item) {
     var row = el("div", "sd-item");
     row.style.borderLeftColor = color(item);
-    var img = el("img");
-    img.src = "../images/weapons/" + item.icon + ".png";
-    row.appendChild(img);
+    var art = el("div", "sd-art");
+    art.style.backgroundImage = "url('../images/weapons/" + item.icon + ".png')";
+    row.appendChild(art);
     var text = el("div");
     var name = el("div", "sd-name", item.name + (item.tier ? "  · T" + item.tier : ""));
     var tag = el("span", "sd-tag" + (item.autoEquip ? " auto" : ""), item.autoEquip ? "ON" : "IN INVENTORY");
@@ -167,10 +169,30 @@
     p.appendChild(help);
     panel.appendChild(p);
     panel._carry = carry;
+    fit();
     setTimeout(function () { panel.className = "on"; }, 30);
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(hide, PANEL_SECONDS * 1000);
   }
+
+  // The panel is sized in vw (it reads the same on every width), so on wide
+  // or short screens a big kit would run down into the weapon slots: it is
+  // scaled down to end above them, measured from where they really are.
+  function fit() {
+    var p = panel && panel.firstChild;
+    if (!p || !p.getBoundingClientRect) return;
+    p.style.webkitTransform = p.style.transform = "";
+    var r = p.getBoundingClientRect();
+    var slot = document.getElementById("weapon-slot-0");
+    var s = slot && slot.getBoundingClientRect ? slot.getBoundingClientRect() : null;
+    var limit = (s && s.height) ? s.top : window.innerHeight * 0.97;
+    var room = limit - r.top - window.innerHeight * 0.015;
+    if (r.height > room && room > 0) {
+      var k = "scale(" + (room / r.height).toFixed(3) + ")";
+      p.style.webkitTransform = p.style.transform = k;
+    }
+  }
+  if (window.addEventListener) window.addEventListener("resize", fit);
 
   function hide() {
     if (panel) panel.className = "";

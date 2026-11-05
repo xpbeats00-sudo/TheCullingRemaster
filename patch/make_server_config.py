@@ -23,6 +23,17 @@ HUD_SCRIPT = '<script src="js/hud.js"></script>'
 SHOWDOWN_HUD = '<script src="js/ShowdownHud.js"></script>'
 
 
+def add_tags(folder, html):
+    """The page with the server script first (and, for the HUD, ShowdownHud.js)."""
+    if TAG not in html:
+        head = html.index("<head>") + len("<head>")
+        html = html[:head] + "\n  " + TAG + html[head:]
+    if folder == "hud" and SHOWDOWN_HUD not in html:
+        assert html.count(HUD_SCRIPT) == 1, HUD_SCRIPT
+        html = html.replace(HUD_SCRIPT, HUD_SCRIPT + "\n  " + SHOWDOWN_HUD)
+    return html
+
+
 def main(base):
     base = base.rstrip("/")
     if not base.startswith(("https://", "http://127.0.0.1", "http://localhost")):
@@ -33,17 +44,9 @@ def main(base):
             f.write('var REMASTER_API = "%s/api";\n' % base)
         html_path = os.path.join(UI, folder, page)
         html = open(html_path, "rb").read().decode("utf-8")
-        changed = False
-        if TAG not in html:
-            head = html.index("<head>") + len("<head>")
-            html = html[:head] + "\n  " + TAG + html[head:]
-            changed = True
-        if folder == "hud" and SHOWDOWN_HUD not in html:
-            assert html.count(HUD_SCRIPT) == 1, HUD_SCRIPT
-            html = html.replace(HUD_SCRIPT, HUD_SCRIPT + "\n  " + SHOWDOWN_HUD)
-            changed = True
-        if changed:
-            open(html_path, "wb").write(html.encode("utf-8"))
+        tagged = add_tags(folder, html)
+        if tagged != html:
+            open(html_path, "wb").write(tagged.encode("utf-8"))
     print("menus and HUD now use", base + "/api")
 
 
