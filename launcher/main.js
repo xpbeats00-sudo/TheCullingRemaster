@@ -20,6 +20,7 @@ const selfupdate = require("./lib/selfupdate");
 const discord = require("./lib/discord");
 const build = require("./lib/build");
 const status = require("./lib/status");
+const { createReconnect } = require("./lib/reconnect");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
 
@@ -122,8 +123,25 @@ async function latestManifest() {
   }
   manifest = m;
   bootResult = { online: true, error: null };
+  reconnect.cancel();
   return m;
 }
+
+// Offline at start-up: the release is fetched again with growing waits, and
+// when the player presses Retry; once it arrives the window shows it.
+const reconnect = createReconnect(async () => {
+  if (busy) return false;
+  try {
+    await latestManifest();
+  } catch (e) {
+    bootResult = { online: false, error: friendly(e, errorContext()) };
+    log("reconnect", { error: e.message });
+    return false;
+  }
+  try { await refreshPlan(); } catch (e) { log("plan", { code: e.code, error: e.message }); bootResult.error = friendly(e, errorContext()); }
+  log("reconnect", { online: true, release: manifest.version });
+  return true;
+}, { onOnline: () => send("state-changed") });
 
 // The start-up checks. They always finish the start-up screen, an error
 // included (a settings file that can't be written, a game folder that
@@ -176,6 +194,7 @@ async function bootChecks() {
   // PLAY shows it running instead of starting a second copy.
   game.isRunning().then((up) => { if (up && !gameWatch.running) watchGame({ alreadyRunning: true }); }, () => {});
   log("boot", { online: bootResult.online, release: manifest && manifest.version, installed: sync.installedVersion(settings.gamePath), todo: todo ? todo.length : null });
+  if (!bootResult.online) reconnect.start();
   return status.bootLabel({ online: bootResult.online, check: checkGame(), todo, installed: sync.installedVersion(settings.gamePath), release: manifest && manifest.version });
 }
 
@@ -464,6 +483,12 @@ function registerIpc() {
   });
 
   handle("ping-servers", async () => Promise.all(state().servers.map(ping)));
+
+  // Retry next to "Offline": fetch the release now.
+  handle("retry-connection", async () => {
+    const reconnected = await reconnect.now();
+    return Object.assign(state(), { reconnected });
+  });
 
   handle("play", async () => {
     const check = checkGame();

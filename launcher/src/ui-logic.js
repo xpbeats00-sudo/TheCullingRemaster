@@ -73,6 +73,11 @@
     return v("Game Up to Date", version);
   }
 
+  // Retry sits next to "Offline" (any offline state) while nothing runs.
+  const showRetry = (state, syncing) => !state.online && !syncing;
+  // Server ping and player count are refreshed this often.
+  const PING_EVERY_MS = 45000;
+
   // The PLAY button: { label, look ("working", "secondary" or ""), disabled }.
   // f: syncing, pausing, resume (a paused download to continue),
   // notInstalled, accountNeeded.
@@ -90,5 +95,5 @@
     return v("Play");
   }
 
-  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView };
+  return { downloadVerb, launcherUpdateView, keepOp, hostOf, selectedServer, statusView, playView, showRetry, PING_EVERY_MS };
 });

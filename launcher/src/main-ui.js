@@ -183,6 +183,22 @@
     box.className = "status-game" + (v.look ? " " + v.look : "");
     $("#status-title").textContent = v.title;
     $("#status-sub").textContent = v.sub;
+    $("#retry-online").hidden = !UiLogic.showRetry(state, syncing);
+  }
+
+  // Retry next to "Offline": the launcher also keeps trying by itself.
+  async function retryOnline() {
+    const btn = $("#retry-online");
+    btn.disabled = true;
+    try {
+      const r = await call(api.retryConnection);
+      state = r;
+      toast(r.reconnected ? "Back online." : "Still can't reach xplab.shop. The launcher keeps trying by itself.", r.reconnected ? "info" : undefined);
+      if (r.reconnected) refreshPings().catch(() => {});
+    } catch { /* toast shown */ } finally {
+      btn.disabled = false;
+      render();
+    }
   }
 
   // A paused or interrupted download: what is already on disk, of how much.
@@ -579,7 +595,8 @@
     $("#account-form").addEventListener("submit", submitAccount);
     $("#acc-cancel").addEventListener("click", closeAccount);
     $("#account-modal").addEventListener("keydown", (e) => { if (e.key === "Escape") closeAccount(); });
-    $("#refresh-servers").addEventListener("click", refreshPings);
+    $("#refresh-servers").addEventListener("click", () => refreshPings().catch(() => {}));
+    $("#retry-online").addEventListener("click", retryOnline);
     $("#region-select").addEventListener("change", (e) => chooseServer(e.target.value));
     $("#choose-folder").addEventListener("click", chooseFolder);
     $("#settings-folder").addEventListener("click", chooseFolder);
@@ -633,7 +650,9 @@
     // Without the intro, the start-up checks finish after this page shows.
     if (api.onStateChanged) api.onStateChanged(async () => {
       if (syncing) return;
+      const wasOnline = state && state.online;
       state = await api.state();
+      if (!wasOnline && state.online) refreshPings().catch(() => {});      // back online
       opLive = UiLogic.keepOp(opLive, state);
       render();
     });
@@ -643,7 +662,9 @@
     render();
     selectTab("servers");
     showSlide(0);
-    refreshPings();
+    refreshPings().catch(() => {});
+    // Ping and player count stay current while the launcher is open.
+    setInterval(() => { if (!document.hidden) refreshPings().catch(() => {}); }, UiLogic.PING_EVERY_MS);
   }
 
   // Browser preview (no Electron): a stand-in API with sample data.

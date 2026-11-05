@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "stamp": "node tools/stamp_build.js",
-    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js && node test/playername.test.js && node test/update.test.js && node test/errors.test.js && node test/account.test.js && node test/selfupdate.test.js && node test/discord.test.js && node test/ui.test.js && node test/status.test.js",
+    "test": "node test/sync.test.js && node test/config.test.js && node test/game.test.js && node test/playername.test.js && node test/update.test.js && node test/errors.test.js && node test/account.test.js && node test/selfupdate.test.js && node test/discord.test.js && node test/ui.test.js && node test/status.test.js && node test/reconnect.test.js",
     "manifest": "node tools/make_manifest.js",
     "dist": "npm run stamp && electron-builder --win nsis"
   },
