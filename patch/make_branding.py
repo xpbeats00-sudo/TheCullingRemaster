@@ -119,7 +119,68 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #play-menu .play-ranked-bg { background-image: url("../images/RankedPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
 .play-tiled-menu-options-container ul li.play-ranked-bg:focus,
 .play-tiled-menu-options-container ul li.play-ranked-bg:hover { background-image: url("../images/RankedPlay_sel.png") !important; }
+/* Ranked screen (RankedUI.js): mode tabs, the play tile on the left, one
+   season panel on the right. Duo, Trio and Quads show as coming. */
+#ranked-menu-options { position: absolute; left: 6vw; top: 26vh; width: 16vw; height: 21vw; }
+#ranked-menu-options ul { justify-content: flex-start; }
+#ranked-menu-options ul li { width: 16vw; height: 21vw; margin: 0; border-radius: 1.2vw; }
 #ranked-menu-options li.ranked-teams-bg { display: none; }
+#ranked-menu-options li.ranked-ffa-bg { background-image: url("../images/RankedPlay.png"); background-size: 100% 100%; }
+#ranked-menu-options li.ranked-ffa-bg:focus, #ranked-menu-options li.ranked-ffa-bg:hover {
+  background-image: url("../images/RankedPlay_sel.png"); }
+#ranked-menu-options li .play-title { border-radius: 0 0 1.2vw 1.2vw; }
+#ranked-menu-options li .play-title h1 { font: 1.9vw Creepster; letter-spacing: 0.15vw; white-space: nowrap; }
+#ranked-modes { position: absolute; left: 6vw; top: 19vh; display: flex; }
+#ranked-modes .rm-tab { display: flex; align-items: center; margin-right: 0.6vw; padding: 0.9vh 1.3vw; border-radius: 3vh;
+  font: 0.95vw Sucrose-Bold; letter-spacing: 0.12vw; text-transform: uppercase; color: rgba(235, 235, 235, 0.5);
+  background: rgba(12, 8, 10, 0.8); box-shadow: 0 0 0 0.1vw rgba(255, 255, 255, 0.12); }
+#ranked-modes .rm-tab.active { color: white; background: rgba(204, 0, 0, 1); box-shadow: none; }
+#ranked-modes .rm-tab small { margin-left: 0.5vw; font: 0.6vw Sucrose-Bold; letter-spacing: 0.08vw; opacity: 0.8; }
+#ranked-panel { position: absolute; left: 25vw; right: 6vw; top: 26vh; max-height: 63vh; display: flex; flex-direction: column;
+  padding: 2.4vh 1.8vw; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 0.9);
+  box-shadow: 0 0 0 0.12vw rgba(204, 0, 0, 0.6), 0 1vh 3vh rgba(0, 0, 0, 0.6); color: rgba(235, 235, 235, 1);
+  font-family: Sucrose-Regular; }
+#ranked-panel .rp-head { display: flex; align-items: center; flex: 0 0 auto; }
+#ranked-panel .rp-head > img { width: 6.5vw; height: 6.5vw; margin-right: 1.6vw; flex: 0 0 auto; }
+#ranked-panel .rp-main { flex: 1 1 auto; min-width: 0; }
+#ranked-panel .rp-season { font: 0.8vw Sucrose-Bold; letter-spacing: 0.14vw; color: rgba(255, 70, 60, 1); }
+#ranked-panel .rp-tier { font: 2.8vw Creepster; letter-spacing: 0.15vw; line-height: 1.1; color: rgba(240, 240, 240, 1); }
+#ranked-panel .rp-elo { font: 1.4vw Sucrose-Bold; }
+#ranked-panel .rp-elo small { margin-left: 0.8vw; font: 0.8vw Sucrose-Regular; opacity: 0.65; }
+#ranked-panel .rp-bar { width: 26vw; height: 0.7vh; margin-top: 0.8vh; border-radius: 0.4vh; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+#ranked-panel .rp-bar div { height: 100%; background: rgba(204, 0, 0, 1); }
+#ranked-panel .rp-chips { display: flex; flex: 0 0 auto; margin-left: 1.6vw; }
+#ranked-panel .rp-chip { min-width: 6.4vw; margin-left: 0.5vw; padding: 1.2vh 0.9vw; border-radius: 1.2vh; background: rgba(255, 255, 255, 0.06); }
+#ranked-panel .rp-chip b { display: block; font: 1.4vw Sucrose-Bold; white-space: nowrap; }
+#ranked-panel .rp-chip span { font-size: 0.65vw; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.6; white-space: nowrap; }
+#ranked-panel .rp-cols { display: flex; flex: 1 1 auto; min-height: 0; margin-top: 2.2vh; }
+#ranked-panel .rp-col { display: flex; flex-direction: column; min-width: 0; }
+#ranked-panel .rp-col.recent { flex: 0 0 17vw; margin-right: 2vw; }
+#ranked-panel .rp-col.ladder { flex: 1 1 auto; }
+#ranked-panel .rp-h { display: flex; justify-content: space-between; padding-bottom: 0.6vh; margin-bottom: 0.3vh;
+  font: 0.8vw Sucrose-Bold; letter-spacing: 0.14vw; text-transform: uppercase; color: rgba(255, 70, 60, 1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+#ranked-panel .rp-h span { color: rgba(235, 235, 235, 0.5); }
+#ranked-panel .rp-row { display: flex; align-items: center; height: 3.3vh; padding: 0 0.6vw; margin-top: 0.35vh;
+  border-radius: 0.9vh; background: rgba(255, 255, 255, 0.04); font-size: 0.85vw; }
+#ranked-panel .rp-row.th { height: 2.4vh; background: transparent; font-size: 0.62vw; letter-spacing: 0.1vw; text-transform: uppercase; opacity: 0.5; }
+#ranked-panel .rp-row span { flex: 1 1 0; }
+#ranked-panel .rp-row span.r { text-align: right; }
+#ranked-panel .rp-row .up { color: rgba(95, 224, 95, 1); }
+#ranked-panel .rp-row .down { color: rgba(255, 85, 75, 1); }
+#ranked-panel .rp-empty { padding: 1.4vh 0.6vw; font-size: 0.85vw; opacity: 0.6; }
+#ranked-panel .rp-tierrow { display: flex; align-items: center; height: 3.3vh; padding: 0 0.8vw 0 0.5vw; margin-top: 0.35vh;
+  border-radius: 0.9vh; background: rgba(255, 255, 255, 0.04); opacity: 0.45; font-size: 0.8vw; }
+#ranked-panel .rp-tierrow.reached { opacity: 1; }
+#ranked-panel .rp-tierrow.current { opacity: 1; background: rgba(204, 0, 0, 0.22); box-shadow: inset 0.25vw 0 0 rgba(204, 0, 0, 1); }
+#ranked-panel .rp-tierrow img { width: 2.6vh; height: 2.6vh; margin-right: 0.7vw; flex: 0 0 auto; }
+#ranked-panel .rp-tierrow .t-name { flex: 0 0 7.5vw; font: 0.85vw Sucrose-Bold; letter-spacing: 0.06vw; text-transform: uppercase; }
+#ranked-panel .rp-tierrow .t-min { flex: 0 0 4.5vw; opacity: 0.65; }
+#ranked-panel .rp-tierrow .t-reward { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.85; }
+#ranked-panel .rp-tierrow .t-tag { flex: 0 0 auto; margin-left: 0.6vw; padding: 0.2vh 0.55vw; border-radius: 2vh; font: 0.58vw Sucrose-Bold;
+  letter-spacing: 0.08vw; text-transform: uppercase; background: rgba(255, 255, 255, 0.14); }
+#ranked-panel .rp-tierrow.current .t-tag { background: rgba(204, 0, 0, 1); }
+#ranked-panel .rp-note { flex: 0 0 auto; margin-top: 1.2vh; font-size: 0.72vw; opacity: 0.55; }
 /* Player card: level, rank emblem, name. */
 #player-card .culling-card .card-rank-emblem { width: 2.6vw; height: 2.6vw; margin: 0 0.6vw 0 0; align-self: center;
   flex: 0 0 auto; pointer-events: all; }
@@ -141,27 +202,6 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #player-card .culling-cash .player-cash { height: 1.3vw; font-size: 1.3vw; line-height: 1.3vw; padding-top: 0; }
 .rb-bar { width: 8vw; height: 0.45vh; margin-top: 0.4vh; border-radius: 0.3vh; background: rgba(255, 255, 255, 0.18); overflow: hidden; }
 .rb-bar div { height: 100%; background: rgba(204, 0, 0, 1); }
-#ranked-panel { position: absolute; left: 6vw; right: 6vw; bottom: 9vh; padding: 1.6vh 1.6vw; border-radius: 1.4vh;
-  background: rgba(6, 6, 10, 0.78); color: white; font-family: Sucrose-Regular; }
-#ranked-panel .rp-head { display: flex; align-items: center; }
-#ranked-panel .rp-head img { width: 8vw; height: 8vw; margin-right: 1.4vw; }
-#ranked-panel .rp-season { font: 0.85vw Sucrose-Bold; opacity: 0.75; letter-spacing: 0.08vw; }
-#ranked-panel .rp-tier { font: 3vw Creepster; letter-spacing: 0.15vw; color: rgba(230, 230, 230, 1); }
-#ranked-panel .rp-elo { font: 1.4vw Sucrose-Bold; }
-#ranked-panel .rp-elo small { font: 0.85vw Sucrose-Regular; opacity: 0.7; margin-left: 0.6vw; }
-#ranked-panel .rb-bar { width: 22vw; height: 0.7vh; }
-#ranked-panel .rp-stats { font-size: 0.85vw; opacity: 0.75; margin-top: 0.6vh; }
-#ranked-panel .rp-cols { display: flex; margin-top: 1.2vh; }
-#ranked-panel .rp-cols > div { flex: 1; margin-right: 2vw; }
-#ranked-panel h3 { font: 0.95vw Sucrose-Bold; margin: 0 0 0.5vh 0; color: rgba(204, 0, 0, 1); }
-#ranked-panel ul { list-style: none; margin: 0; padding: 0; }
-#ranked-panel .rp-recent li { display: flex; justify-content: space-between; width: 14vw; font-size: 0.9vw; }
-#ranked-panel .rp-tiers { display: flex; flex-wrap: wrap; }
-#ranked-panel .rp-tiers li { display: flex; align-items: center; width: 33%; font-size: 0.75vw; opacity: 0.55; margin-bottom: 0.4vh; }
-#ranked-panel .rp-tiers li.reached { opacity: 1; }
-#ranked-panel .rp-tiers img { width: 1.8vw; height: 1.8vw; margin-right: 0.4vw; }
-#ranked-panel .rp-tiers em { font-style: normal; opacity: 0.7; margin-left: 0.4vw; }
-#ranked-panel .rp-note { font-size: 0.75vw; opacity: 0.6; margin: 1vh 0 0 0; }
 .menu-content > h1 {
   font: 4.6vw Creepster;
   letter-spacing: 0.25vw;
