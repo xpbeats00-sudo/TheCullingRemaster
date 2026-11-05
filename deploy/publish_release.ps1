@@ -15,6 +15,10 @@ VPS doesn't have yet cross it, each exactly once:
      (served as https://<domain>:8443/remaster/; objects never change, so they can be cached for good)
   6. checks the result as launchers see it, over HTTPS (deploy\check_published.js): signature, every object on
      disk, the changed files and the setup downloaded and hash-checked, the website's launcher.json and setup
+
+A release that drops files the live release has is refused (steps 2 and 3) unless -AllowRemovals is given:
+launchers delete every file a release no longer lists, so a release built from a wrong folder would uninstall the
+game everywhere. Check the "removed" list of step 2 before allowing it.
 #>
 [CmdletBinding()]
 param(
@@ -24,7 +28,9 @@ param(
     [string]$Root = 'C:\culling',
     [string]$Www = 'C:\ssr\www',
     [string]$Domain = 'xplab.shop',
-    [int]$PublicPort = 8443
+    [int]$PublicPort = 8443,
+    # Allow a release that removes files the live release has (see above).
+    [switch]$AllowRemovals
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -49,12 +55,15 @@ Step 'Signature'
 if ($LASTEXITCODE -ne 0) { throw 'the release is not signed by the launcher release key: not published' }
 $manifest = Get-Content $stagedManifest -Raw | ConvertFrom-Json
 
+$removals = @()
+if ($AllowRemovals) { $removals = @('--allow-removals') }
+
 Step 'What changes'
-& $node (Join-Path $PSScriptRoot 'stage_objects.js') --plan $Release $updates
-if ($LASTEXITCODE -ne 0) { throw 'comparing with the live release failed: nothing was published' }
+& $node (Join-Path $PSScriptRoot 'stage_objects.js') --plan @removals $Release $updates
+if ($LASTEXITCODE -ne 0) { throw 'the release was refused or comparing with the live release failed (above): nothing was published' }
 
 Step 'Upload (only what the VPS lacks; each file checked against its SHA-256)'
-& $node (Join-Path $PSScriptRoot 'stage_objects.js') $Release $updates
+& $node (Join-Path $PSScriptRoot 'stage_objects.js') @removals $Release $updates
 if ($LASTEXITCODE -ne 0) { throw 'staging the release objects failed: the published release is unchanged' }
 
 Step 'Website setup'

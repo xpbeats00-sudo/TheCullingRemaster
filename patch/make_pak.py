@@ -1,13 +1,21 @@
 """Build a zlib-compressed UE4 (pak v3) patch pak from a directory tree.
 
-usage: python make_pak.py <src_dir> <out.pak>
+usage: python make_pak.py <src_dir> <out.pak> [--allow-test-content]
 
 Every file under <src_dir> is stored at "../../../<relative path>", the same
 layout the game's own paks use, so src/Victory/Content/... overrides the
 matching file inside the base paks.
+
+Test and diagnostic content is refused before anything is written (unless
+--allow-test-content, for a local diagnostics build only): the animated-camo
+experiment's assets (<Mesh>_XPAnim*, Camo_XP_Anim_*, made by
+diagnostics/make_animated_camos.py), the Ice Axe test mesh (IceAxe_A_XPTest,
+diagnostics/make_camo_tests.py), any package that still references them, and
+anything saying "TEST BUILD". test_content() lists what it finds.
 """
 import hashlib
 import os
+import re
 import struct
 import sys
 import zlib
@@ -15,6 +23,32 @@ import zlib
 PAK_MAGIC = 0x5A6F12E1
 PAK_VERSION = 3
 MOUNT_POINT = "../../../"
+
+# A file whose path has one of these is test content ...
+TEST_NAMES = re.compile(r"XPAnim|XPTest|Camo_XP_Anim_", re.I)
+# ... and so is a file that mentions one (a skin pointing at an XPAnim mesh,
+# say), as ASCII or UTF-16. "_XPAnim" (not "XPAnim"): the stock EndOfMatch.js
+# logs "XPAnimate".
+TEST_TEXT = [b"_XPAnim", b"_XPTest", b"Camo_XP_Anim_", b"TEST BUILD"]
+TEST_TEXT += [t.decode("ascii").encode("utf-16le") for t in TEST_TEXT]
+
+
+def test_content(src):
+    """[(relative path, why)] for every test or diagnostic file under src."""
+    found = []
+    for root, _, names in os.walk(src):
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, src).replace(os.sep, "/")
+            if TEST_NAMES.search(rel):
+                found.append((rel, "test asset"))
+                continue
+            with open(full, "rb") as f:
+                data = f.read()
+            hit = next((t for t in TEST_TEXT if t in data), None)
+            if hit:
+                found.append((rel, "mentions %r" % hit.replace(b"\0", b"").decode("ascii")))
+    return sorted(found)
 
 
 def fstring(s):
@@ -42,7 +76,18 @@ def compress_blocks(raw):
     return [zlib.compress(raw[i:i + BLOCK_SIZE], 9) for i in range(0, max(len(raw), 1), BLOCK_SIZE)]
 
 
-def main(src, out):
+class TestContentError(Exception):
+    pass
+
+
+def main(src, out, allow_test_content=False):
+    if not allow_test_content:
+        found = test_content(src)
+        if found:
+            raise TestContentError("refusing to pack %d test/diagnostic file(s) from %s:\n%s\n(delete them, or rebuild "
+                                   "with the release generators: patch/build_release.py)"
+                                   % (len(found), src, "\n".join("  %s (%s)" % f for f in found[:30])
+                                      + ("\n  ..." if len(found) > 30 else "")))
     files = []
     for root, _, names in os.walk(src):
         for name in sorted(names):
@@ -70,10 +115,19 @@ def main(src, out):
 
     footer = struct.pack("<IiQQ", PAK_MAGIC, PAK_VERSION, len(body), len(index))
     footer += hashlib.sha1(index).digest()
-    with open(out, "wb") as f:
+    # A new file swapped in whole: an existing pak (or a hard link of one) is never written through.
+    tmp = out + ".new"
+    with open(tmp, "wb") as f:
         f.write(body + index + footer)
+    os.replace(tmp, out)
     print("wrote %s (%d files)" % (out, len(files)))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    args = [a for a in sys.argv[1:] if a != "--allow-test-content"]
+    if len(args) != 2:
+        sys.exit("usage: python make_pak.py <src_dir> <out.pak> [--allow-test-content]")
+    try:
+        main(args[0], args[1], "--allow-test-content" in sys.argv)
+    except TestContentError as e:
+        sys.exit("make_pak: %s" % e)

@@ -148,6 +148,15 @@ def write_transparent_texture(paks_dir):
 
 
 def write_config(paks_dir):
+    out = os.path.join(HERE, "src", CONFIG)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    open(out, "w", newline="").write(config_text(paks_dir))
+    print("config:", out)
+
+
+def config_text(paks_dir):
+    """The DefaultGame.ini the patch ships, from the stock one
+    (test_release_consistency.py compares the generated file with it)."""
     stock = None
     for e in pak_entries(os.path.join(paks_dir, "pakchunk0-WindowsClient.pak")):
         if e[1].endswith(CONFIG):
@@ -167,10 +176,7 @@ def write_config(paks_dir):
     # MaxAllowedTestingTime) were tried here but never tested in game and never
     # shipped: the generated config is the stock one with the changes above,
     # exactly what releases ship (test_release_consistency compares them).
-    out = os.path.join(HERE, "src", CONFIG)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    open(out, "w", newline="").write("".join(lines))
-    print("config:", out)
+    return "".join(lines)
 
 
 if __name__ == "__main__":

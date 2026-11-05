@@ -125,11 +125,25 @@
    (TeamNumber > 0 and equal), who keep "no instigator".
 
 The bytes are checked first, so it only patches the exe it was written for and
-is safe to run on an exe that already has it.
+is safe to run on an exe that already has it. The file is rewritten through a
+temporary file swapped in whole (os.replace): writing it in place would also
+rewrite every hard link of it (a release's files are hard links of the install).
+
+check(path) only reads: which fixes the exe has. verify(path) is what
+make_release.py asserts on the exe it ships: every fix (1-8), and exactly the
+bytes of the stock Steam exe (STOCK_SHA256) with these fixes (PATCHED_SHA256).
+PATCHED_SHA256 changes whenever a fix or the native module (showdown_rounds.c,
+showdown_rounds_blob.py) changes: recompute it with
+"python patch_exe.py --hash <stock Victory.exe>" (patches a temporary copy).
 
 usage: python patch_exe.py <Victory.exe> [max contestants, default 24]
+       python patch_exe.py --check <Victory.exe>
+       python patch_exe.py --hash <stock Victory.exe>
 """
+import hashlib
 import os
+import shutil
+import tempfile
 import struct
 import sys
 
@@ -182,6 +196,12 @@ SCORE_STUB = bytes.fromhex(
     "004889d84869c0b000000049038424980400004889c2e833f41d00ffc3eb9d41"
     "c684248c050000004883c4285be9d98c1e00")
 SCORE_PAD = b"\xcc" * len(SCORE_STUB)
+
+# The Steam build of Victory.exe this patch is for, and the same exe with every
+# fix (1-8, the native module as showdown_rounds_blob.py has it) at the default
+# 24 contestants: what a release ships.
+STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
+PATCHED_SHA256 = "28f3d1ccf645fc780cd5fe1a1090b04bd8af1a443d59cadfd70dc03b157148d2"
 
 
 def _cap(data, path, contestants):
@@ -357,11 +377,91 @@ def _rounds(data, path):
     return True
 
 
+def _module(data):
+    """(rounds, chokening) without changing data: the .sdround section holds
+    this build's module (fixes 5 and 7 live in it) and vtable slot 282,
+    RandomIntegerInRange and the spawn-with call lead to it; and fix 8's
+    rating and gas calls lead to it too. A file that isn't a PE (a test
+    stand-in) has neither."""
+    try:
+        pe, nsec_at, size_at, table = _pe(data, "")
+    except ValueError:
+        return False, False
+    header, raw, slot, lea, image_size, call = rounds_layout()
+    at = table + 40 * STOCK_NUM_SECTIONS
+    if (struct.unpack_from("<H", data, nsec_at)[0] != STOCK_NUM_SECTIONS + 1 or bytes(data[at:at + 40]) != header
+            or bytes(data[STOCK_FILE_SIZE:]) != raw or struct.unpack_from("<I", data, size_at)[0] != image_size):
+        return False, False
+    rounds = (struct.unpack_from("<Q", data, FFA_SLOT_AT)[0] == slot
+              and bytes(data[RAND_LEA_AT:RAND_LEA_AT + len(lea)]) == lea
+              and bytes(data[SPAWN_WITH_CALL_AT:SPAWN_WITH_CALL_AT + len(call)]) == call)
+    chokening = all(bytes(data[c_at:c_at + 5]) == patched for _n, c_at, _s, patched in module_calls())
+    return rounds, chokening
+
+
+def _read(path):
+    with open(path, "rb") as f:
+        return bytearray(f.read())
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+# Every fix check() reports besides the cap (fix 1), with how verify() names a missing one.
+FIXES = (("sha1", "the SHA-1 crash fix (2)"),
+         ("slots", "the StartTraining URL slots (3)"),
+         ("duoteam", "the Duo team pairing (4)"),
+         ("rounds", "the Showdown rounds module (5)"),
+         ("scoreboard", "the big scoreboards (6)"),
+         ("duowin", "the Duo team win (7)"),
+         ("chokening", "the Chokening kill credit (8)"))
+
+
+def check(path):
+    """Which fixes the exe has, without changing it: {"cap": contestants,
+    "sha1", "slots", "duoteam", "rounds", "scoreboard", "duowin", "chokening":
+    bool}. "duowin" (fix 7) is code in the native module behind slot 282, so
+    it is there exactly when the current module is. Raises ValueError for an
+    exe this patch isn't for."""
+    data = _read(path)
+    _cap(bytearray(data), path, MAX)                    # raises for another exe
+    rounds, chokening = _module(data)
+    return {"cap": data[CAP_AT + 1],
+            "sha1": not _sha1(bytearray(data), path),     # nothing to change = already fixed
+            "slots": not _slots(bytearray(data), path),
+            "duoteam": not _duoteam(bytearray(data), path),
+            "rounds": rounds,
+            "scoreboard": not _duoscore(bytearray(data), path),
+            "duowin": rounds,
+            "chokening": chokening}
+
+
+def verify(path, contestants=MAX):
+    """Raises ValueError unless the exe has every fix 1-8 (cap = contestants)
+    and, at the default cap, is byte for byte the patched Steam exe."""
+    fixes = check(path)
+    missing = [] if fixes["cap"] == contestants else ["contestant cap %d (has %d) (1)" % (contestants, fixes["cap"])]
+    missing += [name for key, name in FIXES if not fixes[key]]
+    if missing:
+        raise ValueError("%s lacks %s" % (path, ", ".join(missing)))
+    if contestants == MAX:
+        digest = sha256(path)
+        if digest != PATCHED_SHA256:
+            raise ValueError("%s has the fixes but isn't the patched Steam exe (SHA-256 %s, expected %s)"
+                             % (path, digest, PATCHED_SHA256))
+    return fixes
+
+
 def patch(path, contestants=MAX, rounds=True):
     """Apply every fix; returns True when the file changed."""
     if not STOCK <= contestants <= 64:
         raise ValueError("contestants must be 16-64")
-    data = bytearray(open(path, "rb").read())
+    data = _read(path)
     changed = _cap(data, path, contestants)
     changed = _sha1(data, path) or changed
     changed = _slots(data, path) or changed
@@ -370,12 +470,48 @@ def patch(path, contestants=MAX, rounds=True):
     if rounds:
         changed = _rounds(data, path) or changed
     if changed:
-        with open(path, "wb") as f:
+        # A new file swapped in whole: the old file (and any hard link of it) is never written.
+        tmp = path + ".patching"
+        with open(tmp, "wb") as f:
             f.write(data)
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            os.remove(tmp)
+            raise
     return changed
 
 
+def patched_sha256(stock_exe):
+    """The SHA-256 of stock_exe with every fix at the default cap, patched in
+    a temporary copy (stock_exe is only read). What PATCHED_SHA256 must be."""
+    if sha256(stock_exe) != STOCK_SHA256:
+        raise ValueError("%s is not the stock Steam Victory.exe (STOCK_SHA256)" % stock_exe)
+    tmp = tempfile.mkdtemp()
+    try:
+        copy = os.path.join(tmp, "Victory.exe")
+        shutil.copyfile(stock_exe, copy)
+        patch(copy)
+        fixes = check(copy)
+        if fixes["cap"] != MAX or not all(fixes[key] for key, _ in FIXES):
+            raise ValueError("patching %s left fixes out: %s" % (stock_exe, fixes))
+        return sha256(copy)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--hash"]:
+        print(patched_sha256(sys.argv[2]))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--check"]:
+        fixes = check(sys.argv[2])
+        digest = sha256(sys.argv[2])
+        kind = {STOCK_SHA256: "the stock Steam exe",
+                PATCHED_SHA256: "the patched Steam exe (what a release ships)"}.get(digest, "not a known build")
+        print("%s: cap %d, %s; SHA-256 %s (%s)"
+              % (sys.argv[2], fixes["cap"], ", ".join("%s %s" % (key, fixes[key]) for key, _ in FIXES), digest, kind))
+        sys.exit(0 if fixes["cap"] == MAX and all(fixes[key] for key, _ in FIXES) else 1)
     n = int(sys.argv[2]) if len(sys.argv) > 2 else MAX
     changed = patch(sys.argv[1], n)
     print("%s: up to %d players plus bots, SHA-1 crash fix, match URLs, team pairing, Showdown rounds, "

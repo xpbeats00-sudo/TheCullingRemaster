@@ -13,23 +13,9 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import patch_exe  # noqa: E402
 import showdown_rounds_blob as ROUNDS  # noqa: E402
+from exe_stand_ins import full_stand_in, rounds_stand_in, stand_in  # noqa: E402
 
 P = patch_exe
-
-
-def stand_in(path):
-    data = bytearray(max(P.CAP_AT + 16, P.SCORE_JG_AT + len(P.SCORE_JG), P.SCORE_STUB_AT + len(P.SCORE_STUB)))
-    data[P.CAP_AT:P.CAP_AT + 5] = bytes.fromhex("b810000000")
-    data[P.SHA_GATE_AT:P.SHA_GATE_AT + 7] = P.SHA_GATE
-    data[P.SHA_GATE_AT + 7:P.SHA_GATE_AT + 13] = P.SHA_JUMP
-    data[P.TRAIN_JUMP_AT:P.TRAIN_JUMP_AT + 2] = P.TRAIN_JUMP
-    data[P.TRAIN_CALL_AT:P.TRAIN_CALL_AT + len(P.TRAIN_CALL)] = P.TRAIN_CALL
-    data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
-    data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] = P.DUO_HOOK
-    data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
-    data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] = P.SCORE_JG
-    data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] = P.SCORE_PAD
-    open(path, "wb").write(data)
 
 
 def check(path, rounds=False):
@@ -142,28 +128,6 @@ def blob_checks():
     return len(blob)
 
 
-def rounds_stand_in(path):
-    """A file with the real exe's layout where the rounds patch looks."""
-    data = bytearray(P.STOCK_FILE_SIZE)
-    pe = 0x110
-    data[0:2] = b"MZ"
-    struct.pack_into("<I", data, 0x3C, pe)
-    data[pe:pe + 4] = b"PE\0\0"
-    struct.pack_into("<HH", data, pe + 4, 0x8664, P.STOCK_NUM_SECTIONS)
-    struct.pack_into("<H", data, pe + 20, 0xF0)
-    struct.pack_into("<I", data, pe + 24 + 56, P.STOCK_IMAGE_SIZE)
-    struct.pack_into("<I", data, pe + 24 + 60, 0x600)
-    table = pe + 24 + 0xF0
-    for i in range(P.STOCK_NUM_SECTIONS):
-        data[table + 40 * i:table + 40 * i + 8] = (".s%d" % i).encode().ljust(8, b"\0")
-    struct.pack_into("<Q", data, P.FFA_SLOT_AT, P.FFA_SLOT)
-    data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] = P.RAND_LEA
-    data[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
-    for _n, at, _va, stock_call, _e in P.MODULE_CALLS:
-        data[at:at + 5] = stock_call
-    open(path, "wb").write(data)
-
-
 def check_rounds_alone(path):
     stock = open(path, "rb").read()
     data = bytearray(stock)
@@ -265,14 +229,70 @@ try:
     print("ok    native module: new section; vtable slot 282, RandomIntegerInRange, the spawn-with, rating and gas "
           "calls lead to the module; idempotent, replaces an older module, refuses other exes")
 
+    # check() reads only; verify() wants every fix 1-8 and the patched Steam exe's bytes.
+    fresh = os.path.join(tmp, "Fresh.exe")
+    stand_in(fresh)
+    before = open(fresh, "rb").read()
+    none = {"cap": 16, "sha1": False, "slots": False, "duoteam": False, "rounds": False, "scoreboard": False,
+            "duowin": False, "chokening": False}
+    assert P.check(fresh) == none, P.check(fresh)
+    assert open(fresh, "rb").read() == before, "check() changed the file"
+    try:
+        P.verify(fresh)
+        raise AssertionError("an unpatched exe verified")
+    except ValueError as e:
+        for want in ("contestant cap 24 (has 16)", "SHA-1", "StartTraining", "Duo team pairing", "Showdown rounds",
+                     "big scoreboards", "Duo team win", "Chokening"):
+            assert want in str(e), (want, e)
+    # Fixes 1-4 and 6 without the native module (5, 7, 8): not a release exe.
+    assert P.check(exe) == dict(none, cap=24, sha1=True, slots=True, duoteam=True, scoreboard=True), P.check(exe)
+    try:
+        P.verify(exe)
+        raise AssertionError("an exe without the native module verified")
+    except ValueError as e:
+        assert "Showdown rounds" in str(e) and "Duo team win" in str(e) and "Chokening" in str(e), e
+        assert "SHA-1" not in str(e) and "scoreboards" not in str(e), e
+    full = os.path.join(tmp, "Full.exe")
+    full_stand_in(full)
+    assert P.check(full) == none
+    assert P.patch(full) is True
+    assert P.check(full) == {k: (24 if k == "cap" else True) for k in none}, P.check(full)
+    # Only the module's calls of fix 8 stock: everything else there, Chokening missing.
+    partial = bytearray(open(full, "rb").read())
+    for _n, at, _va, stock_call, _e in P.MODULE_CALLS:
+        partial[at:at + 5] = stock_call
+    open(fresh, "wb").write(partial)
+    assert P.check(fresh) == dict({k: (24 if k == "cap" else True) for k in none}, chokening=False)
+    try:
+        P.verify(full)
+        raise AssertionError("a stand-in verified as the Steam exe")
+    except ValueError as e:
+        assert "isn't the patched Steam exe" in str(e), e
+    os.remove(full)
+    print("ok    check() reports fixes 1-8 without writing; verify() wants all eight and the patched exe's SHA-256")
+
+    # Patching never writes through a hard link (a release's files are links of the install).
+    install = os.path.join(tmp, "Install.exe")
+    stand_in(install)
+    linked = os.path.join(tmp, "Linked.exe")
+    os.link(install, linked)
+    P.patch(linked, rounds=False)
+    assert open(install, "rb").read() == before, "patching a hard link changed the file it links to"
+    assert P.check(linked)["sha1"] and not os.path.exists(linked + ".patching")
+    print("ok    patching a hard-linked copy leaves the linked file alone (temp file + os.replace)")
+
     if len(sys.argv) > 1:
         real = os.path.join(tmp, "Real.exe")
         shutil.copyfile(sys.argv[1], real)
         if open(real, "rb").read()[P.SHA_GATE_AT + 7] == 0x90:
             print("skip  real exe already has the SHA-1 fix")
         else:
+            assert P.sha256(real) == P.STOCK_SHA256, "the real exe isn't the stock Steam build P.STOCK_SHA256 names"
             print("ok    real Victory.exe patched cleanly (%d bytes besides the rounds patch)" % check(real, rounds=True))
             real_checks(real)
+            P.verify(real)
+            print("ok    real Victory.exe: stock SHA-256 before, PATCHED_SHA256 after (%s), verify() passes"
+                  % P.PATCHED_SHA256[:16])
     print("all patch_exe tests passed")
 finally:
     shutil.rmtree(tmp)

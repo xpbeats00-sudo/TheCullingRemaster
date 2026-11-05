@@ -16,7 +16,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import make_camos  # noqa: E402
-from build_catalog import pak_entries  # noqa: E402
+from build_catalog import pak_entries, stock_paks  # noqa: E402
 from patch_assets import find_in_paks  # noqa: E402
 from ue_package import UPackage  # noqa: E402
 
@@ -37,15 +37,14 @@ def card_fields(data):
 
 def main(paks_dir):
     stock_cards, pngs = set(), {}
-    for pk in sorted(os.listdir(paks_dir)):
-        if pk.endswith(".pak") and not pk.startswith("LocalServer"):
-            for e in pak_entries(os.path.join(paks_dir, pk)):
-                n = e[1].replace("../../../", "")
-                if n.startswith(CARDS) and n.endswith(".uasset") and "/Source/" not in n:
-                    stock_cards.add(n)
-                if "/images/culling-cards/" in n and n.endswith(".png"):
-                    rel = n.split("/images/culling-cards/", 1)[1][:-4]
-                    pngs[os.path.basename(rel)] = rel
+    for pk in stock_paks(paks_dir):
+        for e in pak_entries(pk):
+            n = e[1].replace("../../../", "")
+            if n.startswith(CARDS) and n.endswith(".uasset") and "/Source/" not in n:
+                stock_cards.add(n)
+            if "/images/culling-cards/" in n and n.endswith(".png"):
+                rel = n.split("/images/culling-cards/", 1)[1][:-4]
+                pngs[os.path.basename(rel)] = rel
     for f in glob.glob(os.path.join(UI, "images", "culling-cards", "*.png")):
         name = os.path.basename(f)[:-4]
         pngs[name] = name

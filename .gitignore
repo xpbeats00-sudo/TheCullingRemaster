@@ -24,3 +24,6 @@ server/data/sessions.json*
 releases/
 
 server/data/activity.json*
+# Remote Desktop connection files and archives (credentials, game copies)
+*.rdp
+*.rar

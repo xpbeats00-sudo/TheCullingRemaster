@@ -82,7 +82,7 @@ Findings:
 | 4 | Low | The stock card screen dumps every card as JSON to the console on each refresh. | **Removed** in the patched `DynFlairItem.js` copy. |
 | 5 | Low | `/api/matchresult` and `/api/ranked` use the last logged-in user. That's correct for this single-player local server and wrong if several clients share one server. | Documented, not changed. |
 | 6 | Info | Match results (placement, kills, damage) are reported by the game client. There's no authoritative server for local bot matches. | Inherent. The ranked UI says "local test mode". |
-| 7 | Info | `server/server.before-shop.js` and `server.before-ranked.js` are kept backups. They're not loaded. | Kept (the git checkpoint now covers this). |
+| 7 | Info | `server/server.before-shop.js` and `server.before-ranked.js` were kept backups. They weren't loaded. | Removed with `server/data/catalog.before-*.json` (git history keeps them). |
 | 8 | Info | 9 TODO/HACK comments in the patched `ClientWeb.js`, carried over from the stock file. | Left as-is. |
 
 ## 6. Performance
