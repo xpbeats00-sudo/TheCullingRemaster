@@ -11,7 +11,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from build_catalog import pak_entries, read_entry  # noqa: E402
+from build_catalog import pak_entries, read_entry, stock_paks  # noqa: E402
 from uasset import Package, Reader  # noqa: E402
 from ue_package import UPackage  # noqa: E402
 
@@ -83,12 +83,12 @@ EQS_TUNING = {
 }
 
 
-def find_in_paks(paks_dir, wanted):
+def find_in_paks(paks_dir, wanted, patches=False):
+    """{relative path: bytes} for each wanted file, from the stock pakchunk paks
+    only (build_catalog.stock_paks; patches=True reads *_P.pak too)."""
     found = {}
-    for pak in sorted(os.listdir(paks_dir)):
-        if not pak.endswith(".pak"):
-            continue
-        for f, name, off, usize, method, blocks in pak_entries(os.path.join(paks_dir, pak)):
+    for pak in stock_paks(paks_dir, patches):
+        for f, name, off, usize, method, blocks in pak_entries(pak):
             rel = name.replace("../../../", "")
             if rel in wanted:
                 found[rel] = read_entry(f, off, usize, method, blocks)

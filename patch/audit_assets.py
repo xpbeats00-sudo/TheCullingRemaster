@@ -153,10 +153,9 @@ def main(paks_dir, filt=None):
     files = [p for p in glob.glob(os.path.join(SRC, "Victory", "**", "*.uasset"), recursive=True)
              if not filt or filt.lower() in os.path.basename(p).lower()]
     stock = set()
-    for pk in sorted(os.listdir(paks_dir)):
-        if pk.endswith(".pak") and not pk.startswith("LocalServer"):
-            for e in pak_entries(os.path.join(paks_dir, pk)):
-                stock.add(e[1].replace("../../../", ""))
+    for pk in stock_paks(paks_dir):
+        for e in pak_entries(pk):
+            stock.add(e[1].replace("../../../", ""))
     src_rel = {os.path.relpath(p, SRC).replace("\\", "/"): p for p in files}
     exports_cache = {}
 

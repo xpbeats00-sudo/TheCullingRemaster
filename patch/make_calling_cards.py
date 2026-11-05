@@ -416,8 +416,8 @@ def main(paks_dir, cards_dir=CARDS_DIR):
     assert tag in hud
     write(os.path.join(CONTENT, "uiresources", "hud", "hud.html"),
           hud.replace(tag, tag + '\n<script src="js/AnimatedCards.js"></script>', 1).encode("utf-8"))
-    with open(CATALOG, "w") as f:
-        json.dump(catalog, f, indent=1)
+    from build_catalog import write_catalog       # refuses an item ID used twice
+    write_catalog(CATALOG, catalog)
     print("%d calling cards: %d animated, %d classic" % (len(cards), len(animated_js), len(cards) - len(animated_js)))
 
 

@@ -607,8 +607,8 @@ def main(paks_dir):
         print("%-13s eyes %s  cloth %s" % (label, tuple(round(float(v), 2) for v in c * 2), tint))
     asset_registry.save("eye_skins", records)
     asset_registry.build(paks_dir)
-    with open(CATALOG, "w") as f:
-        json.dump(catalog, f, indent=1)
+    from build_catalog import write_catalog       # refuses an item ID used twice
+    write_catalog(CATALOG, catalog)
 
     previews(paks_dir)
     print("%d colours x %d pieces = %d items" % (len(PALETTE), len(PIECES), len(records)))

@@ -287,8 +287,8 @@ def main(paks_dir):
     play_tile(emblems, True).save(os.path.join(tiles, "RankedPlay_sel.png"))
     asset_registry.save("ranked", records)
     asset_registry.build(paks_dir)
-    with open(CATALOG, "w") as f:
-        json.dump(catalog, f, indent=1)
+    from build_catalog import write_catalog       # refuses an item ID used twice
+    write_catalog(CATALOG, catalog)
     print("ranked: %d emblems and rank cards" % len(TIERS))
 
 

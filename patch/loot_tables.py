@@ -73,10 +73,8 @@ def read_assets(paks):
     """Every asset we need, stock version (the Remaster patch pak excluded)."""
     found = {}
     wanted = (TIER_LISTS, CONTAINERS, GAME_MODES, AIRDROPS)
-    for pak in sorted(os.listdir(paks)):
-        if not pak.endswith(".pak") or pak.startswith("LocalServer"):
-            continue
-        for f, name, off, usize, method, blocks in pak_entries(os.path.join(paks, pak)):
+    for pak in stock_paks(paks):
+        for f, name, off, usize, method, blocks in pak_entries(pak):
             rel = name.replace("../../../", "")
             if rel in MAPS.values() or any(p.search(rel) for p in wanted):
                 found[rel] = read_entry(f, off, usize, method, blocks)

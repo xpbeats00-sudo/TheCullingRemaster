@@ -192,13 +192,12 @@ def mesh_paths(paks_dir):
     from build_catalog import pak_entries
     found = {}
     wanted = {m.lower(): m for m in ANIMATED.values()}
-    for pk in sorted(os.listdir(paks_dir)):
-        if pk.endswith(".pak") and not pk.startswith("LocalServer"):
-            for e in pak_entries(os.path.join(paks_dir, pk)):
-                n = e[1].replace("../../../", "")
-                base = n.rsplit("/", 1)[-1][:-len(".uasset")] if n.endswith(".uasset") else None
-                if base and base.lower() in wanted and "/Character/" in n:
-                    found[wanted[base.lower()]] = n
+    for pk in stock_paks(paks_dir):
+        for e in pak_entries(pk):
+            n = e[1].replace("../../../", "")
+            base = n.rsplit("/", 1)[-1][:-len(".uasset")] if n.endswith(".uasset") else None
+            if base and base.lower() in wanted and "/Character/" in n:
+                found[wanted[base.lower()]] = n
     return found
 
 

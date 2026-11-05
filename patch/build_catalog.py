@@ -3,9 +3,11 @@ the local server serves (server/data/catalog.json).
 
 Every cosmetic data asset carries an ItemID plus its store metadata
 (category, rarity, prices, max quantity), so the catalog comes straight from
-the shipped content.
+the shipped content. Only the stock pakchunk paks are read (stock_paks):
+an install's Paks folder also holds the Remaster's own patch pak, whose items
+would otherwise come back as "stock" ones; --include-patch-paks reads those too.
 
-usage: python build_catalog.py <Paks dir> <out.json>
+usage: python build_catalog.py <Paks dir> <out.json> [--include-patch-paks]
 """
 import json
 import os
@@ -18,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uasset import Package  # noqa: E402
 
 PAK_MAGIC = 0x5A6F12E1
+STOCK_PAK = re.compile(r"^pakchunk\d+-WindowsClient\.pak$", re.I)
 WANTED = re.compile(r"/Content/.*\.uasset$")
 
 
@@ -60,12 +63,38 @@ def read_entry(f, off, usize, method, blocks):
     return bytes(out)
 
 
-def main(paks_dir, out_path):
+def stock_paks(paks_dir, patches=False):
+    """The game's own paks in paks_dir (pakchunk<N>-WindowsClient.pak), sorted.
+
+    Patch paks (*_P.pak: the Remaster's own LocalServer-WindowsClient_P.pak
+    from an earlier build, Func's pakchunk99) are skipped unless patches=True,
+    so a generator pointed at an install's Paks folder reads the stock game
+    and never its own earlier output."""
+    names = sorted(os.listdir(paks_dir))
+    if patches:
+        return [os.path.join(paks_dir, n) for n in names if n.lower().endswith(".pak")]
+    return [os.path.join(paks_dir, n) for n in names if STOCK_PAK.match(n)]
+
+
+def check_unique_tids(catalog):
+    seen = {}
+    for item in catalog:
+        if item["tid"] in seen:
+            raise ValueError("catalog item ID %s is used twice (%s, %s)" % (item["tid"], seen[item["tid"]], item.get("asset")))
+        seen[item["tid"]] = item.get("asset")
+
+
+def write_catalog(path, catalog):
+    """server/data/catalog.json, refusing a catalog with an item ID twice."""
+    check_unique_tids(catalog)
+    with open(path, "w") as f:
+        json.dump(catalog, f, indent=1)
+
+
+def main(paks_dir, out_path, patches=False):
     items = {}
-    for pak in sorted(os.listdir(paks_dir)):
-        if not pak.endswith(".pak"):
-            continue
-        for f, name, off, usize, method, blocks in pak_entries(os.path.join(paks_dir, pak)):
+    for pak in stock_paks(paks_dir, patches):
+        for f, name, off, usize, method, blocks in pak_entries(pak):
             if not WANTED.search(name) or usize > 400000:
                 continue
             data = read_entry(f, off, usize, method, blocks)
@@ -84,6 +113,9 @@ def main(paks_dir, out_path):
             tid = str(props.get("ItemID", "")).strip()
             if not tid.isdigit():
                 continue
+            asset_path = name.replace("../../../Victory/Content/", "/Game/").rsplit(".", 1)[0]
+            if int(tid) in items and items[int(tid)]["asset"].lower() != asset_path.lower():
+                sys.exit("item ID %s is used by both %s and %s" % (tid, items[int(tid)]["asset"], asset_path))
             items[int(tid)] = {
                 "tid": int(tid),
                 "asset": name.replace("../../../Victory/Content/", "/Game/").rsplit(".", 1)[0],
@@ -102,7 +134,7 @@ def main(paks_dir, out_path):
                 "default": bool(props.get("bDefaultItem", False)),
             }
     catalog = sorted(items.values(), key=lambda i: i["tid"])
-    json.dump(catalog, open(out_path, "w"), indent=1)
+    write_catalog(out_path, catalog)
     by_type = {}
     for i in catalog:
         by_type[i["type"] or i["class"]] = by_type.get(i["type"] or i["class"], 0) + 1
@@ -112,4 +144,5 @@ def main(paks_dir, out_path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    args = [a for a in sys.argv[1:] if a != "--include-patch-paks"]
+    main(args[0], args[1], "--include-patch-paks" in sys.argv)
