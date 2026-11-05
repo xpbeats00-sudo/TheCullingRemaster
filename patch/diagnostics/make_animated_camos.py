@@ -1,4 +1,12 @@
-"""Animated camos: the camo image scrolls across the weapon.
+"""DIAGNOSTICS ONLY - never part of a release build (patch/build_release.py
+doesn't run it, and make_pak.py refuses to pack what it writes: the
+<Mesh>_XPAnim* and Camo_XP_Anim_* assets). The route below gave
+"Serialization Error: Corrupt data found" in game and is unproven; for a local
+diagnostics pak only: make_pak.py <src> <out> --allow-test-content. Running it
+puts files in patch/src that a release build then refuses until they are
+deleted (or make_camos.py is run again, which removes them).
+
+Animated camos: the camo image scrolls across the weapon.
 
 The weapon material (PM_Weapon_Master) has no time input on its camo layer.
 Its "-Use Bow Panner-" permutation - compiled only into Chainsaw_A_MI, for
@@ -17,7 +25,7 @@ gives that weapon the scrolling layer:
 Each camo skin of an animated weapon gets GeoSkin = the mesh copy and BC =
 its camo image (make_camos.py builds the skins; this adds the two tags).
 
-usage: python make_animated_camos.py <Paks dir>
+usage: python patch/diagnostics/make_animated_camos.py <Paks dir>
 """
 import glob
 import os
@@ -28,8 +36,9 @@ import sys
 import numpy as np
 from PIL import Image
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # patch/
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cooked_texture  # noqa: E402
 import make_camos  # noqa: E402
 from patch_assets import find_in_paks  # noqa: E402

@@ -1,4 +1,11 @@
-"""Diagnostics for animated camos on the Ice Axe (run after make_animated_camos.py).
+"""DIAGNOSTICS ONLY - never part of a release build (patch/build_release.py
+doesn't run it, and make_pak.py refuses to pack its IceAxe_A_XPTest mesh and
+the skins that point at it). It rewrites four of make_camos.py's Ice Axe camo
+skins in patch/src; run make_camos.py again before a release build to put the
+plain skins back. For a local diagnostics pak only:
+make_pak.py <src> <out> --allow-test-content.
+
+Diagnostics for animated camos on the Ice Axe (run after make_animated_camos.py).
 
 Each listed Ice Axe camo skin isolates one piece:
   Frost Plasma   plain 4-color camo (no GeoSkin, no BC)           - control
@@ -7,14 +14,15 @@ Each listed Ice Axe camo skin isolates one piece:
   Blue Tempest   GeoSkin = mesh copy with the stock IceAxe_A_MI    - mesh copy
   Arcane Surge   full animated (mesh copy + chainsaw material)    - material copy
 
-usage: python make_camo_tests.py <Paks dir>
+usage: python patch/diagnostics/make_camo_tests.py <Paks dir>
 """
 import os
 import struct
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # patch/
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import make_animated_camos as anim  # noqa: E402
 import make_camos  # noqa: E402
 from patch_assets import find_in_paks  # noqa: E402
