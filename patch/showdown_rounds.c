@@ -5,7 +5,7 @@
  * image-relative (the exe is ASLR-enabled): the base is found from the RVA of
  * sd_self_rva, which the builder writes into the blob.
  *
- * Two entry points:
+ * Three entry points:
  *
  * sd_should_end(gm) replaces AShooterGame_FreeForAll's "should the match end"
  *   virtual (vtable slot 282, VA 0x140244d30), which AShooterGameMode::Tick
@@ -28,6 +28,21 @@
  *   Showdown match that one call (recognised by its constant arguments in the
  *   bytecode) returns the round's kit instead, so both fighters get the same
  *   weapon and it changes every 2 rounds. Every other call is untouched.
+ *
+ * sd_spawn_with(pawn, out, stat) replaces AShooterCharacter::SpawnStartingInventory's
+ *   call of the GetSpawnWithWeaponClasses event (VA 0x140267275). The rival's
+ *   pawn (BasicBot) has no such event and spawns with its own random loadout
+ *   (Blueprint BeginPlay: a shuffled melee, ranged and utility list). In a
+ *   Showdown match the module gives it the player's kit instead: it clears
+ *   the rival's inventory and runs SpawnStartingInventory on it while this
+ *   call asks the player's pawn (a PlayerPawn, whose event is the kit) for
+ *   the classes - the same armor (put on), boost and the round's weapon - and
+ *   then copies the player's other spawn items (the fists). At the first
+ *   second of the match and after every reset. Every other call is stock.
+ *
+ * At each reset the fighters' inventories are cleared before their pawns go,
+ * and weapons and pickups lying in the world without an owner (dropped
+ * items) are destroyed.
  *
  * HUD messages go through AVictoryPlayerHUD::ShowGameMessage, which the HUD
  * page receives as the ShowGameMessage event (ShowdownHud.js takes the "SDR|"
@@ -65,6 +80,14 @@ unsigned __int64 __rdtsc(void);
 #define R_CLS_CHARACTER  0x302cc0  /* AShooterCharacter */
 #define R_CLS_HUD        0x3046c0  /* AVictoryPlayerHUD */
 #define R_PKG_VICTORY    0x2567aa0 /* L"/Script/Victory" */
+#define R_SPAWN_WITH     0x30a460  /* the GetSpawnWithWeaponClasses event (pawn, TArray<UClass*> out, stat) */
+#define R_START_INVENTORY 0x267090 /* AShooterCharacter::SpawnStartingInventory */
+#define R_CLEAR_INVENTORY 0x268fa0 /* AShooterCharacter: destroy every inventory item */
+#define R_SPAWN_WEAPON   0x27a810  /* AShooterCharacter::SpawnWeapon(UClass*) */
+#define R_ACTORS_OF_CLASS 0x1336ca0 /* UGameplayStatics::GetAllActorsOfClass(ctx, class, TArray out) */
+#define R_FREE           0x50c510  /* FMemory::Free */
+#define R_CLS_WEAPON     0x303d00  /* AShooterWeapon */
+#define R_CLS_PICKUP     0x3034e0  /* AShooterPickup */
 
 /* Virtual functions (byte offsets in the vtable). */
 #define V_GET_WORLD      0x120     /* UObject::GetWorld */
@@ -85,6 +108,9 @@ unsigned __int64 __rdtsc(void);
 #define W_AUTH_GM      0xf0        /* UWorld::AuthorityGameMode */
 #define W_CONTROLLERS  0x178       /* UWorld controller list (weak pointers) */
 #define W_PAWNS        0x198       /* UWorld pawn list (weak pointers) */
+#define A_OWNER        0x98        /* AActor::Owner */
+#define CH_INVENTORY   0xd30       /* AShooterCharacter inventory (TArray<AShooterWeapon*>) */
+#define CH_KIT_GIVEN   0xcf1       /* set by SpawnStartingInventory */
 #define C_PAWN         0x408
 #define C_PLAYERSTATE  0x420
 #define PC_HUD         0x490
@@ -97,6 +123,7 @@ unsigned __int64 __rdtsc(void);
 #define KITS           7
 #define BLACK_TICKS    3           /* seconds between a round's end and the reset */
 #define GRACE_TICKS    2           /* seconds after a reset before deaths count */
+#define KIT_BITS       44.0f       /* the Showdown perk's SpawnWithWeapon bits (make_showdown.KIT) */
 
 /* The builder writes the RVA of this variable into it. */
 volatile u64 sd_self_rva = 0x5344524f554e4453ULL;
@@ -113,6 +140,11 @@ typedef i32 (*fn_find)(u8 *, FString *);
 typedef void (*fn_resize)(FString *, i32, i32);
 typedef void (*fn_message)(u8 *, FString *, float);
 typedef void (*fn_exec)(u8 *, u8 *, void *);
+typedef void *(*fn_spawn_with)(u8 *, void *, float);
+typedef u8 *(*fn_spawn_weapon)(u8 *, u8 *);
+typedef void (*fn_actors)(u8 *, u8 *, void *);
+typedef void (*fn_free)(void *);
+typedef struct { u8 **data; i32 num; i32 max; } PtrArray;
 
 static u8 *B;                      /* image base */
 
@@ -131,6 +163,8 @@ static struct {
     i32 round, wins, losses;
     i32 offset, kit;
     i32 announced;
+    i32 kitted;                    /* the round the rival has its kit for */
+    u8 *kit_target, *kit_source;   /* sd_spawn_with: the rival's pawn asks the player's */
 } S;
 
 static u16 message[32];
@@ -175,6 +209,7 @@ static void ensure(u8 *gm)
         S.offset = (i32)(__rdtsc() % KITS);
         S.kit = kit_for(1);
         S.announced = 0;
+        S.kitted = 0;
     }
     S.last_elapsed = elapsed;
 }
@@ -247,6 +282,76 @@ static void revive(u8 *gs, u8 *ps)
     FIELD(ps, PS_FLAGS, u32) &= ~1u;
 }
 
+static u8 *pawn_of(u8 *c) { return c ? FIELD(c, C_PAWN, u8 *) : 0; }
+
+static int holds(u8 *pawn, u8 *cls)
+{
+    i32 i, num = FIELD(pawn, CH_INVENTORY + 8, i32);
+    u8 **items = FIELD(pawn, CH_INVENTORY, u8 **);
+    for (i = 0; i < num; i++)
+        if (items[i] && FIELD(items[i], O_CLASS, u8 *) == cls) return 1;
+    return 0;
+}
+
+/* The rival gets the player's kit: its own loadout goes, then the game's
+   own spawn-with inventory runs on it with the player's kit classes, then
+   it gets any other spawn item the player holds (the fists). */
+static int kit_rival(u8 *world)
+{
+    u8 *list = world + W_CONTROLLERS, *player = 0;
+    i32 i, j, num = FIELD(list, 8, i32);
+    int done = 0;
+    for (i = 0; i < num && !player; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC)) player = pawn_of(c);
+    }
+    if (!player || !is_a(player, R_CLS_CHARACTER)) return 0;
+    for (i = 0; i < num; i++) {
+        u8 *c = weak_get(list, i), *bot;
+        u8 **items;
+        i32 n;
+        if (!c || !is_a(c, R_CLS_AI)) continue;
+        bot = pawn_of(c);
+        if (!bot || bot == player || !is_a(bot, R_CLS_CHARACTER)) continue;
+        ((fn_void)AT(R_CLEAR_INVENTORY))(bot);
+        FIELD(bot, CH_KIT_GIVEN, u8) = 0;
+        S.kit_target = bot;
+        S.kit_source = player;
+        ((fn_void)AT(R_START_INVENTORY))(bot);
+        S.kit_target = S.kit_source = 0;
+        items = FIELD(player, CH_INVENTORY, u8 **);
+        n = FIELD(player, CH_INVENTORY + 8, i32);
+        for (j = 0; j < n; j++) {
+            u8 *cls = items[j] ? FIELD(items[j], O_CLASS, u8 *) : 0;
+            if (cls && !holds(bot, cls)) ((fn_spawn_weapon)AT(R_SPAWN_WEAPON))(bot, cls);
+        }
+        done = 1;
+    }
+    return done;
+}
+
+/* Weapons and pickups in the world with no owner: dropped items. */
+static void clear_dropped(u8 *gm)
+{
+    u64 classes[2];
+    i32 k, i;
+    classes[0] = R_CLS_WEAPON;
+    classes[1] = R_CLS_PICKUP;
+    for (k = 0; k < 2; k++) {
+        PtrArray found;
+        u8 *cls = ((fn_class)AT(classes[k]))((const u16 *)AT(R_PKG_VICTORY));
+        if (!cls) continue;
+        found.data = 0;
+        found.num = found.max = 0;
+        ((fn_actors)AT(R_ACTORS_OF_CLASS))(gm, cls, &found);
+        for (i = 0; i < found.num; i++) {
+            u8 *a = found.data[i];
+            if (a && !FIELD(a, A_OWNER, u8 *)) ((fn_void)VFN(a, V_DESTROY))(a);
+        }
+        if (found.data) ((fn_free)AT(R_FREE))(found.data);
+    }
+}
+
 /* Everybody back to the start: no pawns, no corpses, both alive, respawned. */
 static void reset(u8 *gm, u8 *world)
 {
@@ -258,6 +363,7 @@ static void reset(u8 *gm, u8 *world)
         if (!c || !is_fighter(c)) continue;
         p = FIELD(c, C_PAWN, u8 *);
         if (!p) continue;
+        if (is_a(p, R_CLS_CHARACTER)) ((fn_void)AT(R_CLEAR_INVENTORY))(p);
         ((fn_void)VFN(c, V_UNPOSSESS))(c);
         ((fn_void)VFN(p, V_DESTROY))(p);
     }
@@ -267,6 +373,7 @@ static void reset(u8 *gm, u8 *world)
         u8 *p = weak_get(pawns, i);
         if (p && is_a(p, R_CLS_CHARACTER)) ((fn_void)VFN(p, V_DESTROY))(p);
     }
+    clear_dropped(gm);
     /* The player first, then the rival: each takes a free arena start. */
     for (pass = 0; pass < 2; pass++) {
         num = FIELD(list, 8, i32);
@@ -297,6 +404,7 @@ char sd_should_end(u8 *gm)
     if (!n.humans || !n.bots) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     if (!S.announced) {
         S.announced = 1;
+        if (kit_rival(world)) S.kitted = S.round;
         tell(n.pc, 'S', S.round, S.wins, S.losses, (u16)('0' + S.kit));
     }
     if (S.phase == DONE) return 1;
@@ -305,6 +413,7 @@ char sd_should_end(u8 *gm)
         S.round++;
         S.kit = kit_for(S.round);
         reset(gm, world);
+        S.kitted = kit_rival(world) ? S.round : 0;
         S.phase = FIGHT;
         S.grace = GRACE_TICKS;
         n.pc = 0;
@@ -313,6 +422,8 @@ char sd_should_end(u8 *gm)
         tell(n.pc, 'S', S.round, S.wins, S.losses, (u16)('0' + S.kit));
         return 0;
     }
+    /* Until the rival has this round's kit (no pawn yet, say): try again. */
+    if (S.kitted != S.round && kit_rival(world)) S.kitted = S.round;
     if (S.grace > 0) { S.grace--; return 0; }
     if (n.humans_alive && n.bots_alive) return 0;
     x = n.humans_alive ? 'W' : n.bots_alive ? 'L' : 'D';
@@ -348,4 +459,12 @@ void sd_rand_exec(u8 *ctx, u8 *stack, i32 *result)
     }
     ((fn_exec)AT(R_RAND_EXEC))(ctx, stack, result);
     if (force >= 0) *result = force;
+}
+
+void *sd_spawn_with(u8 *pawn, void *out, float stat)
+{
+    B = base();
+    if (pawn && pawn == S.kit_target && S.kit_source)
+        return ((fn_spawn_with)AT(R_SPAWN_WITH))(S.kit_source, out, KIT_BITS);
+    return ((fn_spawn_with)AT(R_SPAWN_WITH))(pawn, out, stat);
 }

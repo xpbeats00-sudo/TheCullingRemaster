@@ -57,6 +57,12 @@
      "lea r8, exec" at VA 0x14172be72): in a Showdown match the one call
      RandomIntegerInRange(0, 6) - PlayerPawn's pick of the spawn-with melee
      weapon - returns the round's kit, the same for both fighters.
+   - AShooterCharacter::SpawnStartingInventory's call of the
+     GetSpawnWithWeaponClasses event (the "call" at VA 0x140267275): the
+     module runs SpawnStartingInventory on the rival (a BasicBot, which has
+     no such event and spawns with its own random loadout) after clearing its
+     inventory, and this call then asks the player's pawn for the kit, so the
+     rival gets the same armor, boost and weapon. Every other call is stock.
    The vtable slot already has a base relocation (the exe is ASLR-enabled), so
    the new value is relocated like the old one; the blob itself has no
    absolute addresses.
@@ -167,6 +173,9 @@ FFA_SLOT = 0x140244D30
 RAND_LEA_AT = 0x172B472             # file offset of "lea r8, [execRandomIntegerInRange]" (VA 0x14172be72)
 RAND_LEA_VA = 0x14172BE72
 RAND_LEA = bytes.fromhex("4c8d05b7af0c00")
+SPAWN_WITH_CALL_AT = 0x266875       # file offset of "call 0x14030a460" (VA 0x140267275)
+SPAWN_WITH_CALL_VA = 0x140267275
+SPAWN_WITH_CALL = bytes.fromhex("e8e6310a00")
 
 
 def _align(n, a):
@@ -174,7 +183,8 @@ def _align(n, a):
 
 
 def rounds_layout():
-    """What the rounds patch writes: (section header, raw data, slot value, lea bytes, image size)."""
+    """What the rounds patch writes: (section header, raw data, slot value, lea bytes, image size,
+    spawn-with call bytes)."""
     blob = ROUNDS.BLOB
     raw = blob + bytes(_align(len(blob), 0x200) - len(blob))
     header = ROUNDS_NAME + struct.pack("<IIIIIIHHI", len(blob), ROUNDS.SECTION_RVA, len(raw), STOCK_FILE_SIZE,
@@ -182,7 +192,9 @@ def rounds_layout():
     slot = IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SHOULD_END
     target = IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_RAND_EXEC
     lea = RAND_LEA[:3] + struct.pack("<i", target - (RAND_LEA_VA + len(RAND_LEA)))
-    return header, raw, slot, lea, ROUNDS.SECTION_RVA + _align(len(blob), 0x1000)
+    spawn_with = IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SPAWN_WITH
+    call = b"\xe8" + struct.pack("<i", spawn_with - (SPAWN_WITH_CALL_VA + 5))
+    return header, raw, slot, lea, ROUNDS.SECTION_RVA + _align(len(blob), 0x1000), call
 
 
 def _pe(data, path):
@@ -197,22 +209,29 @@ def _pe(data, path):
 
 def _rounds(data, path):
     pe, nsec_at, size_at, table = _pe(data, path)
-    header, raw, slot, lea, image_size = rounds_layout()
+    header, raw, slot, lea, image_size, call = rounds_layout()
     nsec = struct.unpack_from("<H", data, nsec_at)[0]
     at = table + 40 * STOCK_NUM_SECTIONS
     cur_slot = struct.unpack_from("<Q", data, FFA_SLOT_AT)[0] if len(data) >= FFA_SLOT_AT + 8 else None
     cur_lea = bytes(data[RAND_LEA_AT:RAND_LEA_AT + len(RAND_LEA)])
+    cur_call = bytes(data[SPAWN_WITH_CALL_AT:SPAWN_WITH_CALL_AT + len(SPAWN_WITH_CALL)])
     if nsec == STOCK_NUM_SECTIONS:
         if (struct.unpack_from("<I", data, size_at)[0] != STOCK_IMAGE_SIZE or len(data) != STOCK_FILE_SIZE
-                or cur_slot != FFA_SLOT or cur_lea != RAND_LEA or any(data[at:at + 40])
+                or cur_slot != FFA_SLOT or cur_lea != RAND_LEA or cur_call != SPAWN_WITH_CALL or any(data[at:at + 40])
                 or at + 40 > struct.unpack_from("<I", data, pe + 24 + 60)[0]):
-            raise ValueError("%s is not the Victory.exe this patch is for (Showdown rounds: section table, "
-                             "vtable slot %s or RandomIntegerInRange %s)" % (path, cur_slot and hex(cur_slot), cur_lea.hex()))
+            raise ValueError("%s is not the Victory.exe this patch is for (Showdown rounds: section table, vtable "
+                             "slot %s, RandomIntegerInRange %s or spawn-with call %s)"
+                             % (path, cur_slot and hex(cur_slot), cur_lea.hex(), cur_call.hex()))
     elif nsec == STOCK_NUM_SECTIONS + 1 and data[at:at + 8] == ROUNDS_NAME:
         if (data[at:at + 40] == header and data[STOCK_FILE_SIZE:] == raw and cur_slot == slot and cur_lea == lea
-                and struct.unpack_from("<I", data, size_at)[0] == image_size):
+                and cur_call == call and struct.unpack_from("<I", data, size_at)[0] == image_size):
             return False
-        # An older build of the module: replace it.
+        # An older build of the module: replace it. Its spawn-with call is
+        # stock (builds before the rival's kit) or leads into the section.
+        into = cur_call[:1] == b"\xe8" and (IMAGE_BASE + ROUNDS.SECTION_RVA <= SPAWN_WITH_CALL_VA + 5
+                                            + struct.unpack_from("<i", cur_call, 1)[0] < IMAGE_BASE + image_size + 0x10000)
+        if cur_call != SPAWN_WITH_CALL and not into:
+            raise ValueError("%s is not the Victory.exe this patch is for (spawn-with call %s)" % (path, cur_call.hex()))
         del data[STOCK_FILE_SIZE:]
     else:
         raise ValueError("%s is not the Victory.exe this patch is for (%d sections)" % (path, nsec))
@@ -222,6 +241,7 @@ def _rounds(data, path):
     data += raw
     struct.pack_into("<Q", data, FFA_SLOT_AT, slot)
     data[RAND_LEA_AT:RAND_LEA_AT + len(lea)] = lea
+    data[SPAWN_WITH_CALL_AT:SPAWN_WITH_CALL_AT + len(call)] = call
     return True
 
 

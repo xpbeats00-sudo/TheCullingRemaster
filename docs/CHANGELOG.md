@@ -2,6 +2,10 @@
 
 ## Game (next release)
 
+**Showdown: the rival gets your kit**
+- The rival no longer spawns with its own random loadout (a melee weapon, a bow or gun with ammo, a utility item): at the start of a Showdown match and after every round's reset it gets exactly the round's kit (the same armor, put on, the Muscle Man Milk and the round's weapon, plus fists). Needs the patched exe (patch_exe.py fix 5: SpawnStartingInventory's kit call, VA 0x140267275).
+- At each round's reset the fighters' inventories are cleared and weapons and pickups left lying in the world (dropped items) are removed.
+
 **Showdown: every round in one match**
 - A Showdown series (first to 4 rounds) is now one match: when a fighter goes down the round ends, the screen fades to black, both fighters are put back at their arena starts (full health, the fallen one alive again, corpses cleared) with a fresh kit, and the screen fades back in. Only the 4th round win ends the match (VICTORY or DEFEAT) and goes back to the menu. Needs the patched exe (patch_exe.py: the native module from patch/showdown_rounds.c in a new .sdround section) and the server update.
 - The kit changes every 2 rounds, starting from a random one of seven: a Tier 3 weapon (Tomahawk, Survival Axe, Tactical Machete, Bowie Knife, Baseball Bat, Pipe Wrench, Yari) with Tactical Body Armor and Muscle Man Milk. The pre-round panel shows the round's kit.

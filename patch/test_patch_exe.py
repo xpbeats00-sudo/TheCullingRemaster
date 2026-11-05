@@ -61,12 +61,15 @@ def rounds_changes(stock):
     table = pe + 24 + struct.unpack_from("<H", stock, pe + 20)[0]
     at = table + 40 * P.STOCK_NUM_SECTIONS
     return (set(range(pe + 6, pe + 8)) | set(range(pe + 24 + 56, pe + 24 + 60)) | set(range(at, at + 40))
-            | set(range(P.FFA_SLOT_AT, P.FFA_SLOT_AT + 8)) | set(range(P.RAND_LEA_AT + 3, P.RAND_LEA_AT + 7)))
+            | set(range(P.FFA_SLOT_AT, P.FFA_SLOT_AT + 8)) | set(range(P.RAND_LEA_AT + 3, P.RAND_LEA_AT + 7))
+            | set(range(P.SPAWN_WITH_CALL_AT + 1, P.SPAWN_WITH_CALL_AT + 5)))
 
 
 def check_rounds(stock, data):
-    header, raw, slot, lea, image_size = P.rounds_layout()
+    header, raw, slot, lea, image_size, call = P.rounds_layout()
     assert len(data) == P.STOCK_FILE_SIZE + len(raw) and data[P.STOCK_FILE_SIZE:] == raw
+    assert data[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] == call
+    assert P.SPAWN_WITH_CALL_VA + 5 + struct.unpack_from("<i", call, 1)[0] == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SPAWN_WITH
     assert data[P.FFA_SLOT_AT:P.FFA_SLOT_AT + 8] == struct.pack("<Q", slot)
     assert data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] == lea
     # The vtable slot and the lea lead to the two entry points.
@@ -111,8 +114,15 @@ def blob_checks():
                 if 0x100000 <= int(h, 16) < 0x3000000:
                     rvas.add(int(h, 16))
     want = {0x244D30, 0x17F6E30, 0x69C470, 0x249D20, 0x249CA0, 0x249040, 0x23CAE0, 0x1A3420, 0x202900,
-            0x303000, 0x303820, 0x302B20, 0x3039C0, 0x302CC0, 0x3046C0, 0x2567AA0}
+            0x303000, 0x303820, 0x302B20, 0x3039C0, 0x302CC0, 0x3046C0, 0x2567AA0,
+            # the rival's kit and the dropped items
+            0x30A460, 0x267090, 0x268FA0, 0x27A810, 0x1336CA0, 0x50C510, 0x303D00, 0x3034E0}
     assert want <= rvas, sorted(hex(x) for x in want - rvas)
+    # The rival asks the player's pawn for the kit with the Showdown perk's bits.
+    import make_showdown
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "showdown_rounds.c"), encoding="utf-8").read()
+    bits = float(re.search(r"#define KIT_BITS\s+([0-9.]+)f", src).group(1))
+    assert bits == sum(b for _i, _p, b in make_showdown.KIT), (bits, make_showdown.KIT)
     return len(blob)
 
 
@@ -132,6 +142,7 @@ def rounds_stand_in(path):
         data[table + 40 * i:table + 40 * i + 8] = (".s%d" % i).encode().ljust(8, b"\0")
     struct.pack_into("<Q", data, P.FFA_SLOT_AT, P.FFA_SLOT)
     data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] = P.RAND_LEA
+    data[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
     open(path, "wb").write(data)
 
 
@@ -145,6 +156,20 @@ def check_rounds_alone(path):
     old = bytearray(data)
     old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
     assert P._rounds(old, path) is True and old == data
+    # ... also one from before the rival's kit (its spawn-with call stock).
+    old = bytearray(data)
+    old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    old[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
+    assert P._rounds(old, path) is True and old == data
+    # A spawn-with call elsewhere: not ours, refused.
+    bad = bytearray(data)
+    bad[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = bytes.fromhex("e800000000")
+    bad[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a foreign spawn-with call was accepted")
+    except ValueError:
+        pass
     # A different exe is refused.
     bad = bytearray(stock)
     struct.pack_into("<Q", bad, P.FFA_SLOT_AT, 0x140000000)

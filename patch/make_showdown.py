@@ -17,7 +17,11 @@ build, so this assembles it from what the game already has:
   weapons become the seven Tier 3 weapons of ROTATION. In a Showdown match
   the patched exe (patch_exe.py, showdown_rounds.c) makes that one
   RandomIntegerInRange(0, 6) return the round's kit, the same for both
-  fighters: the kit changes every 2 rounds, from a random first kit. A Showdown-only perk (a copy of Perk_JumpStart at a
+  fighters: the kit changes every 2 rounds, from a random first kit.
+  The rival's pawn (BasicBot) has no GetSpawnWithWeaponClasses and spawns
+  with its own random loadout; the patched exe clears it and gives the rival
+  the player's kit (the same armor, put on, the boost and the round's weapon)
+  at the start and after every round's reset. A Showdown-only perk (a copy of Perk_JumpStart at a
   new path, so it isn't in the asset registry or the perk menu) grants
   32 + 8 + 4, and the mode forces it on everyone (OverridenPerks, in place of
   Backpacker), bots included (bEnableBotPerks). Body armor a player spawns with puts itself on
