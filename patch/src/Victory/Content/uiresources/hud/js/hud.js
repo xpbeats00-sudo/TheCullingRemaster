@@ -3310,9 +3310,10 @@ function LocalMatchResultBody(_deathData, bIsVictory)
 		func: _deathData.FUNC,
 		distance: _deathData.DistanceTraveled,
 		placement: parseInt(_deathData.Rank, 10) || 0,
-		// This build's limit on players plus bots (patch_exe.py): the server
-		// scores placements out of the contestants the map really has.
-		cap: 24,
+		// This build's limit on players plus bots: one per pod, 16 (the
+		// patched exe's module; 1.3.11 reported 24). The server scores
+		// placements out of the contestants the map really has.
+		cap: 16,
 		// Showdown: the series' round this result ends (ShowdownHud.js).
 		showdownRound: (window.ShowdownHud && ShowdownHud.round) ? ShowdownHud.round() : 0,
 		// Team matches (Duo, Trios, Quads; ranked too): how this HUD settled the

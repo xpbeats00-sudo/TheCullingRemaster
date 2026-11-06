@@ -2,8 +2,14 @@
 
 ## Game (next release)
 
+**Pods: one contestant each, and nobody starts armed**
+- Fixed: when the pods opened, other contestants could be standing in your pod, already holding weapons. Since 1.3.x's 24-contestant matches, Solo, Duo, Trios and Quads put 24 contestants on maps with 16 pods (Jungle and Prison). The game gives each contestant a free pod first, then puts the rest in pods that are already taken, so 8 contestants shared someone's pod. Matches now have one contestant per pod: 16 in Solo, Duo and Quads, 15 in Trios (5 full teams), and Showdown is unchanged. Needs the patched exe (the native module caps the bots at the mode's start points).
+- Opponents now start like you, with only their fists, and loot their gear. Before, every match opponent spawned with a random melee weapon, a bow or gun, and a utility item. The Survival, Tutorial and Showdown opponents are unchanged (`patch/patch_assets.py`).
+- Ranked team matches are scored among the teams a match really has: 8 duos, 5 trios or 4 quads. Needs the server update.
+- Not yet checked in a match.
+
 **Ranked Duos, Trios and Quads**
-- The Ranked screen's Duo, Trio and Quads tabs are open: each shows its own tier, ELO, placements and recent matches, and the RANKED tile plays the selected mode. A team mode is the Duo/Trio/Quad match (AI teammates, or your party - the leader queues, up to the team size) rated on your team's placement among the teams (12 duos, 8 trios or 6 quads on Jungle). Your team's win counts as 1st for everyone on it, even if you fell early. Each mode has its own rating (same tiers, seasons and rewards); Ranked Solo is unchanged. The leaderboard has a board per ranked mode. Server and menus: [RANKED_TEAMS.md](RANKED_TEAMS.md). Not yet checked in a match.
+- The Ranked screen's Duo, Trio and Quads tabs are open: each shows its own tier, ELO, placements and recent matches, and the RANKED tile plays the selected mode. A team mode is the Duo/Trio/Quad match (AI teammates, or your party - the leader queues, up to the team size) rated on your team's placement among the teams (8 duos, 5 trios or 4 quads). Your team's win counts as 1st for everyone on it, even if you fell early. Each mode has its own rating (same tiers, seasons and rewards); Ranked Solo is unchanged. The leaderboard has a board per ranked mode. Server and menus: [RANKED_TEAMS.md](RANKED_TEAMS.md). Not yet checked in a match.
 
 **Team Showdown: Showdown 2v2, 3v3 and 4v4**
 - The SHOWDOWN tile asks for the size: 1V1 as before, or 2V2, 3V3 and 4V4, where you and AI teammates take on a team of AI rivals in the centre arena. It is the same series as 1v1: first to 4 rounds, all in one match, with the kit changing every 2 rounds and the same kit for everyone. A round ends when a whole team is down.

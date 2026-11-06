@@ -151,10 +151,15 @@ def tests(a, stage):
         p("test_patch_exe.py", exe), p("test_make_pak.py"), p("test_make_release.py"), p("test_stock_paks.py"),
         p("test_release_gate.py"), p("test_extract_func_anims.py"), p("test_menu_items.py"),
         p("test_match_urls.py", stage), p("test_eye_skins.py", stage), p("test_loot_tables.py"),
+        p("test_make_showdown.py", stage),
         p("test_vfx_camos.py", stage),
         p("test_custom_match.py", stage), n("test_showdown_hud.js"), n("test_team_hud.js"), n("test_hud_layout.js"),
-        n("test_ranked_hud.js"), n("test_ranked_menu.js"),
+        n("test_ranked_hud.js"), n("test_ranked_menu.js"), n("test_showdown_menu.js"), n("test_remaster_panels.js"),
+        # Coherent UI runs ES5 (and the stock scripts' const): one ES2015 line
+        # stops a whole menu or HUD script, so every shipped UI script is linted.
+        p("lint_es5.py", "--release"), p("test_lint_es5.py"), p("test_build_release.py"),
         p("test_airdrop_prices.py", stage), p("test_weapon_balance.py", stage), p("test_bot_ai.py", stage),
+        p("test_patch_assets.py", stage),
         p("test_weather.py", stage), p("test_tree_collision.py", stage), p("test_measure_loading.py"),
         p("test_netplay_check.py", exe),
         # The native module (fixes 5, 7-11 and the weather) compiled and run against fake game
@@ -164,6 +169,16 @@ def tests(a, stage):
         d("stage_objects.test.js"), d("publish.test.js"), d("make_manifest.test.js"),
         ("launcher: npm test", [NPM, "test"], os.path.join(ROOT, "launcher")),
     ]
+
+
+# Test files that tests() doesn't run itself: test_build_release.py checks
+# every other patch/test_*.py and test_*.js is in tests(), so a new test can't
+# be left out of the release build by mistake.
+RUN_ELSEWHERE = {
+    "test_release_consistency.py": "the release consistency gate step, before tests()",
+    "test_custom_menu.js": "test_custom_match.py runs it",
+    "test_custom_lobby.js": "test_custom_match.py runs it (with the stock Custom.js from the paks)",
+}
 
 
 def run(label, argv, cwd=ROOT):

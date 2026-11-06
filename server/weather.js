@@ -17,8 +17,12 @@ const crypto = require("crypto");
 const PRESETS = ["clear", "cloudy", "rainy", "storm", "foggy"];
 const DAY_MAPS = { jungle: 0, prison: 1 };
 const NIGHT_MAPS = { "jungle-night": 2, "prison-night": 3 };
-// Contestants each map places (the night maps are copies of the day ones).
-const FIELD = { jungle: 24, prison: 16, "jungle-night": 24, "prison-night": 16 };
+// Contestants each map places (the night maps are copies of the day ones):
+// one per pod. Jungle and Prison have 16 pods (PlayerStarts tagged
+// SpawnsDecentral; Jungle's 8 others are Showdown's arena), and the patched
+// exe's module spawns no more than that (showdown_rounds.c sd_spawn_bots;
+// 1.3.11 put 24 in Jungle's 16 pods, so 8 shared one).
+const FIELD = { jungle: 16, prison: 16, "jungle-night": 16, "prison-night": 16 };
 
 function settings(env) {
   env = env || process.env;

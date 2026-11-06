@@ -191,7 +191,8 @@
     // Escape / gamepad Back closes it, Select and the D-pad work its buttons
     // (Friends.js's shared overlay stack). The focus starts on PLAY.
     if (window.RemasterOverlay) {
-      RemasterOverlay.open(root, { close: hide, items: sizeButtons.concat([play, back]), initial: SIZES.length });
+      RemasterOverlay.open(root, { close: hide, items: function () { return sizeButtons.concat([play, back]); },
+        initial: SIZES.length });
     }
   }
 
@@ -206,7 +207,7 @@
       button(ui.buttons, "PLAY AGAIN", "sd-quiet", function () { hide(); queue(n, null, null); })];
     // Escape / gamepad Back closes it, Select and the D-pad work its buttons
     // (Friends.js's shared overlay stack).
-    if (window.RemasterOverlay) RemasterOverlay.open(root, { close: hide, items: items });
+    if (window.RemasterOverlay) RemasterOverlay.open(root, { close: hide, items: function () { return items; } });
   }
 
   window.RemasterShowdown = {

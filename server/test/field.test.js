@@ -1,6 +1,6 @@
-// Matches are scored out of the contestants the game really places: 16 from
-// stock builds, 24 on Jungle from builds with patch_exe.py (the HUD reports
-// cap 24), and Prison stays 16 until more is measured there.
+// Matches are scored out of the contestants the game really places: one per
+// pod, 16 on Jungle and Prison, whatever cap the HUD reports (1.3.11's
+// reported 24 and put 8 contestants in shared pods).
 "use strict";
 
 const assert = require("assert");
@@ -30,22 +30,29 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       return { view, r: r.json };
     }
 
-    await test("the lobby tells new menus how many bots each map has", async () => {
-      const { view, r } = await ranked("jungle", { placement: 3, cap: 24 });
-      assert.deepStrictEqual(view.matchBotsByMap, { jungle: 23, prison: 15 });
-      assert.strictEqual(view.matchBots, 15, "older menus still show 16 contestants");
-      assert.strictEqual(r.ranked.entry.field, 24);
+    await test("the lobby tells new menus how many bots each map has: 15 for its 16 pods", async () => {
+      const { view, r } = await ranked("jungle", { placement: 3, cap: 16 });
+      assert.deepStrictEqual(view.matchBotsByMap, { jungle: 15, prison: 15 });
+      assert.strictEqual(view.matchBots, 15, "older menus show 16 contestants too");
+      assert.strictEqual(r.ranked.entry.field, 16);
     });
 
-    await test("Jungle from a 24 build: last of 24 is accepted and loses rating", async () => {
-      const { r } = await ranked("jungle", { placement: 24, cap: 24, kills: 99 });
-      assert.strictEqual(r.ranked.entry.field, 24);
-      assert.strictEqual(r.ranked.entry.placement, 24);
-      assert.ok(r.ranked.entry.delta < 0, "last of 24 loses rating");
-      assert.strictEqual(r.stats.kills, 23, "23 opponents at most");
+    await test("Jungle from a current build (cap 16): last of 16 is accepted and loses rating", async () => {
+      const { r } = await ranked("jungle", { placement: 16, cap: 16, kills: 99 });
+      assert.strictEqual(r.ranked.entry.field, 16);
+      assert.strictEqual(r.ranked.entry.placement, 16);
+      assert.ok(r.ranked.entry.delta < 0, "last of 16 loses rating");
+      assert.strictEqual(r.stats.kills, 15, "15 opponents at most");
     });
 
-    await test("Prison is scored as 16 even from a 24 build", async () => {
+    await test("Jungle from a 1.3.11 build (cap 24, 8 in shared pods): scored as the map's 16", async () => {
+      const { r } = await ranked("jungle", { placement: 24, cap: 24 });
+      assert.strictEqual(r.ranked.entry.field, 16);
+      assert.strictEqual(r.ranked.entry.placement, 16, "24th counts as last of 16");
+      assert.ok(r.ranked.entry.delta < 0, "last loses rating");
+    });
+
+    await test("Prison is scored as 16 from any build", async () => {
       const { r } = await ranked("prison", { placement: 16, cap: 24 });
       assert.strictEqual(r.ranked.entry.field, 16);
       assert.ok(r.ranked.entry.delta < 0, "last of 16 loses rating");
@@ -57,12 +64,12 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(r.ranked.entry.delta < 0, "last of 16 loses rating");
     });
 
-    await test("a cap above the most any build has counts as 24", async () => {
+    await test("a cap above the most any build has counts as the map's 16", async () => {
       const { r } = await ranked("jungle", { placement: 30, cap: 999 });
       // A rank beyond the field is scored as last place, not dropped (a
       // dropped result left the match pending, later counted as abandoned).
-      assert.strictEqual(r.ranked.entry.field, 24);
-      assert.strictEqual(r.ranked.entry.placement, 24, "placement 30 of 24 counts as 24th");
+      assert.strictEqual(r.ranked.entry.field, 16);
+      assert.strictEqual(r.ranked.entry.placement, 16, "placement 30 of 16 counts as 16th");
     });
 
     console.log("all %d field tests passed", passed);

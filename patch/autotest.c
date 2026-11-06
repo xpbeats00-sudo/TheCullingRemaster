@@ -121,7 +121,7 @@ static struct {
     i32 tms_ms;                     /* last TMS line logged */
     i32 round_ms, round;            /* Showdown: when the round's S message came */
     i32 round_logged;
-    i32 kills_done, teams_logged;
+    i32 kills_done, teams_logged, pods_logged;
     Weak seen[AT_MAX];              /* player states seen, by PlayerArray index */
     i32 dead[AT_MAX];
     i32 state[AT_MAX];              /* bots: weapon state last frame (-1 none) */
@@ -834,6 +834,68 @@ static void at_sample_bots(i32 now)
     }
 }
 
+/* The pods: every contestant in a start of its own, the bots with only their
+   fists (release-next 452b07e: sd_spawn_bots caps the bots at the mode's free
+   starts; BasicBot SpawnsWithWeapons off). Logged in the pods (InProgress
+   second 0) and as they open (second 1): the contestants, the closest two
+   pawns, and each bot's inventory other than fists. */
+static float at_sqrt(float x)
+{
+    float r = x > 1.0f ? x : 1.0f;
+    i32 i;
+    for (i = 0; i < 40; i++) r = 0.5f * (r + x / r);
+    return r;
+}
+
+static void at_pods(const char *ev)
+{
+    i32 i, j, n, bots_armed = 0, a = -1, b = -1;
+    float best = 1e12f, p[AT_MAX][3];
+    for (i = 0; i < NF; i++) at_where(F[i].pawn, p[i]);
+    for (i = 0; i < NF; i++)
+        for (j = i + 1; j < NF; j++) {
+            float dx, dy, dz, d2;
+            if (!F[i].pawn || !F[j].pawn) continue;
+            dx = p[i][0] - p[j][0]; dy = p[i][1] - p[j][1]; dz = p[i][2] - p[j][2];
+            d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best) { best = d2; a = i; b = j; }
+        }
+    at_begin(ev);
+    at_i("contestants", NF);
+    at_i("starts", mode_starts(T.gm));
+    at_i("bots_to_spawn", FIELD(T.gm, GM_BOTS, i32));
+    at_f("closest", best < 1e11f ? at_sqrt(best) : -1.0f);
+    at_i("a", a); at_i("b", b);
+    at_key("armed");
+    at_c('[');
+    for (i = 0, n = 0; i < NF; i++) {
+        u8 **items;
+        i32 k, cnt, extra = 0;
+        if (F[i].pc || !F[i].pawn) continue;
+        items = FIELD(F[i].pawn, CH_INVENTORY, u8 **);
+        cnt = FIELD(F[i].pawn, CH_INVENTORY + 8, i32);
+        for (k = 0; k < cnt && k < 16; k++) {
+            FString s;
+            u8 *cls = items[k] ? FIELD(items[k], O_CLASS, u8 *) : 0;
+            i32 c, fist = 0;
+            if (!cls) continue;
+            s.data = 0; s.num = s.max = 0;
+            ((at_string_t)AT(AT_FNAME_STRING))(cls + ATO_NAME, &s);
+            for (c = 0; s.data && c + 3 < s.num; c++)
+                if ((s.data[c] | 32) == 'f' && (s.data[c + 1] | 32) == 'i' && (s.data[c + 2] | 32) == 's'
+                    && (s.data[c + 3] | 32) == 't') fist = 1;
+            if (!fist) {
+                if (!extra++ && n < 6) { if (n++) at_c(','); at_wstr(s.data, s.num); }
+            }
+            at_free(&s);
+        }
+        bots_armed += extra > 0;
+    }
+    at_c(']');
+    at_i("bots_armed", bots_armed);
+    at_end();
+}
+
 static void at_second(u8 *world, i32 now)
 {
     i32 el = T.gs ? FIELD(T.gs, GS_ELAPSED, i32) : 0;
@@ -847,6 +909,10 @@ static void at_second(u8 *world, i32 now)
         at_end();
     }
     at_deaths();
+    if (T.scen != AT_SD && T.pods_logged < 2 && el >= T.pods_logged) {
+        at_pods(T.pods_logged ? "pods_open" : "pods");
+        T.pods_logged = el >= 1 ? 2 : 1;
+    }
     if (el >= 6 && !T.teams_logged) {
         at_snapshot("teams", 1);
         T.teams_logged = 1;
@@ -900,7 +966,7 @@ static void at_frame(u8 *gm)
             T.last_sec = 0;
             T.last_ms = 0;
             T.frames = 0;
-            T.ended = T.quit = T.step = T.step_ms = T.kills_done = T.teams_logged = T.round_ms = 0;
+            T.ended = T.quit = T.step = T.step_ms = T.kills_done = T.teams_logged = T.round_ms = T.pods_logged = 0;
             for (i = 0; i < AT_MAX; i++) { T.state[i] = -2; T.state_ms[i] = 0; T.seen[i].index = -1; T.seen[i].serial = 0; }
         }
     }

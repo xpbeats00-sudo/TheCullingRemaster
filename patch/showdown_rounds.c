@@ -53,7 +53,12 @@
  *   start (VA 0x14023330d, call 0x1402320f0). In a team Showdown match it
  *   first sets BotsToSpawn (+0x518) to 2N - 1 (your N - 1 teammates and N
  *   rivals; N at most 4, the arena's sides); every other match spawns the
- *   mode's own count.
+ *   mode's own count. In every match it then caps the bots so each
+ *   contestant has a start of its own: the mode's starts (those tagged with
+ *   one of its SpawnPointTags: 16 pods on Jungle and Prison, 8 arena starts
+ *   for Showdown), whole teams in Trios/Quads, minus the players. Past the
+ *   free starts the game's chooser reuses a taken one, so with fix 1's 24 on
+ *   16 pods, 8 contestants started in someone else's pod.
  *
  * sd_rand_exec(ctx, stack, result) replaces the native of
  *   KismetMathLibrary.RandomIntegerInRange. PlayerPawn.GetSpawnWithWeaponClasses
@@ -160,6 +165,7 @@ unsigned __int64 __rdtsc(void);
 #define R_SET_TEAM       0x24e7e0  /* AVictoryPlayerState::SetTeamNum(int32, bool) */
 #define R_SORT_SCORES    0x243c80  /* AVictoryGameState::BuildSortedScoreboard */
 #define R_SPAWN_BOTS     0x2320f0  /* AVictoryGameMode: spawn BotsToSpawn bots (match start) */
+#define R_FNAME          0x5b0e60  /* FName::FName(this, const TCHAR *, EFindName) -> this */
 #define R_HEALTH         0x262d20  /* health component (pawn +0x830): health */
 #define R_MAX_HEALTH     0x2634c0  /* health component: max health */
 #define R_STAMINA        0x28ee40  /* stamina component (pawn +0x828): stamina */
@@ -207,6 +213,12 @@ unsigned __int64 __rdtsc(void);
 #define PY_WOUND_CLASS 0x438       /* APylon::WoundClass */
 #define GM_OPTIONS     0x400       /* AGameModeBase::OptionsString (the URL's options) */
 #define GM_BOTS        0x518       /* AVictoryGameMode::BotsToSpawn */
+#define GM_STARTS      0x490       /* the level's PlayerStarts (TArray<APlayerStart *>) */
+#define GM_SPAWN_TAGS  0x4e8       /* AVictoryGameMode::SpawnPointTags (TArray<FString>) */
+#define GM_SPAWN_TAG   0x5e0       /* the URL's ?SpawnTag= (FString) */
+#define A_TAGS         0x230       /* AActor::Tags (TArray<FName>) */
+#define FNAME_ADD      1           /* EFindName, as the game's start chooser passes it */
+#define MAX_SPAWN_TAGS 8
 #define GS_TYPE        0x4e4       /* the game mode type, copied from GM_TYPE */
 #define HUD_MATE       0x658       /* AVictoryPlayerHUD: the teammate its panel shows (weak) */
 #define P_PLAYERSTATE  0x420       /* APawn::PlayerState */
@@ -254,6 +266,7 @@ typedef void (*fn_free)(void *);
 typedef void (*fn_set_team)(u8 *, i32, u8);
 typedef char (*fn_sort)(u8 *);
 typedef float (*fn_float)(u8 *);
+typedef u64 *(*fn_fname)(u64 *, const u16 *, i32);
 typedef struct { u8 **data; i32 num; i32 max; } PtrArray;
 
 static u8 *B;                      /* image base */
@@ -634,12 +647,69 @@ char sd_teams(u8 *gs)
     return ((fn_sort)AT(R_SORT_SCORES))(gs);
 }
 
+/* How many of the level's PlayerStarts this mode spawns at: the game's start
+   chooser (AVictoryGameMode, VA 0x140231b50) takes a start only if its Tags
+   hold one of the mode's SpawnPointTags (FName of each string; none listed:
+   every start). Jungle and Prison have 16 SpawnsDecentral starts (the pods:
+   Solo, Duo, Trios, Quads) and 8 SpawnsLightning (Showdown). 0 when it can't
+   tell: the starts aren't listed yet, the URL has ?SpawnTag= (the chooser's
+   other rule), or more tags than expected. */
+static i32 mode_starts(u8 *gm)
+{
+    u8 **starts = FIELD(gm, GM_STARTS, u8 **);
+    FString *tags = FIELD(gm, GM_SPAWN_TAGS, FString *);
+    i32 ns = FIELD(gm, GM_STARTS + 8, i32), nt = FIELD(gm, GM_SPAWN_TAGS + 8, i32);
+    i32 i, j, k, nw = 0, n = 0, hit;
+    u64 want[MAX_SPAWN_TAGS], name;
+    if (!starts || ns <= 0 || nt < 0 || nt > MAX_SPAWN_TAGS || FIELD(gm, GM_SPAWN_TAG + 8, i32) > 1) return 0;
+    for (k = 0; k < nt; k++)
+        if (tags && tags[k].data && tags[k].num > 1)
+            want[nw++] = *((fn_fname)AT(R_FNAME))(&name, tags[k].data, FNAME_ADD);
+    if (nt && !nw) return 0;
+    for (i = 0; i < ns; i++) {
+        u8 *s = starts[i];
+        u64 *t;
+        i32 nn;
+        if (!s) continue;
+        if (!nt) { n++; continue; }
+        t = FIELD(s, A_TAGS, u64 *);
+        nn = FIELD(s, A_TAGS + 8, i32);
+        for (hit = 0, j = 0; t && j < nn && !hit; j++)
+            for (k = 0; k < nw; k++)
+                if (t[j] == want[k]) hit = 1;
+        n += hit;
+    }
+    return n;
+}
+
 void sd_spawn_bots(u8 *gm)
 {
-    i32 size;
+    u8 *world, *list;
+    i32 size, cap, room, humans = 0, i, num;
     B = base();
     if (gm && FIELD(gm, GM_TYPE, u8) == LIGHTNING && (size = showdown_size(gm)) >= 2)
         FIELD(gm, GM_BOTS, i32) = 2 * size - 1;
+    /* One contestant a start. The stock spawner caps players plus bots at 16
+       (patch_exe.py fix 1: 24), but only the mode's starts are free: past them
+       the chooser puts each one more contestant in a random start already
+       taken (its fallback list: AShooterGameMode::IsSpawnpointPreferred,
+       VA 0x140234dd0, refuses a start used once), so 24 on Jungle's 16 pods
+       had 8 contestants in someone else's pod. A team match takes whole teams
+       (15 for Trios). */
+    if (gm && (cap = mode_starts(gm)) > 0) {
+        if (FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS && (size = team_size(gm, CLASSIC_TEAMS)) > 1 && cap >= size)
+            cap -= cap % size;
+        if ((world = world_of(gm)) != 0) {
+            list = world + W_CONTROLLERS;
+            num = FIELD(list, 8, i32);
+            for (i = 0; i < num; i++) {
+                u8 *c = weak_get(list, i);
+                if (c && is_a(c, R_CLS_PC)) humans++;
+            }
+        }
+        room = cap > humans ? cap - humans : 0;
+        if (FIELD(gm, GM_BOTS, i32) > room) FIELD(gm, GM_BOTS, i32) = room;
+    }
     ((fn_void)AT(R_SPAWN_BOTS))(gm);
 }
 

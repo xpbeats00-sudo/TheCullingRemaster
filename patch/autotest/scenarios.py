@@ -102,7 +102,24 @@ def teams_check(r, name, size, nteams):
                                                                     t["myteam"], t["mates"]))]
 
 
-def board_check(r, name, want=24):
+def pods_check(r, name, want):
+    """release-next 452b07e: one contestant a start, bots with only their fists, as the pods open."""
+    ev = first(r.ev("pods_open")) or first([e for e in r.ev("pods") if e.get("el", 0) >= 1]) or first(r.ev("pods"))
+    if not ev:
+        return [ok(name + ": pods: one contestant each, %d contestants, bots with fists only" % want, False, "no pods event")]
+    pods = first(r.ev("pods"), {})
+    return [ok(name + ": %d contestants (BotsToSpawn capped at the mode's free starts)" % want, ev["contestants"] == want,
+               "%d contestants at InProgress second %s; the mode's starts %s, BotsToSpawn %s"
+               % (ev["contestants"], ev.get("el"), ev.get("starts"), ev.get("bots_to_spawn"))),
+            ok(name + ": as the pods open no two contestants are within 150 units",
+               ev.get("closest") is not None and ev["closest"] >= 150,
+               "closest two pawns %s apart (fighters %s/%s) at second %s; in the pods (second %s) %s"
+               % (ev.get("closest"), ev.get("a"), ev.get("b"), ev.get("el"), pods.get("el"), pods.get("closest"))),
+            ok(name + ": no bot has a weapon besides its fists", ev["bots_armed"] == 0,
+               "%d bots armed%s" % (ev["bots_armed"], (": " + ", ".join(ev["armed"])) if ev["armed"] else ""))]
+
+
+def board_check(r, name, want=16):
     st = r.ev("state") + r.ev("teams")
     boards = [(e["board"], e["sorted"]) for e in st if e.get("el", 0) >= 5]
     full = [b for b in boards if b[0] == want and b[1] == want]
@@ -156,10 +173,11 @@ def no_teamkill_check(r, name):
 # ---------------------------------------------------------------- scenarios
 
 def check_teamwin(r, name, size, nteams, ranked_mode=None):
-    c = ran(r, name) + board_check(r, name)
+    contestants = size * nteams if size > 1 else 16
+    c = ran(r, name) + board_check(r, name, contestants) + pods_check(r, name, contestants)
     if size > 1:
         c += teams_check(r, name, size, nteams) + tms_check(r, name, size - 1)
-    c += win_check(r, name, ranked_mode, nteams if size > 1 else 24)
+    c += win_check(r, name, ranked_mode, nteams if size > 1 else 16)
     return c
 
 
@@ -203,7 +221,7 @@ def check_solodeath(r, name):
     m = re.search(r"place (\d+)/(\d+)", rr[-1]) if rr else None
     c.append(ok(name + ": Solo death Rank is your position (contestants alive at your death)", raw == alive,
                 "raw Rank %s, alive just before your death %s" % (raw, alive)))
-    c.append(ok(name + ": ranked solo scored that position", m and raw and int(m.group(1)) == min(24, max(2, raw)),
+    c.append(ok(name + ": ranked solo scored that position", m and raw and int(m.group(1)) == min(16, max(2, raw)),
                 rr[-1][-140:] if rr else "no ranked result line"))
     return c
 
@@ -373,20 +391,22 @@ def check_bots(r, name):
 
 # name, queue the menu sends, the module's scenario, timeout (s), check
 SCENARIOS = [
-    ("quads_win", "coop4_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Quads", 4, 6) + no_teamkill_check(r, "Quads")),
-    ("trios_win", "coop3_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Trios", 3, 8) + no_teamkill_check(r, "Trios")),
-    ("duo_win", "coop2_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Duo", 2, 12) + no_teamkill_check(r, "Duo")),
+    # Jungle and Prison have 16 starts (SpawnsDecentral): 16 contestants, 15 in Trios (5 whole trios).
+    ("quads_win", "coop4_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Quads", 4, 4) + no_teamkill_check(r, "Quads")),
+    ("trios_win", "coop3_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Trios", 3, 5) + no_teamkill_check(r, "Trios")),
+    ("duo_win", "coop2_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Duo", 2, 8) + no_teamkill_check(r, "Duo")),
     ("sd_1v1", "showdown", "sd", 420, lambda r: check_sd(r, "Showdown 1v1", 1)),
     ("sd_2v2", "showdown_duo", "sd", 420, lambda r: check_sd(r, "Showdown 2v2", 2)),
     ("sd_3v3", "showdown_trio", "sd", 420, lambda r: check_sd(r, "Showdown 3v3", 3)),
     ("sd_4v4", "showdown_quad", "sd", 420, lambda r: check_sd(r, "Showdown 4v4", 4)),
-    ("ranked_solo_win", "ranked_ffa_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Ranked Solo", 1, 24, "solo")),
-    ("ranked_solo_death", "ranked_ffa_jungle", "solodeath", 420, lambda r: check_solodeath(r, "Ranked Solo death")),
-    ("ranked_duo_out", "ranked_coop2_jungle", "teamout", 420, lambda r: check_teamout(r, "Ranked Duo", 2, 12, "duo")),
-    ("ranked_trio_win", "ranked_coop3_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Ranked Trio", 3, 8, "trio")),
-    ("ranked_quad_out", "ranked_coop4_jungle", "teamout", 420, lambda r: check_teamout(r, "Ranked Quads", 4, 6, "quad")),
+    ("ranked_solo_win", "ranked_ffa_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Ranked Solo", 1, 16, "solo")),
+    ("ranked_solo_death", "ranked_ffa_jungle", "solodeath", 420,
+     lambda r: check_solodeath(r, "Ranked Solo death") + pods_check(r, "Ranked Solo death", 16)),
+    ("ranked_duo_out", "ranked_coop2_jungle", "teamout", 420, lambda r: check_teamout(r, "Ranked Duo", 2, 8, "duo")),
+    ("ranked_trio_win", "ranked_coop3_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Ranked Trio", 3, 5, "trio")),
+    ("ranked_quad_out", "ranked_coop4_jungle", "teamout", 420, lambda r: check_teamout(r, "Ranked Quads", 4, 4, "quad")),
     ("chokening", "coop2_jungle", "choke", 420, lambda r: check_choke(r, "Chokening")),
-    ("unstick", "ffa_prison", "unstick", 300, lambda r: check_unstick(r, "Unstick")),
+    ("unstick", "ffa_prison", "unstick", 300, lambda r: check_unstick(r, "Unstick") + pods_check(r, "Prison Solo", 16)),
     ("bots", "ffa_jungle", "bots", 400, lambda r: check_bots(r, "Smarter opponents")),
     ("night", "ffa_jungle_night", "night", 1080, lambda r: check_night(r, "Night weather")),
 ]

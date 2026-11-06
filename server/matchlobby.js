@@ -24,10 +24,14 @@ class MatchLobbies {
   // describe(member) -> the public card for one player; send(member, payload);
   // start(lobby) when its countdown ends. Timers and the clock are injectable
   // for tests.
-  constructor({ describe, send, start, options = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  // onError(error, lobby, where): a describe/send ("send") or start ("start")
+  // that threw. They run from the lobby timers, where an exception would be
+  // uncaught (and the server exits on one), so they are caught and reported.
+  constructor({ describe, send, start, onError, options = {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
     this.describe = describe;
     this.send = send;
     this.startMatch = start;
+    this.onError = onError || ((e, lobby, where) => console.error("lobby", lobby && lobby.id, where, "failed:", e && e.stack || e));
     this.options = Object.assign({}, DEFAULTS, options);
     this.now = now;
     this.setTimer = setTimer;
@@ -167,7 +171,12 @@ class MatchLobbies {
     if (lobby.state !== "starting") return;
     lobby.state = "started";
     for (const id of lobby.members.keys()) this.byMember.delete(id);
-    if (lobby.members.size) this.startMatch(lobby);
+    if (!lobby.members.size) return;
+    try { this.startMatch(lobby); } catch (e) { this.report(e, lobby, "start"); }
+  }
+
+  report(e, lobby, where) {
+    try { this.onError(e, lobby, where); } catch { /* never throw from the error path */ }
   }
 
   // What a member's menu shows.
@@ -199,9 +208,14 @@ class MatchLobbies {
     };
   }
 
+  // Every member gets the new view; one that can't be described or sent to
+  // is reported and the others still get it.
   broadcast(lobby) {
-    const payload = this.view(lobby);
-    for (const m of lobby.members.values()) this.send(m, payload);
+    let payload;
+    try { payload = this.view(lobby); } catch (e) { return this.report(e, lobby, "send"); }
+    for (const m of lobby.members.values()) {
+      try { this.send(m, payload); } catch (e) { this.report(e, lobby, "send"); }
+    }
   }
 
   stats() {

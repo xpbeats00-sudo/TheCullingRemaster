@@ -3,7 +3,12 @@
 1. Contestant cap. The game mode spawns min(BotsToSpawn, 16 - human players)
    bots (AVictoryGameMode at VA 0x14023218a: mov eax, 16; sub eax, esi;
    cmovle). This changes the 16. Jungle has 24 player starts, so 24 is the
-   most it can place.
+   most it can place - but a mode spawns only at its own: Solo, Duo, Trios
+   and Quads at the 16 tagged SpawnsDecentral (the pods, on Jungle and
+   Prison), Showdown at the 8 SpawnsLightning. Past those the game's start
+   chooser puts a contestant in a start already taken (1.3.11: 8 contestants
+   in other players' pods), so fix 5's module caps the bots at the mode's
+   free starts (showdown_rounds.c sd_spawn_bots).
 
 2. SHA-1 crash on newer CPUs. The exe links OpenSSL 1.0.2g. On a CPU with the
    SHA instructions (Intel 11th gen and later, AMD Zen), its SHA-1 dispatcher
@@ -197,7 +202,7 @@ import showdown_rounds_blob as ROUNDS  # noqa: E402
 
 CAP_AT = 0x231790                   # file offset of "mov eax, 16" (b8 10 00 00 00)
 STOCK = 16
-MAX = 24                            # Jungle_P's PlayerStarts
+MAX = 24                            # Jungle_P's PlayerStarts (16 pods + 8 Showdown starts; the module caps at a mode's own)
 
 SHA_GATE_AT = 0x4B334               # file offset of "test r10d, 0x20000000"
 SHA_GATE = bytes.fromhex("41f7c200000020")
@@ -246,7 +251,7 @@ SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 # fix (1-11, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "ff5d607e51152fa248da9b618682ac003ee1e70535ec4561e38a1acca1436193"
+PATCHED_SHA256 = "8803bcec60b3a1077aba73137ce2fd0910168bc83099185f58313269a78baa23"
 
 
 def _cap(data, path, contestants):

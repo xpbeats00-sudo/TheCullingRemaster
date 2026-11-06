@@ -124,8 +124,44 @@ test("a death mid-series: no death screen; the death that loses the series ends 
   p.say("SDR|E|3|0|3|L");
   p.say("SDR|S|4|0|3|1");
   p.g.SetDeathData({}, false);
+  assert.deepStrictEqual(p.deaths, [], "at 0-3 the death waits for the round's message (it may be a draw)");
+  p.say("SDR|O|4|0|4|L");
   assert.deepStrictEqual(p.deaths, [false], "the 4th loss shows the death screen");
   assert.strictEqual(p.g.window.ShowdownHud.round(), 4, "the match result names round 4");
+});
+
+test("1v1 at 0-3: a draw (both down) doesn't end the series; the death screen waits for the loss", () => {
+  // Draw: the death first, then the module's round message.
+  const p = page();
+  p.say("SDR|S|4|0|3|1");
+  p.g.SetDeathData({}, false);
+  p.say("SDR|E|4|0|3|D");
+  p.flush();
+  assert.deepStrictEqual(p.deaths, [], "a draw at 0-3: no death screen, no match result");
+  p.say("SDR|S|5|0|3|2");
+  p.flush();
+  assert.deepStrictEqual(p.deaths, [], "round 5 plays on");
+  // The round's message before the death (0-3 reported, then the death of round 3).
+  const q = page();
+  q.say("SDR|S|3|0|2|0");
+  q.say("SDR|E|3|0|3|L");
+  q.g.SetDeathData({}, false);
+  q.say("SDR|S|4|0|3|1");
+  q.flush();
+  assert.deepStrictEqual(q.deaths, [], "round 3's death after its round message isn't the series' end");
+  // The series lost, the O message before the death: through at once.
+  const r = page();
+  r.say("SDR|S|4|0|3|1");
+  r.say("SDR|O|4|0|4|L");
+  r.g.SetDeathData({}, false);
+  assert.deepStrictEqual(r.deaths, [false]);
+  // No message at all (an older module): the death goes through after the wait.
+  const t = page();
+  t.say("SDR|S|4|0|3|1");
+  t.g.SetDeathData({}, false);
+  assert.deepStrictEqual(t.deaths, []);
+  t.flush();
+  assert.deepStrictEqual(t.deaths, [false], "without a round message the death screen still comes");
 });
 
 test("the series won: the last round message, then the stock VICTORY", () => {

@@ -29,6 +29,8 @@ import build_showdown_rounds as BUILD  # noqa: E402
 HARNESS = os.path.join(BUILD.HERE, "test_native_module.c")
 STOCK_EXE = r"C:\Culling\TheCulling\Victory\Binaries\Win64\Victory.exe"
 HUD_TICK = 0x1fbea1             # the panel's search (showdown_rounds.c, docs/TEAM_SIZES_TRIOS_QUADS.md)
+CHOOSER = 0x231b50              # AVictoryGameMode's start chooser (FreeForAll's override calls it, VA 0x14024487d)
+PREFERRED = 0x234dd0            # IsSpawnpointPreferred (FreeForAll vtable +0x8e0)
 
 
 def defines():
@@ -88,12 +90,35 @@ def exe_checks(path):
         sys.exit("FAIL +0x%x is set to 1 at %d places, not 1 (the panel's tick)" % (flag, len(sets)))
     print("ok    AVictoryPlayerHUD +0x%x: the teammate panel searches while it isn't 1, sets it once (VA %x)"
           % (flag, TW.BASE + HUD_TICK))
+    # One start each (sd_spawn_bots' mode_starts): the game's start chooser walks GM_STARTS, skips
+    # SpawnTag (GM_SPAWN_TAG) unless set, and takes a start whose Tags (A_TAGS) hold the FName
+    # (R_FNAME, FNAME_ADD = 1) of one of GM_SPAWN_TAGS' strings; IsSpawnpointPreferred refuses a start
+    # used once (+0x434), so past the free ones it falls back to a taken start.
+    code = " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in ex.code(CHOOSER, 0x420))
+    fname = TW.BASE + d["R_FNAME"]
+    for what, want in (
+            ("the starts", r"cmp dword ptr \[rcx \+ 0x%x\], ebx .*mov rax, qword ptr \[r15 \+ 0x%x\]"
+             % (d["GM_STARTS"] + 8, d["GM_STARTS"])),
+            ("?SpawnTag=", r"cmp dword ptr \[r15 \+ 0x%x\], 1 \| jle .*mov rdx, qword ptr \[r15 \+ 0x%x\]"
+             % (d["GM_SPAWN_TAG"] + 8, d["GM_SPAWN_TAG"])),
+            ("SpawnPointTags", r"mov eax, dword ptr \[r15 \+ 0x%x\] .*mov rax, qword ptr \[r15 \+ 0x%x\]"
+             % (d["GM_SPAWN_TAGS"] + 8, d["GM_SPAWN_TAGS"])),
+            ("the tag's FName", r"mov r8d, %d \| lea rcx, \[rsp \+ 0x30\] \| cmovne rdx, rdi \| call 0x%x \| "
+             r"mov rdx, qword ptr \[r13 \+ 0x%x\] \| movsxd rcx, dword ptr \[r13 \+ 0x%x\]"
+             % (1, fname, d["A_TAGS"], d["A_TAGS"] + 8))):
+        if not re.search(want, code):
+            sys.exit("FAIL the start chooser at %x doesn't read %s as mode_starts does" % (TW.BASE + CHOOSER, what))
+    pref = " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in ex.code(PREFERRED, 0x1a0))
+    if not re.search(r"cmp dword ptr \[r14 \+ 0x434\], 0 \| .*jle .*xor al, al", pref):
+        sys.exit("FAIL IsSpawnpointPreferred at %x doesn't refuse a used start" % (TW.BASE + PREFERRED))
+    print("ok    the start chooser (VA %x): the mode's starts by SpawnPointTags; a used start is only a fallback (VA %x)"
+          % (TW.BASE + CHOOSER, TW.BASE + PREFERRED))
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     imm = set()
     for i in md.disasm(ROUNDS.BLOB[:ROUNDS.SD_SELF_RVA], 0):
         for h in re.findall(r"0x[0-9a-f]+", i.op_str):
             imm.add(int(h, 16))
-    for k in ("C_CONTROL_ROT", "HUD_MATE_FOUND", "US_TELEPORT"):
+    for k in ("C_CONTROL_ROT", "HUD_MATE_FOUND", "US_TELEPORT", "R_FNAME", "GM_STARTS", "GM_SPAWN_TAGS", "A_TAGS"):
         if d[k] not in imm:
             sys.exit("FAIL the blob doesn't use %s (0x%x)" % (k, d[k]))
     print("ok    the blob uses ControlRotation, the panel's flag and K2_TeleportTo")

@@ -91,7 +91,7 @@ function modeForPlaylist(playlist) {
 }
 
 // How many teams a team match has: the contestants the map places, divided
-// by the team size (24 on Jungle: 12 duos, 8 trios, 6 quads).
+// by the team size (16 on Jungle and Prison: 8 duos, 5 trios, 4 quads).
 function teamField(mode, contestants = CONFIG.maxField) {
   const size = MODES[modeId(mode)].teamSize;
   const n = Number.isInteger(contestants) && contestants >= 2 ? Math.min(contestants, CONFIG.maxField) : CONFIG.maxField;
