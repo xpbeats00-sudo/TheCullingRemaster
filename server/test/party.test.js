@@ -335,9 +335,32 @@ async function run(srv, label) {
       }
     });
 
-    await test("Ranked teams and team Showdown are refused with a reason; Duos and Showdown Solo refuse a party of three", async () => {
+    await test("a party of three queues Showdown Trios and Quads as one: one lobby (just the party), one match, showdown:<N>, a series each", async () => {
+      const N = h.N;
+      for (const [q, size] of [["showdown_trio", 3], ["showdown_quad", 4]]) {
+        clear(L, M, N);
+        const rs = [waitFor(L, "match-ready"), waitFor(M, "match-ready"), waitFor(N, "match-ready")];
+        const series = [L, M, N].map((p) => waitFor(p, "remaster-showdown"));
+        M.socket.emit("join-mm", { queueName: q });
+        const got = await Promise.all(rs);
+        assert.strictEqual(new Set(got.map((g) => g.matchId)).size, 1, q + ": one match");
+        assert.ok(got.every((g) => g.gameServer === "showdown:" + size && g.playlist === q), q + ": " + JSON.stringify(got));
+        const lobbies = [L, M, N].map((p) => lastLobby(p));
+        assert.strictEqual(new Set(lobbies.map((x) => x.id)).size, 1, q + ": one lobby");
+        assert.deepStrictEqual(lobbies[0].players.map((p) => p.name).sort(), ["Lead Wolf", "Member Fox", "Third Owl"].sort());
+        assert.strictEqual(lobbies[0].maps, null, q + ": no map vote (the arena)");
+        assert.strictEqual(lobbies[0].matchBots, 2 * size - 1, q + ": the match's bots");
+        const s = await Promise.all(series);
+        assert.ok(s.every((x) => x.phase === "round" && x.series.teamSize === size && x.series.format === size + "v" + size
+          && x.series.mode === q && x.format === size + "v" + size), q + ": " + JSON.stringify(s[0]));
+        assert.strictEqual(new Set(s.map((x) => x.series.id)).size, 3, q + ": each member's own series");
+        await finish(L); await finish(M); await finish(N);
+      }
+    });
+
+    await test("Ranked teams are refused with a reason; Duos, Showdown Duos and Showdown Solo refuse a party of three", async () => {
       for (const [q, reason] of [["ranked_ffa_jungle_coop3", "queue-unavailable"], ["ranked_coop4", "queue-unavailable"],
-        ["ffa_jungle_coop2", "party-too-large"], ["showdown_duo", "mode-not-supported"], ["showdown_trio", "mode-not-supported"], ["showdown_quad", "mode-not-supported"],
+        ["ffa_jungle_coop2", "party-too-large"], ["showdown_duo", "party-too-large"],
         ["ranked_showdown", "mode-not-supported"], ["showdown", "party-too-large"]]) {
         const fail = waitFor(M, "join-mm-fail");
         M.socket.emit("join-mm", { queueName: q });

@@ -4,7 +4,9 @@
 // match), with its own economy. Part 2: a throwaway server - the queue starts
 // the series straight away (no lobby, out of any lobby) as "showdown:1v1", the
 // HUD reports rounds, the match result pays the series once, and the menu
-// shows the final score (or the forfeit of a series left unfinished).
+// shows the final score (or the forfeit of a series left unfinished). Team
+// Showdown (2v2, 3v3, 4v4): a lobby of one team, "showdown:<N>", the same
+// series and economy, recorded per team mode.
 "use strict";
 
 const assert = require("assert");
@@ -131,6 +133,23 @@ const A = "steam:76561190000000801";
     assert.ok(pay.credits < 400 && pay.xp < 2500, "a whole series pays less than one full match");
   });
 
+  await test("team Showdown: the same series and economy; kills bound by the team size per round won", async () => {
+    const sd = new ShowdownSeries();
+    const { series } = sd.startSeries("t", { mode: "showdown_trio", teamSize: 3 });
+    assert.deepStrictEqual([series.mode, series.teamSize, series.format], ["showdown_trio", 3, "3v3"]);
+    for (const [n, x] of [[1, "W"], [2, "L"], [3, "W"], [4, "W"], [5, "W"]]) sd.recordInMatch("t", n, x);
+    const v = sd.claimPayout("t");
+    assert.ok(v.over && v.won && v.teamSize === 3);
+    const team = seriesPayout(v, { kills: 99, damage: 1e9, timeAlive: 50, maxTime: 100 });
+    const solo = seriesPayout(Object.assign({}, v, { teamSize: 1 }), { kills: 99, damage: 1e9, timeAlive: 50, maxTime: 100 });
+    assert.deepStrictEqual([team.xp, team.credits], [solo.xp, solo.credits], "the economy doesn't depend on the team size");
+    assert.deepStrictEqual([team.kills, solo.kills], [12, 4], "3 rivals per round won (4), 1 in 1v1");
+    assert.strictEqual(team.damage, solo.damage);
+    const old = sd.view(Object.assign({}, sd.last("t"), { mode: undefined, teamSize: undefined }));
+    assert.deepStrictEqual([old.mode, old.teamSize, old.format], ["showdown", 1, "1v1"], "a series saved before team Showdown is 1v1");
+    assert.strictEqual(sd.startSeries("u", { teamSize: 9 }).series.teamSize, 1, "an impossible size is 1v1");
+  });
+
   await test("the series survive a restart (showdown-series.json); finished ones are dropped", async () => {
     const fs = require("fs"), os = require("os"), path = require("path");
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "culling-sd-")), "showdown-series.json");
@@ -152,7 +171,8 @@ const A = "steam:76561190000000801";
   const sockets = [];
   try {
     await srv.ready();
-    const a = await srv.connect(await srv.login(A));
+    const tokenA = await srv.login(A);
+    const a = await srv.connect(tokenA);
     sockets.push(a);
     let lobbies = 0;
     a.on("remaster-lobby", () => lobbies++);
@@ -168,6 +188,9 @@ const A = "steam:76561190000000801";
     }
     const roundPost = (round, result) => srv.request("POST", "/api/showdown/round", { round, result });
     const matchResult = (body) => srv.request("POST", "/api/matchresult", Object.assign({ damage: 120, timeAlive: 90, placement: 1, cap: 24 }, body));
+    // Another player's ticket from this address is open by then: A's own, by token.
+    const myResult = (body) => srv.request("POST", "/api/matchresult", Object.assign({ damage: 120, timeAlive: 90, placement: 1, cap: 24 }, body),
+      { Authorization: "Bearer " + tokenA });
 
     await test("the showdown queue starts the series in one match, without a lobby, with the kits", async () => {
       const start = await queue();
@@ -297,6 +320,57 @@ const A = "steam:76561190000000801";
       const hud = await srv.request("GET", "/api/showdown");
       assert.strictEqual(hud.json.active, false);
       assert.strictEqual((await roundPost(1, "W")).status, 409, "no rounds outside Showdown");
+    });
+
+    await test("team Showdown: a lobby of one team (no map vote), showdown:<N>, the series per team, recorded per mode", async () => {
+      for (const [q, size] of [["showdown_duo", 2], ["showdown_trio", 3], ["showdown_quad", 4]]) {
+        const lobbyP = next(a, "remaster-lobby");
+        const stateP = next(a, "remaster-showdown");
+        const readyP = next(a, "match-ready");
+        a.emit("join-mm", { queueName: q });
+        const lobby = await lobbyP;
+        assert.deepStrictEqual([lobby.queue, lobby.maxPlayers, lobby.maps, lobby.matchBots, lobby.matchBotsByMap],
+          [q, size, null, 2 * size - 1, null], q + " lobby");
+        const ready = await readyP;
+        assert.deepStrictEqual([ready.gameServer, ready.playlist, ready.netplay], ["showdown:" + size, q, false]);
+        const state = await stateP;
+        assert.deepStrictEqual([state.phase, state.format, state.series.teamSize, state.series.mode, state.series.round],
+          ["round", size + "v" + size, size, q, 1]);
+        const hud = (await srv.request("GET", "/api/showdown")).json;
+        assert.ok(hud.active && hud.series.teamSize === size && hud.format === size + "v" + size, q + " HUD");
+        for (const [n, x] of [[1, "W"], [2, "W"], [3, "D"], [4, "W"]]) assert.ok((await roundPost(n, x)).json.counted);
+        const last = await roundPost(5, "W");
+        assert.ok(last.json.series.over && last.json.series.won);
+        const res = await myResult({ victory: true, kills: 50, showdownRound: 5 });
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.json.xpEarned, PAYOUT.xpBase + 4 * PAYOUT.xpPerRound + PAYOUT.xpWin, "the 1v1 economy");
+        assert.strictEqual(res.json.credits, PAYOUT.creditsBase + 4 * PAYOUT.creditsPerRound + PAYOUT.creditsWin);
+        assert.strictEqual(srv.profiles()[A].showdownTeams[q].won, 1, q + " recorded under its mode");
+      }
+      const p = srv.profiles()[A];
+      assert.strictEqual(p.showdown.won, 1, "team series never count on the 1v1 record");
+      const card = (await srv.request("GET", "/api/showdown")).json;
+      assert.strictEqual(card.active, false, "nothing open after the series paid");
+    });
+
+    await test("team Showdown lost: the death that loses the series counts, a forfeit is a loss for its mode", async () => {
+      const stateP = next(a, "remaster-showdown");
+      a.emit("join-mm", { queueName: "showdown_quad" });
+      await next(a, "match-ready");
+      await stateP;
+      for (const [n, x] of [[1, "L"], [2, "L"], [3, "L"]]) await roundPost(n, x);
+      const res = await myResult({ victory: false, kills: 0, showdownRound: 4 });
+      assert.ok(res.json.showdown.series.over && res.json.showdown.series.won === false);
+      assert.deepStrictEqual(srv.profiles()[A].showdownTeams.showdown_quad, { won: 1, lost: 1 });
+      const s2 = next(a, "remaster-showdown");
+      a.emit("join-mm", { queueName: "showdown_duo" });
+      await next(a, "match-ready");
+      await s2;
+      const left = next(a, "remaster-showdown");
+      a.emit("showdown-leave");
+      assert.strictEqual((await left).phase, "left");
+      assert.deepStrictEqual(srv.profiles()[A].showdownTeams.showdown_duo, { won: 1, lost: 1 });
+      await myResult({ victory: false });
     });
 
     await test("Duo starts the pairs mode on the voted map (duo:<map>)", async () => {

@@ -49,6 +49,10 @@ const MAPS = weather.maps(WEATHER);
 const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // Showdown (patch/make_showdown.py): you against one rival in the Jungle centre
 // arena. No lobby or map vote; the menu starts it from "showdown:<format>".
+// Team Showdown (showdown_duo/trio/quad, playlists.js): your team of N (you
+// and AI teammates) against N AI rivals. A party of up to N shares a lobby
+// (one team, no map vote) and match record; the menu starts it from
+// "showdown:<N>" (the arena URL with ?TeamSize=N).
 // Rounds: first to 4 (ShowdownSeries), all in one match with the patched exe
 // (patch/showdown_rounds.c): the HUD reports each round (/api/showdown/round)
 // and the match result that ends the series pays for the series once
@@ -64,7 +68,8 @@ try {
   showdownKit = data.kit || null;
   showdownKits = Array.isArray(data.kits) && data.kits.length ? data.kits : null;
 } catch (e) { showdownKit = null; showdownKits = null; }
-const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, kits: showdownKits, format: SHOWDOWN.format });
+const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, kits: showdownKits,
+  format: series && series.format ? series.format : SHOWDOWN.format });
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
@@ -656,7 +661,7 @@ function showdownMatchResult(res, claim, body, userID) {
     st.minutesAlive += Math.round(r.timeAlive / 60);
     p.lastMatch = { at: Date.now(), xpEarned: earned, victory: r.victory, kills: r.kills, damage: r.damage,
       timeAlive: r.timeAlive, func: 0, showdown: { wins: paid.wins, losses: paid.losses } };
-    if (showdowns.markRecorded(userID)) recordShowdown(userID, paid.won);
+    if (showdowns.markRecorded(userID)) recordShowdown(userID, paid.won, paid.mode);
     saveProfiles();
     log('showdown series paid', userID, paid.wins + '-' + paid.losses, paid.won ? 'VICTORY' : 'defeat',
       '+' + earned + ' XP, +' + credits + ' credits');
@@ -683,8 +688,8 @@ app.post('/api/showdown/round', (req, res) => {
   const view = showdowns.recordInMatch(userID, round, result);
   if (view) {
     log('showdown round', userID, round, result, view.wins + '-' + view.losses, view.over ? (view.won ? 'VICTORY' : 'defeat') : '');
-    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won);
-    setPresence(userID, 'match', { mode: SHOWDOWN.queue, round: view.round });
+    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won, view.mode);
+    setPresence(userID, 'match', { mode: view.mode, round: view.round });
   }
   const s = showdowns.last(userID);
   res.json({ counted: Boolean(view), series: s ? showdowns.view(s) : null });
@@ -1133,8 +1138,12 @@ const lobbies = new MatchLobbies({
     gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
     // The pregame lobby: long enough to see the match's roster and the map.
     countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '10000', 10),
-    maxPlayers: 16,
+    // Team Showdown: a lobby is one team (your party, up to its size).
+    maxPlayers: { default: 16, showdown_duo: 2, showdown_trio: 3, showdown_quad: 4 },
     maps: Object.keys(MAPS),
+    // Team Showdown is always the arena: no map vote, its own bots (2N - 1).
+    queues: { showdown_duo: { maps: false, matchBots: 3 }, showdown_trio: { maps: false, matchBots: 5 },
+      showdown_quad: { maps: false, matchBots: 7 } },
     // Who else is in each player's match: the game fills it with bots up to
     // 16 contestants (Victory.exe caps players plus bots at 16), or up to
     // FIELD_BY_MAP with patch_exe.py (menus from those builds read the map's).
@@ -1315,29 +1324,23 @@ function startLocalMatch(socket, raw) {
     { members: names });
   }
 
-  if (playlist.kind === 'showdown') {
+  if (playlist.kind === 'showdown' && playlist.teamSize === 1) {
     socket.emit('join-mm-ack');
     // Out of any lobby still searching: its match-ready would land mid-series.
     lobbies.leave(userID);
-    // The whole series is this match. One left unfinished is forfeited first.
-    const before = showdowns.current(userID);
-    const { series, left } = showdowns.startSeries(userID);
-    if (left && before && before.recorded === false) { before.recorded = true; recordShowdown(userID, false); }
-    socket.emit('remaster-showdown', showdownState('round', series));
-    setPresence(userID, 'match', { mode: SHOWDOWN.queue, round: series.round });
     return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map, { matchId: newMatchId(), lobbyId: null, partyId: null });
   }
 
   socket.emit('join-mm-ack');
   if (!others.length) {
-    lobbies.join(mode, { id: userID, socket }, map);
+    lobbies.join(mode, { id: userID, socket }, playlist.kind === 'showdown' ? null : map);
     return;
   }
   // The party: the members' menus follow the leader (join-mm-group, with the
   // queue so they show the right mode), then everyone joins one lobby at once.
   for (const id of others) liveSocket(id).emit('join-mm-group', { queueName: q, playlist: mode, partyId: p.id });
   const group = [{ id: userID, socket }].concat(others.map((id) => ({ id, socket: liveSocket(id) })));
-  const lobby = lobbies.joinGroup(mode, group, map, p.id);
+  const lobby = lobbies.joinGroup(mode, group, playlist.kind === 'showdown' ? null : map, p.id);
   log('party', p.id, 'queued', mode, 'lobby', lobby.id, p.members.length, 'player(s)');
 }
 
@@ -1391,8 +1394,9 @@ function allocateMatch(lobby) {
 // from here, so cancelling in the lobby costs nothing. `shared` is the match
 // record the player's lobby shares: { matchId, lobbyId, partyId }.
 function launchMatch(socket, queue, map, shared = {}) {
-  const showdown = queue === SHOWDOWN.queue;
-  const mode = showdown ? SHOWDOWN.queue : lobbyQueue(queue).mode;
+  const sdPlaylist = playlists.resolve(queue).playlist;
+  const showdown = sdPlaylist.kind === 'showdown';
+  const mode = showdown ? sdPlaylist.id : lobbyQueue(queue).mode;
   // Duo, Trios, Quads: the pairs mode with you and 1-3 teammates
   // (patch/make_duo.py); the menu starts it from "duo:<map>" ("trio:", "quad:").
   const team = TEAM_MODES[mode] || null;
@@ -1419,13 +1423,16 @@ function launchMatch(socket, queue, map, shared = {}) {
     partyId: shared.partyId || null
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode });
+  else beginSeries(socket, sdPlaylist);
   // Night maps and weather: the map's URL with the match's weather preset and
   // seed ("map:<solo|duo>:<index>[?TeamSize=N]?Weather=..."); otherwise the
   // stock answers (offline:, duo:, trio:, quad:<map>).
   const sky = showdown ? null : weather.weatherFor(WEATHER, map);
-  const answer = showdown ? 'showdown:' + SHOWDOWN.format
+  // Showdown: "showdown:1v1" (the arena URL), team Showdown "showdown:<N>"
+  // (the arena URL with ?TeamSize=N; ClientWeb.js RemasterShowdownURL).
+  const answer = showdown ? 'showdown:' + (sdPlaylist.teamSize > 1 ? sdPlaylist.teamSize : SHOWDOWN.format)
     : weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, team, sky);
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + sdPlaylist.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   socket.emit('match-ready', {
     gameServer: answer,
@@ -1441,10 +1448,21 @@ function launchMatch(socket, queue, map, shared = {}) {
   });
 }
 
+// The whole series is this match (any team size): one left unfinished is
+// forfeited first. The menu gets the series, friends see the round.
+function beginSeries(socket, playlist) {
+  const userID = socket.userID;
+  const before = showdowns.current(userID);
+  const { series, left } = showdowns.startSeries(userID, { mode: playlist.id, teamSize: playlist.teamSize });
+  if (left && before && before.recorded === false) { before.recorded = true; recordShowdown(userID, false, before.mode); }
+  socket.emit('remaster-showdown', showdownState('round', series));
+  setPresence(userID, 'match', { mode: playlist.id, round: series.round });
+}
+
 // How many contestants a match had: the stock 16 unless the game reports a
 // higher cap (builds with patch_exe.py), then what the map places, within it.
 function matchField(map, cap) {
-  if (map === SHOWDOWN.map) return SHOWDOWN.field;
+  if (map === SHOWDOWN.map) return SHOWDOWN.field;   // Showdown results are scored by showdownMatchResult
   const reported = parseInt(cap, 10);
   if (!Number.isInteger(reported) || reported <= ranked.CONFIG.field) return ranked.CONFIG.field;
   return Math.min(reported, ranked.CONFIG.maxField, FIELD_BY_MAP[map] || ranked.CONFIG.field);
@@ -1458,7 +1476,7 @@ function sendShowdown(socket, loginAt) {
   const s = showdowns.current(socket.userID) || showdowns.last(socket.userID);
   if (!s) return;
   if (!s.over && s.startedAt >= loginAt) return;
-  if (!s.over && showdowns.leave(socket.userID) && showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false);
+  if (!s.over && showdowns.leave(socket.userID) && showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false, s.mode);
   if (s.over && showdowns.markAnnounced(socket.userID)) socket.emit('remaster-showdown', showdownState('over', showdowns.view(s)));
 }
 
@@ -1469,6 +1487,7 @@ function sendShowdown(socket, loginAt) {
 const presence = new Map();     // userID -> { state, mode, round, since }
 const MATCH_PRESENCE_MS = 45 * 60 * 1000;
 const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', coop3: 'Trios', coop4: 'Quads', ranked_ffa: 'Ranked', showdown: 'Showdown',
+  showdown_duo: 'Showdown Duos', showdown_trio: 'Showdown Trios', showdown_quad: 'Showdown Quads',
   lightning: 'Lightning', custom: 'Custom' };
 
 function usernameOf(userID) {
@@ -1506,7 +1525,7 @@ function statusOf(userID) {
   else if (playing) state = 'match';
   const mode = st && st.mode && MODE_LABELS[st.mode] ? MODE_LABELS[st.mode] : null;
   let label = { offline: 'Offline', menu: 'In menu', searching: 'Searching', lobby: 'In lobby', match: 'In match' }[state];
-  if (mode && state !== 'offline' && state !== 'menu') label += ' · ' + mode + (st.round && mode === 'Showdown' ? ' round ' + st.round : '');
+  if (mode && state !== 'offline' && state !== 'menu') label += ' · ' + mode + (st.round && /^Showdown/.test(mode) ? ' round ' + st.round : '');
   return { state, label, lastSeen: state === 'offline' ? friends.peek(userID).seen : null };
 }
 
@@ -1555,12 +1574,30 @@ function notifyFriends(userID) {
   }
 }
 
-// A finished Showdown series on the player's record (their card shows it).
-function recordShowdown(userID, won) {
+// A finished Showdown series on the player's record (their card shows it):
+// 1v1 under `showdown` (as before), team Showdown per playlist under
+// `showdownTeams` ({ showdown_duo: { won, lost }, ... }).
+const SHOWDOWN_TEAM_MODES = ['showdown_duo', 'showdown_trio', 'showdown_quad'];
+function recordShowdown(userID, won, mode) {
   const p = getProfile(userID);
-  p.showdown = p.showdown || { won: 0, lost: 0 };
-  if (won) p.showdown.won++; else p.showdown.lost++;
+  let rec;
+  if (SHOWDOWN_TEAM_MODES.includes(mode)) {
+    if (!p.showdownTeams || typeof p.showdownTeams !== 'object') p.showdownTeams = {};
+    rec = p.showdownTeams[mode] = p.showdownTeams[mode] || { won: 0, lost: 0 };
+  } else {
+    rec = p.showdown = p.showdown || { won: 0, lost: 0 };
+  }
+  if (won) rec.won++; else rec.lost++;
   saveProfiles();
+}
+
+function showdownTeamsCard(p) {
+  const out = {};
+  for (const m of SHOWDOWN_TEAM_MODES) {
+    const r = p.showdownTeams && p.showdownTeams[m];
+    out[m] = { won: (r && r.won) || 0, lost: (r && r.lost) || 0 };
+  }
+  return out;
 }
 
 // A player's card: who they are and what their profile records.
@@ -1579,6 +1616,7 @@ function playerCard(userID, viewer) {
     damage: Math.round(s.totalDamage || 0),
     memberSince: p.createdAt || null,
     showdown: p.showdown ? { won: p.showdown.won || 0, lost: p.showdown.lost || 0 } : { won: 0, lost: 0 },
+    showdownTeams: showdownTeamsCard(p),
     ranked: null,
     status: statusOf(userID)
   });
@@ -1715,7 +1753,7 @@ io.on('connection', (socket) => {
   on('showdown-leave', () => {
     const series = showdowns.leave(socket.userID);
     if (series) {
-      if (showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false);
+      if (showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false, series.mode);
       socket.emit('remaster-showdown', showdownState('left', series));
     }
   });
