@@ -120,7 +120,7 @@ static struct {
     i32 step, step_ms;              /* the scenario's progress */
     i32 tms_ms;                     /* last TMS line logged */
     i32 round_ms, round;            /* Showdown: when the round's S message came */
-    i32 round_logged;
+    i32 round_logged, sides_logged;
     i32 kills_done, teams_logged, pods_logged;
     Weak seen[AT_MAX];              /* player states seen, by PlayerArray index */
     i32 dead[AT_MAX];
@@ -441,6 +441,9 @@ static void at_deaths(void)
         at_fs("killer", &who);
         at_i("my_kills", me ? ((at_int_t)AT(AT_PS_KILLS))(me->ps) : -1);
         at_i("their_kills", ((at_int_t)AT(AT_PS_KILLS))(f->ps));
+        at_i("pawn", f->pawn != 0);
+        at_i("rec", ((fn_bool)AT(R_PS_IS_ALIVE))(f->ps));
+        at_i("ch", f->pawn ? ((fn_bool)AT(US_CH_ALIVE))(f->pawn) : -1);
         at_end();
         at_free(&who);
     }
@@ -462,6 +465,7 @@ static void at_message(const u16 *m, i32 n)
         T.round_ms = now;
         T.round = S.round;
         T.round_logged = 0;
+        T.sides_logged = 0;
     }
     at_begin("hud");
     at_key("msg");
@@ -572,27 +576,50 @@ static void sc_solodeath(i32 el, i32 now)
 
 /* Showdown: you lose round 2, win the others. Sides and kits are logged at
    each round's 3rd second. */
+/* The fighters' places the first frame the module has put every one on its
+   spot this round (S.placing back to 0): before anyone has moved. */
+static void at_sides(i32 now)
+{
+    i32 i;
+    if (T.sides_logged || !T.round_ms || S.phase != FIGHT || T.round != S.round || S.placing != 0) return;
+    T.sides_logged = 1;
+    at_begin("sides");
+    at_i("round", S.round);
+    at_i("kit", S.kit);
+    at_i("age", now - T.round_ms);
+    at_key("f");
+    at_c('[');
+    for (i = 0; i < NF; i++) {
+        float p[3];
+        if (i) at_c(',');
+        at_where(F[i].pawn, p);
+        at_c('['); at_num(F[i].team); at_c(','); at_num(F[i].pc); at_c(','); at_fnum(p[0]); at_c(',');
+        at_fnum(p[1]); at_c(','); at_fnum(p[2]); at_c(']');
+    }
+    at_c(']');
+    at_end();
+}
+
 static void sc_sd(i32 now)
 {
     AtFighter *me = at_me(), *rival = at_first(at_rival, 1);
     i32 age = now - T.round_ms, i, j;
-    if (!T.round_ms || S.phase != FIGHT || T.round != S.round) return;
+    if (!T.round_ms || T.round != S.round) return;
+    if (age < 6000) {                   /* the round's first seconds: is the local player up? */
+        at_begin("round_pc");
+        at_i("round", S.round);
+        at_i("age", age);
+        at_i("phase", S.phase);
+        at_i("grace", S.grace);
+        at_i("pawn", me && me->pawn != 0);
+        at_i("alive", me ? me->alive : -1);
+        at_i("rec", me ? ((fn_bool)AT(R_PS_IS_ALIVE))(me->ps) : -1);
+        at_i("flags", me ? (i32)FIELD(me->ps, PS_FLAGS, u32) : -1);
+        at_end();
+    }
+    if (S.phase != FIGHT) return;
     if (!T.round_logged && age >= 3000 && S.placing == 0) {
         T.round_logged = 1;
-        at_begin("sides");
-        at_i("round", S.round);
-        at_i("kit", S.kit);
-        at_key("f");
-        at_c('[');
-        for (i = 0; i < NF; i++) {
-            float p[3];
-            if (i) at_c(',');
-            at_where(F[i].pawn, p);
-            at_c('['); at_num(F[i].team); at_c(','); at_num(F[i].pc); at_c(','); at_fnum(p[0]); at_c(',');
-            at_fnum(p[1]); at_c(','); at_fnum(p[2]); at_c(']');
-        }
-        at_c(']');
-        at_end();
         for (i = 0; i < NF; i++) {
             u8 **items;
             i32 n;
@@ -991,6 +1018,7 @@ static void at_frame(u8 *gm)
         if (me && me->pawn) ((at_move_t)VFN(me->pawn, ATV_ADD_MOVEMENT))(me->pawn, fwd, 1.0f, 1);
     }
     if (T.scen == AT_BOTS && FIELD(gs, GS_ELAPSED, i32) >= 5) at_sample_bots(now);
+    if (T.scen == AT_SD) at_sides(now);
     if (!T.last_sec || now - (i32)T.last_ms >= 1000) {
         T.fps = T.frames;
         T.frames = 0;

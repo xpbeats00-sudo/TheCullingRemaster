@@ -332,7 +332,7 @@ def main():
     ap.add_argument("--only", help="comma-separated scenario names")
     ap.add_argument("--no-build", action="store_true", help="use the exe and pak already in --out")
     ap.add_argument("--keep-install", action="store_true", help="leave the test build installed")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=8791)
     ap.add_argument("--out", default=os.path.join(os.environ.get("TEMP", PATCH), "culling-autotest"))
     ap.add_argument("--user", default="76561190000004242", help="the stand-in menu's player id")
     ap.add_argument("--restore-only", action="store_true", help="put the test copy back as it was, and stop")
@@ -346,6 +346,14 @@ def main():
     chosen = [s for s in SC.SCENARIOS if not a.only or s[0] in a.only.split(",")]
     if not chosen:
         raise SystemExit("no such scenario: %s" % a.only)
+    import socket
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", a.port))
+    except OSError:
+        raise SystemExit("port %d is in use: pass --port (the pak is built for the test server's port)" % a.port)
+    finally:
+        probe.close()
     if a.no_build:
         exe, pak = os.path.join(a.out, "Victory.exe"), os.path.join(a.out, PAK)
     else:
