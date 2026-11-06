@@ -123,7 +123,7 @@ static void trace_open(void)
         trace_state = 2;
 }
 
-struct line { char b[200]; u32 n; };
+struct line { char b[400]; u32 n; };
 
 static void put_s(struct line *l, const char *s)
 {
@@ -424,6 +424,11 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define O_CH_FLAGS         0x30        /* UChannel: bit 1 Closing */
 #define VT_CONN_LEVEL_INIT 0x2c8       /* UNetConnection::ClientHasInitializedLevelFor(conn, actor) */
 #define VT_CONN_NET_READY  0x268       /* UNetConnection::IsNetReady(conn, bool Saturate) -> int (game code 0x140209ea5) */
+#define VT_PC_VIEW_TARGET  0x628       /* APlayerController::GetViewTarget(pc) -> actor (game code 0x140209ec2) */
+#define VT_PC_VIEW_POINT   0x680       /* APlayerController::GetPlayerViewPoint(pc, FVector *loc, FRotator *rot) */
+#define VT_A_NET_RELEVANT  0x400       /* AActor::IsNetRelevantFor(actor, RealViewer, ViewTarget, const FVector *SrcLocation) */
+#define VT_CH_CLOSE        0x218       /* UChannel::Close(ch) */
+#define O_A_CULL_DIST_SQ   0x12c       /* AActor::NetCullDistanceSquared (float) */
 #define MAX_OPEN_PER_PASS  16          /* new actor channels per connection per pass (reliable buffer) */
 #define O_GS_PLAYERS       0x418       /* AGameState::PlayerArray */
 #define O_W_CONTROLLERS    0x178       /* UWorld controller list (weak pointers) */
@@ -458,9 +463,13 @@ typedef void (*weak_set_fn)(void *weak, void *obj);
 typedef void *(*weak_get_fn)(void *weak);
 typedef u8 (*conn_actor_fn)(void *conn, void *actor);
 typedef i32 (*conn_ready_fn)(void *conn, u8 saturate);
+typedef void *(*pc_view_target_fn)(void *pc);
+typedef void (*pc_view_point_fn)(void *pc, float *loc, float *rot);
+typedef u8 (*net_relevant_fn)(void *actor, void *viewer, void *view_target, const float *loc);
+typedef void (*ch_close_fn)(void *ch);
 
 struct weak { i32 index, serial; };
-struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn, *remote_conn; };
+struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn, *remote_conn; u64 relevant, culled, closed; };
 
 /* The channel already replicating actor on conn: UNetConnection::ActorChannels'
  * hash lookup, as UDemoNetDriver::ReplicateActor does it (key = the actor's
@@ -745,6 +754,42 @@ static void host_give(u8 *world, u8 *remote, u32 now)
     }
 }
 
+/* CULLING_NETPLAY_TELEPORT=1: 20 s after the joined player has a pawn, the
+ * host moves it once across the island (another pod start, AActor::
+ * K2_TeleportTo), so the test sees far objects' channels close and the new
+ * neighbourhood's open. */
+#define R_TELEPORT         0x111fae0   /* AActor::K2_TeleportTo(actor, const FVector *, const FRotator *) -> bool */
+typedef u8 (*teleport_fn)(void *actor, const float *loc, const float *rot);
+static i32 tp_state = 1, teleported;
+static u32 tp_at;
+
+static void host_teleport(u8 *remote, u32 now)
+{
+    static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','L','E','P','O','R','T',0 };
+    float to[3], rot[3];
+    struct line l;
+    u8 ok;
+    if (teleported || !remote || !env_on(var, &tp_state))
+        return;
+    if (!tp_at) { tp_at = now + 20000; return; }
+    if ((i32)(now - tp_at) < 0)
+        return;
+    {
+        u8 *root = F(remote, O_A_ROOT, u8 *);
+        float x = root ? F(root, O_SC_LOCATION, float) : 0.0f;
+        /* the pod start on the far side of the island from where it is */
+        if (x < 0.0f) { to[0] = 49842.0f; to[1] = -7813.0f; to[2] = 7450.0f; }   /* SpawnsDecentral-teamB */
+        else          { to[0] = -37264.0f; to[1] = 7237.0f; to[2] = 300.0f; }    /* SpawnsDecentral-teaml */
+    }
+    rot[0] = rot[1] = rot[2] = 0.0f;
+    ok = FN(R_TELEPORT, teleport_fn)(remote, to, rot);
+    teleported = 1;
+    if (trace_begin(&l, "teleport")) {
+        kv(&l, "ok", ok, 0);
+        trace_end(&l);
+    }
+}
+
 static void server_replicate(u8 *driver)
 {
     u8 *actors[MAX_REP];
@@ -752,7 +797,7 @@ static void server_replicate(u8 *driver)
     u8 *world = F(driver, O_ND_WORLD, u8 *);
     u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
     i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), n, i, c, live = 0;
-    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     struct line l;
     u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
     if (now - last_alive >= 5000 && trace_begin(&l, "host-alive")) {
@@ -771,6 +816,7 @@ static void server_replicate(u8 *driver)
             u8 *pc0 = conns[c0] ? F(conns[c0], O_CONN_PC, u8 *) : 0;
             if (pc0 && F(pc0, O_C_PAWN, u8 *)) {
                 host_give(world, F(pc0, O_C_PAWN, u8 *), now);
+                host_teleport(F(pc0, O_C_PAWN, u8 *), now);
                 break;
             }
         }
@@ -824,12 +870,53 @@ static void server_replicate(u8 *driver)
              * pylons, airdrops ...) from the last scan, straight from its
              * weak list. Some are also in the list above; ReplicateActor
              * sends only changes, so a second call costs little. */
-            for (i = 0; world_list && i < world_num; i++) {
-                u8 *a;
-                if (!ready(conn, 0)) { st.saturated++; break; }
-                a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(world_list + i);
-                if (a && a != pc)
-                    replicate_to(conn, a, pc, &st);
+            /* Distance limits: the engine's own relevancy test for each,
+             * from the player's view point, as the game's code does
+             * (0x140209e10). A channel to an object that isn't relevant is
+             * closed once it is beyond 1.25x its cull distance, so objects
+             * at the edge don't open and close every pass. */
+            {
+                void *vt_actor = ((pc_view_target_fn)(*(void ***)pc)[VT_PC_VIEW_TARGET / 8])(pc);
+                float view[3];
+                u8 *vroot = vt_actor ? F((u8 *)vt_actor, O_A_ROOT, u8 *) : 0;
+                /* The view target's location, as the engine's FNetViewer
+                 * starts from. GetPlayerViewPoint on the host gave a fixed
+                 * point for the remote player (its camera isn't updated
+                 * there): in game, teleporting it across the island changed
+                 * nothing. */
+                if (!vroot) {
+                    u8 *pawn = F((u8 *)pc, O_C_PAWN, u8 *);
+                    vroot = pawn ? F(pawn, O_A_ROOT, u8 *) : 0;
+                }
+                if (!vroot)
+                    continue;
+                view[0] = F(vroot, O_SC_LOCATION, float);
+                view[1] = F(vroot, O_SC_LOCATION + 4, float);
+                view[2] = F(vroot, O_SC_LOCATION + 8, float);
+                for (i = 0; world_list && i < world_num; i++) {
+                    u8 *a, *root, *ch;
+                    if (!ready(conn, 0)) { st.saturated++; break; }
+                    a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(world_list + i);
+                    if (!a || a == pc)
+                        continue;
+                    if (((net_relevant_fn)(*(void ***)a)[VT_A_NET_RELEVANT / 8])(a, pc, vt_actor, view)) {
+                        st.relevant++;
+                        replicate_to(conn, a, pc, &st);
+                        continue;
+                    }
+                    st.culled++;
+                    ch = (u8 *)find_channel(conn, a);
+                    root = F(a, O_A_ROOT, u8 *);
+                    if (ch && root && !(F(ch, O_CH_FLAGS, u8) & 2)) {
+                        float dx = F(root, O_SC_LOCATION, float) - view[0];
+                        float dy = F(root, O_SC_LOCATION + 4, float) - view[1];
+                        float dz = F(root, O_SC_LOCATION + 8, float) - view[2];
+                        if (dx * dx + dy * dy + dz * dz > 1.5625f * F(a, O_A_CULL_DIST_SQ, float)) {
+                            ((ch_close_fn)(*(void ***)ch)[VT_CH_CLOSE / 8])(ch);
+                            st.closed++;
+                        }
+                    }
+                }
             }
         }
     }
@@ -844,22 +931,14 @@ static void server_replicate(u8 *driver)
         kv(&l, "deferred", st.deferred, 0);
         kv(&l, "saturated", st.saturated, 0);
         kv(&l, "world", (u64)world_num, 0);
+        kv(&l, "relevant", st.relevant, 0);
+        kv(&l, "culled", st.culled, 0);
+        kv(&l, "closed", st.closed, 0);
         kv_s(&l, "loot", count_pickups(F(world, O_WORLD_AUTH_GM, u8 *)));
         if (st.remote_pawn && F(st.remote_pawn, O_A_ROOT, u8 *)) {
             u8 *root = F(st.remote_pawn, O_A_ROOT, u8 *);
             kv(&l, "remote_pawn", (u64)st.remote_pawn, 1);
             kv(&l, "remote_inv", (u64)F(st.remote_pawn, O_CH_INVENTORY + 8, i32), 0);
-            {
-                u8 **items = F(st.remote_pawn, O_CH_INVENTORY, u8 **);
-                i32 k, ni = F(st.remote_pawn, O_CH_INVENTORY + 8, i32);
-                for (k = 0; items && k < ni && k < 5; k++) {
-                    u8 *w = items[k];
-                    /* per item: has a channel, RemoteRole, flags byte, its owner is the pawn */
-                    kv(&l, "w", w ? (u64)(find_channel(st.remote_conn, w) != 0) * 1000
-                                    + (u64)F(w, O_A_REMOTE_ROLE, u8) * 100 + (u64)(F(w, O_A_OWNER, u8 *) == st.remote_pawn) : 9999, 0);
-                    kv(&l, "f", w ? (u64)F(w, O_A_FLAGS, u8) : 0, 1);
-                }
-            }
             kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
             kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
             kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
