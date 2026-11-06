@@ -68,7 +68,9 @@
 
   // The panel's focusable parts that are showing, in order.
   function list(entry) {
-    var all = entry.items ? entry.items() : [], out = [];
+    // items: a function giving the parts now showing (they change as the
+    // panel redraws), or a fixed list.
+    var all = typeof entry.items == "function" ? entry.items() : (entry.items || []), out = [];
     for (var i = 0; i < all.length; i++) if (all[i].offsetWidth || all[i].offsetHeight) out.push(all[i]);
     return out;
   }
@@ -385,8 +387,9 @@
     return root;
   }
 
-  // No connection to the server, and not trying one right now (ClientWeb.js
-  // retries every 30 s): the list would never arrive, or would be stale.
+  // No connection to the server: the list would never arrive, or would be
+  // stale. ClientWeb.js doesn't retry by itself (RECONNECT_AUTOMATICALLY is
+  // false); opening the panel tries once (open()).
   function offline() {
     if (typeof IsOnline != "function" || IsOnline()) return false;
     return !(typeof socketConnection != "undefined" && socketConnection);
@@ -600,13 +603,27 @@
     }
     if (window.RemasterOverlay) RemasterOverlay.open(panel, { close: close, items: panelItems, initial: start,
       submit: function () { panel.addFriend(); } });
+    // Offline (ClientWeb.js doesn't reconnect by itself: RECONNECT_AUTOMATICALLY
+    // is off): opening the panel tries once; the list follows the sign-in
+    // (auth-response -> connected()).
+    if (offline() && typeof ConnectWebsocketIfNeeded == "function") {
+      try { ConnectWebsocketIfNeeded(); } catch (e) { /* stays offline */ }
+    }
     emit("friends-get");
     var gamepad = typeof FooterData != "undefined" && FooterData.bHasGamepad;
     if (!gamepad || !start) { try { panel.querySelector("input").focus(); } catch (e) { /* no focus */ } }
   }
 
   function close() {
+    // The add field keeps the keyboard focus while hidden otherwise, and the
+    // overlay leaves Left/Right to a focused text field: the next panel's
+    // D-pad would do nothing.
+    var a = document.activeElement;
+    if (panel && a && a.tagName == "INPUT" && panel.contains && panel.contains(a) && a.blur) a.blur();
     if (panel) panel.className = "hidden";
+    // Its rows go with it: AnimatedCards.js animates every card row still on
+    // the page every 40 ms, hidden or not (they are drawn again on open).
+    if (panel) panel.querySelector(".rf-scroll").textContent = "";
     removing = null;
     if (window.RemasterOverlay) RemasterOverlay.close(panel);
   }
@@ -664,7 +681,7 @@
   }
 
   function closeCard() {
-    if (cardRoot) cardRoot.className = "hidden";
+    if (cardRoot) { cardRoot.className = "hidden"; cardRoot.textContent = ""; }
     if (window.RemasterOverlay) RemasterOverlay.close(cardRoot);
   }
 
@@ -796,12 +813,48 @@
     else say("");
   }
 
+  // The server's lists as the panel draws them: a server older or newer than
+  // this menu may leave a list or a field out, and one missing list must not
+  // stop the whole panel (an exception here would leave it half drawn).
+  function rows(v) {
+    var out = [];
+    if (v && typeof v == "object" && typeof v.length == "number") {
+      for (var i = 0; i < v.length; i++) if (v[i] && typeof v[i] == "object") out.push(v[i]);
+    }
+    return out;
+  }
+
+  function friendsData(m) {
+    if (!m || typeof m != "object") return data;
+    m.friends = rows(m.friends);
+    m.incoming = rows(m.incoming);
+    m.outgoing = rows(m.outgoing);
+    m.invites = rows(m.invites);
+    if (m.party && typeof m.party == "object") m.party.members = rows(m.party.members);
+    else m.party = null;
+    return m;
+  }
+
+  function cardData(c) {
+    if (c.kd == null) c.kd = "-";
+    if (!c.showdown || typeof c.showdown != "object") c.showdown = { won: 0, lost: 0 };
+    if (c.ranked && typeof c.ranked == "object") {
+      if (!c.ranked.season || typeof c.ranked.season != "object") c.ranked.season = { name: null };
+      if (!c.ranked.tiersReached || typeof c.ranked.tiersReached.indexOf != "function") c.ranked.tiersReached = [];
+    } else {
+      c.ranked = null;
+    }
+    return c;
+  }
+
   function on(name, msg) {
-    if (name === "remaster-friends") { data = msg; renderPanel(); renderParty(); badge(); }
-    else if (name === "remaster-friend-result") onResult(msg || {});
-    else if (name === "remaster-party-invite") showInvite(msg);
+    if (name === "remaster-friends") { data = friendsData(msg); renderPanel(); renderParty(); badge(); }
+    else if (name === "remaster-friend-result") onResult(msg && typeof msg == "object" ? msg : {});
+    else if (name === "remaster-party-invite") {
+      if (msg && msg.from && msg.from.username && msg.partyId) showInvite(msg);
+    }
     else if (name === "remaster-player-card") {
-      if (msg.found) renderCard(msg, true);
+      if (msg && typeof msg == "object" && msg.found) renderCard(cardData(msg), true);
       else if (pendingCard) renderCard(pendingCard, false);
     }
   }

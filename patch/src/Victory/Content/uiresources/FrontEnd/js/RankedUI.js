@@ -44,6 +44,7 @@
 
   // The player card reads: level, rank emblem, name (Ranked Solo's rank).
   function badge(s) {
+    if (!usable(s)) return;
     var card = $("#player-card .culling-card");
     if (!card.length) return;
     var img = card.find(".card-rank-emblem");
@@ -59,6 +60,24 @@
     img.attr("src", emblem(s.tier.name));
     img.attr("title", (s.placement ? "Placements " + s.placement.played + "/" + s.placement.total : s.tier.name) +
       " - " + s.rating + " ELO");
+  }
+
+  // A summary the panel can draw: a tier with a name. The lists and the
+  // season a server older or newer than this menu may leave out get
+  // defaults, so a missing field shows as empty instead of throwing.
+  function usable(s) {
+    if (!s || typeof s != "object" || !s.tier || typeof s.tier.name != "string") return false;
+    var objects = function (v, ok) {
+      var out = [];
+      if (v && typeof v.length == "number") for (var i = 0; i < v.length; i++) if (v[i] && typeof v[i] == "object" && ok(v[i])) out.push(v[i]);
+      return out;
+    };
+    s.recent = objects(s.recent, function () { return true; });
+    s.tiers = objects(s.tiers, function (t) { return typeof t.name == "string"; });
+    if (!s.season || typeof s.season != "object") s.season = { name: "", daysLeft: "-" };
+    if (!s.peak || typeof s.peak != "object") s.peak = { rating: s.rating, tier: s.tier.name };
+    if (typeof s.tier.progress != "number") s.tier.progress = 0;
+    return true;
   }
 
   function esc(t) { return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
@@ -128,7 +147,7 @@
       box.innerHTML = '<div class="rp-empty">Loading your ranked season...</div>';
       return;
     }
-    if (!s) {
+    if (!usable(s)) {
       box.innerHTML = '<div class="rp-empty">' + esc("Ranked " + m.label) + " isn't on this server yet.</div>";
       return;
     }
@@ -203,6 +222,7 @@
   var stockOnShow = RankedScreen.prototype.OnShow;
   RankedScreen.prototype.OnShow = function () {
     if (stockOnShow) stockOnShow.apply(this, arguments);
+    queueing = false;
     if (document.getElementById("ranked-menu")) panel();
     refresh();
   };
@@ -211,13 +231,20 @@
   // queues "ranked_ffa"); a team mode queues its playlist the same way (the
   // server sends a party's members along with its leader, or refuses with why).
   var stockSelected = RankedScreen.prototype.OnOptionElemSelected;
+  var queueing = false;
   RankedScreen.prototype.OnOptionElemSelected = function (elem) {
     var m = mode(selected);
     var queue = elem && elem.dataset ? elem.dataset.queue : null;
     if (queue !== "ffa" || m.id === "solo" || Matchmaking.IsMatchmaking) {
       return stockSelected.apply(this, arguments);
     }
+    // One queue per click: the queue is asked asynchronously (the login
+    // ticket first), so a double click would queue twice and pop four
+    // screens. Cleared by the answer, and when the screen shows again.
+    if (queueing || Matchmaking.IsStartingMatchmaking) return;
+    queueing = true;
     $.when(QueueMatchmaking(m.queue)).then(function (result) {
+      queueing = false;
       if (result) {
         PopScreen();
         PopScreen();
