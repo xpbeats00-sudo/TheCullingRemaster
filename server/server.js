@@ -1663,29 +1663,56 @@ function friendEntry(userID) {
   return Object.assign({ username: usernameOf(userID) || 'Player' }, lobbyCard(userID), { status: statusOf(userID) });
 }
 
-function partyView(userID) {
+// entry: friendEntry, or a cached one (flushFriends).
+function partyView(userID, entry = friendEntry) {
   const p = friends.party(userID);
   if (!p) return null;
   return { id: p.id, leader: usernameOf(p.leader), you: usernameOf(userID),
-    members: p.members.map((id) => Object.assign(friendEntry(id), { leader: id === p.leader })) };
+    members: p.members.map((id) => Object.assign({}, entry(id), { leader: id === p.leader })) };
 }
 
 const STATE_ORDER = { match: 0, lobby: 1, searching: 2, menu: 3, offline: 4 };
 
 // Everything a player's friends panel shows, pushed whenever it changes.
+// The pushes are coalesced: every panel that changes during one turn of the
+// event loop is sent once, right after it, and each player's entry is worked
+// out once for all the panels that show it. Built and sent on the spot, one
+// status change of a player with 200 friends online built 40,000 entries and
+// blocked the event loop for ~85 ms (SERVER_AUDIT_2 P2, test/friends_load.js).
+const friendsDirty = new Set();
+let friendsFlush = null;
 function sendFriends(userID) {
+  friendsDirty.add(userID);
+  if (!friendsFlush) friendsFlush = setImmediate(flushFriends);
+}
+function flushFriends() {
+  friendsFlush = null;
+  const ids = [...friendsDirty];
+  friendsDirty.clear();
+  const cache = new Map();
+  const entry = (id) => {
+    let e = cache.get(id);
+    if (!e) cache.set(id, (e = friendEntry(id)));
+    return e;
+  };
+  const t0 = performance.now();
+  for (const id of ids) guarded('friends push', () => pushFriends(id, entry));
+  // Timed in /metrics like a socket event (one per flush, however many panels).
+  metrics.socketEvent('(friends push)', performance.now() - t0, false);
+}
+function pushFriends(userID, entry) {
   const socket = socketsByUser.get(userID);
   if (!socket || !socket.connected) return;
   const me = friends.peek(userID);
-  const list = me.friends.map(friendEntry)
+  const list = me.friends.map(entry)
     .sort((a, b) => STATE_ORDER[a.status.state] - STATE_ORDER[b.status.state] || a.username.localeCompare(b.username));
   socket.emit('remaster-friends', {
     you: usernameOf(userID),
     friends: list,
-    incoming: me.incoming.map(friendEntry),
-    outgoing: me.outgoing.map(friendEntry),
-    party: partyView(userID),
-    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: friendEntry(i.from) })),
+    incoming: me.incoming.map(entry),
+    outgoing: me.outgoing.map(entry),
+    party: partyView(userID, entry),
+    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: entry(i.from) })),
     maxParty: friends.limits.maxParty
   });
 }

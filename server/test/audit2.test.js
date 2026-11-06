@@ -95,5 +95,40 @@ const B = "steam:76561190000000302";
     }
   }
 
+  // ------------------------------------------------------------ P2
+  {
+    // Two players with accounts; A has asked B to be friends.
+    const IDS = { a: "steam:76561190000000311", b: "steam:76561190000000312" };
+    const account = (name, id) => ({ username: name, email: name.toLowerCase() + "@example.test", userID: id, password: "scrypt$x", createdAt: 1 });
+    const srv = startServer({ files: {
+      "accounts.json": { version: 1, accounts: { "player a": account("Player A", IDS.a), "player b": account("Player B", IDS.b) }, tokens: {}, grants: {} },
+      "friends.json": { version: 1, users: { [IDS.a]: { friends: [], incoming: [], outgoing: [IDS.b], seen: null },
+        [IDS.b]: { friends: [], incoming: [IDS.a], outgoing: [], seen: null } } } } });
+    const sockets = [];
+    try {
+      await srv.ready();
+      await test("P2: a change that touches several panels sends each panel once, after it", async () => {
+        const a = await srv.connect(await srv.login(IDS.a));
+        const b = await srv.connect(await srv.login(IDS.b));
+        sockets.push(a, b);
+        await sleep(500);                            // the logins' own pushes
+        const got = { a: [], b: [] };
+        a.on("remaster-friends", (f) => got.a.push(f));
+        b.on("remaster-friends", (f) => got.b.push(f));
+        b.emit("friend-accept", { username: "Player A" });
+        await sleep(500);
+        // notifyFriends(B) then notifyFriends(A): each panel was built and sent twice.
+        assert.strictEqual(got.a.length, 1, "pushes to A: " + got.a.length);
+        assert.strictEqual(got.b.length, 1, "pushes to B: " + got.b.length);
+        assert.deepStrictEqual(got.b[0].friends.map((f) => f.username), ["Player A"]);
+        assert.deepStrictEqual(got.a[0].friends.map((f) => f.username), ["Player B"]);
+        assert.strictEqual(got.a[0].friends[0].status.state, "menu");
+      });
+    } finally {
+      for (const s of sockets) s.close();
+      srv.stop();
+    }
+  }
+
   console.log("all %d audit 2 tests passed", passed);
 })().catch((e) => { console.error(e); process.exit(1); });
