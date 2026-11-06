@@ -434,7 +434,12 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define O_A_OWNER          0x98
 #define O_A_ROOT           0x1e0
 #define O_SC_LOCATION      0x1a0       /* USceneComponent: world location */
-#define MAX_REP            256
+#define O_CH_INVENTORY     0xd30       /* AShooterCharacter::Inventory (TArray<AShooterWeapon*>) */
+#define O_CH_CURRENT       0x8d8       /* AShooterCharacter::CurrentWeapon */
+#define O_OBJ_CLASS        0x10        /* UObjectBase::ClassPrivate */
+#define R_SPAWN_WEAPON     0x27a810    /* AShooterCharacter::SpawnWeapon(pawn, UClass*): into its inventory (the Remaster's Showdown kit uses it) */
+#define MAX_INVENTORY      32
+#define MAX_REP            384
 #define REP_PERIOD_MS      50
 
 typedef void (*tick_flush_fn)(void *driver, float dt);
@@ -448,7 +453,7 @@ typedef u8 (*conn_actor_fn)(void *conn, void *actor);
 typedef i32 (*conn_ready_fn)(void *conn, u8 saturate);
 
 struct weak { i32 index, serial; };
-struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn; };
+struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn, *remote_conn; };
 
 /* The channel already replicating actor on conn: UNetConnection::ActorChannels'
  * hash lookup, as UDemoNetDriver::ReplicateActor does it (key = the actor's
@@ -487,43 +492,49 @@ static i32 owned_by(u8 *actor, void *pc)
     return 0;
 }
 
-static void replicate_to(u8 *conn, u8 *actor, void *pc, struct rep_stats *st)
+/* Replicates actor to conn. Returns 0 when it was deferred (no channel yet
+ * for want of room this pass), else 1 (sent, or not for this connection). */
+static i32 replicate_to(u8 *conn, u8 *actor, void *pc, struct rep_stats *st)
 {
     u8 flags = F(actor, O_A_FLAGS, u8);
     void *ch;
-    if (!F(actor, O_A_REMOTE_ROLE, u8) && !(flags & 0x40)) { st->skipped++; return; }
-    if ((flags & 0x08) && !owned_by(actor, pc)) { st->skipped++; return; }
-    if ((flags & 0x04) && !((conn_actor_fn)(*(void ***)conn)[VT_CONN_LEVEL_INIT / 8])(conn, actor)) { st->skipped++; return; }
+    if (!F(actor, O_A_REMOTE_ROLE, u8) && !(flags & 0x40)) { st->skipped++; return 1; }
+    if ((flags & 0x08) && !owned_by(actor, pc)) { st->skipped++; return 1; }
+    if ((flags & 0x04) && !((conn_actor_fn)(*(void ***)conn)[VT_CONN_LEVEL_INIT / 8])(conn, actor)) { st->skipped++; return 1; }
     ch = find_channel(conn, actor);
     if (!ch) {
-        if (flags & 0x40) { st->skipped++; return; }        /* torn off: nothing new to open */
-        if (st->opened_now >= MAX_OPEN_PER_PASS) { st->deferred++; return; }
+        if (flags & 0x40) { st->skipped++; return 1; }      /* torn off: nothing new to open */
+        if (st->opened_now >= MAX_OPEN_PER_PASS) { st->deferred++; return 0; }
         st->opened_now++;
         ch = FN(R_CREATE_CHANNEL, create_channel_fn)(conn, CHTYPE_ACTOR, 1, -1);
-        if (!ch) { st->skipped++; return; }
+        if (!ch) { st->skipped++; return 0; }
         FN(R_SET_CH_ACTOR, set_ch_actor_fn)(ch, actor);
         st->opened++;
     }
     if (F(ch, O_CH_FLAGS, u8) & 2)
-        return;                                              /* closing */
+        return 1;                                            /* closing */
     FN(R_REPLICATE_ACTOR, replicate_fn)(ch);
     st->replicated++;
+    return 1;
 }
 
 /* The actors replicated: the game state, its player states, every
  * controller and every pawn in the world (no relevancy culling yet). */
-static i32 collect(u8 *world, u8 **out)
+static i32 collect(u8 *world, u8 **out, u8 *kind)
 {
     i32 n = 0, i, num, pass;
     u8 *gm = F(world, O_WORLD_AUTH_GM, u8 *);
     u8 *gs = gm ? F(gm, O_GM_GAMESTATE, u8 *) : 0;
     if (gs) {
         u8 **ps = F(gs, O_GS_PLAYERS, u8 **);
+        kind[n] = 0;
         out[n++] = gs;
         num = F(gs, O_GS_PLAYERS + 8, i32);
         for (i = 0; ps && i < num && n < MAX_REP; i++)
-            if (ps[i])
+            if (ps[i]) {
+                kind[n] = 0;
                 out[n++] = ps[i];
+            }
     }
     for (pass = 0; pass < 2; pass++) {
         u8 *list = world + (pass ? O_W_PAWNS : O_W_CONTROLLERS);
@@ -531,8 +542,31 @@ static i32 collect(u8 *world, u8 **out)
         num = F(list, 8, i32);
         for (i = 0; data && i < num && n < MAX_REP; i++) {
             u8 *a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
-            if (a)
-                out[n++] = a;
+            if (!a)
+                continue;
+            if (pass) {
+                /* A character's inventory weapons go first, so that the
+                 * character's Inventory and CurrentWeapon refer to weapons
+                 * the client already has (in game, a reference sent before
+                 * its weapon stayed null on the client). */
+                u8 **items = F(a, O_CH_INVENTORY, u8 **);
+                i32 k, ni = F(a, O_CH_INVENTORY + 8, i32);
+                u8 *cur = F(a, O_CH_CURRENT, u8 *);
+                if (items && ni >= 0 && ni <= MAX_INVENTORY)
+                    for (k = 0; k < ni && n < MAX_REP - 2; k++)
+                        if (items[k]) {
+                            kind[n] = 1;
+                            out[n++] = items[k];
+                        }
+                if (cur && n < MAX_REP - 2) {
+                    kind[n] = 1;
+                    out[n++] = cur;
+                }
+                kind[n] = 2;
+            } else {
+                kind[n] = 0;
+            }
+            out[n++] = a;
         }
     }
     return n;
@@ -562,13 +596,68 @@ static i32 prerep_on(void)
     return env_on(var, &prerep_state);
 }
 
+/* CULLING_NETPLAY_GIVE=1: 10 s after the joined player has a pawn, the host
+ * gives it, once, a weapon class a bot carries that it doesn't (SpawnWeapon),
+ * so the test can see a mid-match inventory change reach the client. */
+typedef void *(*spawn_weapon_fn)(void *pawn, void *cls);
+static i32 give_state = 1, gave;
+static u32 give_at;
+
+static i32 holds_class(u8 *pawn, u8 *cls)
+{
+    u8 **items = F(pawn, O_CH_INVENTORY, u8 **);
+    i32 k, ni = F(pawn, O_CH_INVENTORY + 8, i32);
+    for (k = 0; items && k < ni && k < MAX_INVENTORY; k++)
+        if (items[k] && F(items[k], O_OBJ_CLASS, u8 *) == cls)
+            return 1;
+    return 0;
+}
+
+static void host_give(u8 *world, u8 *remote, u32 now)
+{
+    static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','G','I','V','E',0 };
+    u8 *data;
+    i32 i, num;
+    struct line l;
+    if (gave || !remote || !env_on(var, &give_state))
+        return;
+    if (!give_at) { give_at = now + 10000; return; }
+    if ((i32)(now - give_at) < 0)
+        return;
+    data = F(world + O_W_PAWNS, 0, u8 *);
+    num = F(world + O_W_PAWNS, 8, i32);
+    for (i = 0; data && i < num && !gave; i++) {
+        u8 *p = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
+        u8 **items;
+        i32 k, ni;
+        if (!p || p == remote)
+            continue;
+        items = F(p, O_CH_INVENTORY, u8 **);
+        ni = F(p, O_CH_INVENTORY + 8, i32);
+        for (k = 0; items && k < ni && k < MAX_INVENTORY && !gave; k++) {
+            u8 *cls = items[k] ? F(items[k], O_OBJ_CLASS, u8 *) : 0;
+            if (!cls || holds_class(remote, cls))
+                continue;
+            FN(R_SPAWN_WEAPON, spawn_weapon_fn)(remote, cls);
+            gave = 1;
+            if (trace_begin(&l, "give")) {
+                kv(&l, "pawn", (u64)remote, 1);
+                kv(&l, "class", (u64)cls, 1);
+                kv(&l, "inventory", (u64)F(remote, O_CH_INVENTORY + 8, i32), 0);
+                trace_end(&l);
+            }
+        }
+    }
+}
+
 static void server_replicate(u8 *driver)
 {
     u8 *actors[MAX_REP];
+    u8 kind[MAX_REP];
     u8 *world = F(driver, O_ND_WORLD, u8 *);
     u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
     i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), n, i, c, live = 0;
-    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     struct line l;
     u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
     if (now - last_alive >= 5000 && trace_begin(&l, "host-alive")) {
@@ -581,7 +670,17 @@ static void server_replicate(u8 *driver)
     if (!world || nconn <= 0 || now - last_rep < REP_PERIOD_MS)
         return;
     last_rep = now;
-    n = collect(world, actors);
+    {
+        i32 c0;
+        for (c0 = 0; c0 < nconn; c0++) {
+            u8 *pc0 = conns[c0] ? F(conns[c0], O_CONN_PC, u8 *) : 0;
+            if (pc0 && F(pc0, O_C_PAWN, u8 *)) {
+                host_give(world, F(pc0, O_C_PAWN, u8 *), now);
+                break;
+            }
+        }
+    }
+    n = collect(world, actors, kind);
     if (prerep_on())
         for (i = 0; i < n; i++)
             FN(R_PRE_REPLICATION, pre_rep_fn)(actors[i], driver);
@@ -592,16 +691,30 @@ static void server_replicate(u8 *driver)
         if (!conn || !pc || F(conn, O_CONN_STATE, i32) != 3)
             continue;
         live++;
-        if (!st.remote_pawn)
+        if (!st.remote_pawn) {
             st.remote_pawn = F(pc, O_C_PAWN, u8 *);
+            st.remote_conn = conn;
+        }
         ready = (conn_ready_fn)(*(void ***)conn)[VT_CONN_NET_READY / 8];
         st.opened_now = 0;
         if (!ready(conn, 0)) { st.saturated++; continue; }   /* as the engine does: wait for room */
         replicate_to(conn, (u8 *)pc, pc, &st);               /* its own PlayerController first */
-        for (i = 0; i < n; i++) {
-            if (!ready(conn, 0)) { st.saturated++; break; }
-            if (actors[i] != pc)
-                replicate_to(conn, actors[i], pc, &st);
+        {
+            i32 items_ok = 1;
+            for (i = 0; i < n; i++) {
+                if (!ready(conn, 0)) { st.saturated++; break; }
+                if (actors[i] == pc)
+                    continue;
+                if (kind[i] == 2 && !items_ok) {             /* a weapon of it is still waiting: next pass */
+                    st.deferred++;
+                    items_ok = 1;
+                    continue;
+                }
+                if (!replicate_to(conn, actors[i], pc, &st) && kind[i] == 1)
+                    items_ok = 0;
+                if (kind[i] == 2)
+                    items_ok = 1;
+            }
         }
     }
     st.actors = (u64)n;
@@ -617,6 +730,18 @@ static void server_replicate(u8 *driver)
         if (st.remote_pawn && F(st.remote_pawn, O_A_ROOT, u8 *)) {
             u8 *root = F(st.remote_pawn, O_A_ROOT, u8 *);
             kv(&l, "remote_pawn", (u64)st.remote_pawn, 1);
+            kv(&l, "remote_inv", (u64)F(st.remote_pawn, O_CH_INVENTORY + 8, i32), 0);
+            {
+                u8 **items = F(st.remote_pawn, O_CH_INVENTORY, u8 **);
+                i32 k, ni = F(st.remote_pawn, O_CH_INVENTORY + 8, i32);
+                for (k = 0; items && k < ni && k < 5; k++) {
+                    u8 *w = items[k];
+                    /* per item: has a channel, RemoteRole, flags byte, its owner is the pawn */
+                    kv(&l, "w", w ? (u64)(find_channel(st.remote_conn, w) != 0) * 1000
+                                    + (u64)F(w, O_A_REMOTE_ROLE, u8) * 100 + (u64)(F(w, O_A_OWNER, u8 *) == st.remote_pawn) : 9999, 0);
+                    kv(&l, "f", w ? (u64)F(w, O_A_FLAGS, u8) : 0, 1);
+                }
+            }
             kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
             kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
             kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
@@ -643,6 +768,14 @@ static void client_trace(u8 *driver)
     kv(&l, "channels", (u64)(F(conn + O_CONN_CHMAP, 0x08, i32) - F(conn + O_CONN_CHMAP, 0x34, i32)), 0);
     kv(&l, "pc", (u64)pc, 1);
     kv(&l, "pawn", (u64)mine, 1);
+    if (mine) {
+        u8 **items = F(mine, O_CH_INVENTORY, u8 **);
+        i32 k, ni = F(mine, O_CH_INVENTORY + 8, i32);
+        kv(&l, "inv", (u64)(ni < 0 ? 0 : ni), 0);
+        for (k = 0; items && k < ni && k < 6; k++)
+            kv(&l, "item_class", items[k] ? (u64)F(items[k], O_OBJ_CLASS, u8 *) : 0, 1);
+        kv(&l, "current", (u64)F(mine, O_CH_CURRENT, u8 *), 1);
+    }
     trace_end(&l);
     data = F(world + O_W_PAWNS, 0, u8 *);
     num = F(world + O_W_PAWNS, 8, i32);
@@ -653,6 +786,7 @@ static void client_trace(u8 *driver)
             continue;
         kv(&l, "pawn", (u64)p, 1);
         kv(&l, "mine", p == mine, 0);
+        kv(&l, "holding", F(p, O_CH_CURRENT, u8 *) != 0, 0);
         kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
         kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
         kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));

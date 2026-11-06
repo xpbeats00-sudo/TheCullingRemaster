@@ -287,6 +287,18 @@ def test_real_exe(path):
         assert struct.pack("<I", off) in body, "the template doesn't read the channel map at %#x" % off
     pre = data[PN._off(IMAGE_BASE + mac("R_PRE_REPLICATION")):][:4]
     assert pre[0] in (0x40, 0x48, 0x4c, 0x55, 0x53), "CallPreReplication start: %s" % pre.hex()
+    # 2d. Weapons and inventory: AShooterCharacter's Inventory and CurrentWeapon offsets from their
+    # property registrations ("mov r9d, <offset>" next to the name), and SpawnWeapon is the
+    # function the Remaster's module (showdown_rounds.c R_SPAWN_WEAPON) gives weapons with.
+    import test_native_module as TNM
+    import test_weather_native as TW
+    ex = TW.Exe(path)
+    inv = {o for _, o in TNM.prop_offsets(ex, "Inventory")}
+    cur = {o for _, o in TNM.prop_offsets(ex, "CurrentWeapon")}
+    assert mac("O_CH_INVENTORY") in inv, "Inventory registered at %s" % sorted(map(hex, inv))
+    assert mac("O_CH_CURRENT") in cur, "CurrentWeapon registered at %s" % sorted(map(hex, cur))
+    sr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "showdown_rounds.c"), encoding="utf-8").read()
+    assert int(_re.search(r"#define R_SPAWN_WEAPON\s+(0x[0-9a-f]+)", sr).group(1), 16) == mac("R_SPAWN_WEAPON")
     # 3. InternalGetNetMode as the patch expects, and its demo path's GetNetMode call.
     o = PN._off(PN.NETMODE_VA)
     assert data[o:o + len(PN.NETMODE_STOCK)] == PN.NETMODE_STOCK
