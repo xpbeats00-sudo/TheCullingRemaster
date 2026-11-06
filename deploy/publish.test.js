@@ -109,6 +109,14 @@ function serve() {
       assert.deepStrictEqual(onDisk, [], "the VPS's on-disk object check agrees");
     });
 
+    // SERVER_AUDIT_2 D2: the publish ends by checking the version launchers are told.
+    await test("--version: the live manifest's version must be the one published", async () => {
+      const live = JSON.parse(fs.readFileSync(path.join(upd, "manifest.json"), "utf8")).version;
+      assert.deepStrictEqual(await check(opts({ version: live }), quiet), []);
+      const stale = await check(opts({ version: "9.9.9" }), quiet);
+      assert.ok(stale.some((p) => p === `the live manifest says version ${live}, not 9.9.9`), stale.join("; "));
+    });
+
     await test("the check catches a missing object, a corrupted changed file, a wrong website setup, a bad signature", async () => {
       const pakObj = path.join(upd, "objects", sha(PAK2));
       fs.writeFileSync(pakObj, Buffer.from("patch pak v2 (lobbX)"));          // same size, wrong bytes

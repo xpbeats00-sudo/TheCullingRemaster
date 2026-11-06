@@ -1,6 +1,7 @@
 // After a publish: checks the release the way a launcher sees it, over HTTPS.
 //   - manifest.json and its signature, against the launcher's release key
-//     (and, with --expect, that it is exactly the release just published);
+//     (and, with --expect, that it is exactly the release just published; with
+//     --version, that the version launchers are told is that one);
 //   - every object it names is there at the right size: with --updates <dir>
 //     on the VPS's disk (seconds), with --sweep over HTTPS (minutes from home);
 //   - the files that changed (since --changed-from's manifest) and the
@@ -9,7 +10,7 @@
 // Exits 1 on any problem, listing each one.
 //
 // usage: node deploy/check_published.js <release base URL> [--expect <manifest.json>]
-//          [--changed-from <previous manifest.json>] [--website <https://site>] [--updates <dir>] [--sweep] [--all]
+//          [--version <v>] [--changed-from <previous manifest.json>] [--website <https://site>] [--updates <dir>] [--sweep] [--all]
 //   e.g. node deploy/check_published.js https://xplab.shop:8443/remaster/ --website https://xplab.shop
 "use strict";
 
@@ -21,11 +22,12 @@ const KEY = require(path.join(__dirname, "..", "launcher", "lib", "releasekey.js
 const PARALLEL = 8;
 
 function args(argv) {
-  const o = { base: null, expect: null, changedFrom: null, website: null, updates: null, sweep: false, all: false };
+  const o = { base: null, expect: null, version: null, changedFrom: null, website: null, updates: null, sweep: false, all: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--expect") o.expect = argv[++i];
     else if (a === "--changed-from") o.changedFrom = argv[++i];
+    else if (a === "--version") o.version = argv[++i];
     else if (a === "--website") o.website = argv[++i];
     else if (a === "--updates") o.updates = argv[++i];
     else if (a === "--all") o.all = true;
@@ -82,6 +84,7 @@ async function check(o, log = console.log) {
   if (!signed) problems.push("manifest.json's signature doesn't verify with the launcher's release key");
   const m = JSON.parse(body);
   log(`live release ${m.version}: ${m.files.length} files, signature ${signed ? "ok" : "BAD"}`);
+  if (o.version && m.version !== o.version) problems.push(`the live manifest says version ${m.version}, not ${o.version}`);
   if (o.expect) {
     const want = fs.readFileSync(o.expect);
     if (!want.equals(body)) problems.push(`the live manifest isn't the one just published (${o.expect})`);
