@@ -22,9 +22,11 @@ async function test(name, fn) {
   }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const TEAM = { duo: { size: 2, playlist: "ranked_coop2", start: "duo:", teams: 12, prison: 8 },
-  trio: { size: 3, playlist: "ranked_coop3", start: "trio:", teams: 8, prison: 5 },
-  quad: { size: 4, playlist: "ranked_coop4", start: "quad:", teams: 6, prison: 4 } };
+// teams: a match's teams on Jungle (its 16 pods, as Prison's); of24: what 24
+// contestants would make (the most ranked.teamField takes).
+const TEAM = { duo: { size: 2, playlist: "ranked_coop2", start: "duo:", teams: 8, prison: 8, of24: 12 },
+  trio: { size: 3, playlist: "ranked_coop3", start: "trio:", teams: 5, prison: 5, of24: 8 },
+  quad: { size: 4, playlist: "ranked_coop4", start: "quad:", teams: 4, prison: 4, of24: 6 } };
 const MODES = Object.keys(TEAM);
 
 (async () => {
@@ -41,11 +43,12 @@ const MODES = Object.keys(TEAM);
     assert.strictEqual(R.modeId("nonsense"), "solo");
   });
 
-  await test("field = number of teams: 24 / team size on Jungle, Prison's 16 / team size", () => {
+  await test("field = number of teams: contestants / team size (16 on Jungle and Prison), never more than 24's", () => {
     for (const m of MODES) {
-      assert.strictEqual(R.teamField(m, 24), TEAM[m].teams, m);
+      assert.strictEqual(R.teamField(m, 16), TEAM[m].teams, m + " on Jungle");
       assert.strictEqual(R.teamField(m, 16), TEAM[m].prison, m + " on Prison");
-      assert.strictEqual(R.teamField(m, 999), TEAM[m].teams, m + ": never more than 24 contestants");
+      assert.strictEqual(R.teamField(m, 24), TEAM[m].of24, m + " of 24");
+      assert.strictEqual(R.teamField(m, 999), TEAM[m].of24, m + ": never more than 24 contestants");
     }
   });
 
@@ -73,7 +76,7 @@ const MODES = Object.keys(TEAM);
       ["duo", null, false, 12], ["duo", 2.5, false, 12], ["trio", 4, false, 2], ["trio", 24, false, 8], ["quad", 9, false, 3],
       ["quad", 24, false, 6], ["quad", 100, true, 1]];
     for (const [m, reported, victory, want] of cases) {
-      assert.strictEqual(R.teamPlacement(m, reported, victory, TEAM[m].teams), want, m + " " + reported + " " + victory);
+      assert.strictEqual(R.teamPlacement(m, reported, victory, TEAM[m].of24), want, m + " " + reported + " " + victory);
     }
     assert.strictEqual(R.teamPlacement("duo", 24, false, 8), 8, "Prison duos: 8 teams");
   });
@@ -221,7 +224,7 @@ const MODES = Object.keys(TEAM);
 
     await test("team placements are clamped: malformed is last, first needs the win, never past the teams", async () => {
       // [mode, reported, team placement]
-      const cases = [["duo", 0, 12], ["duo", "abc", 12], ["duo", 1, 2], ["duo", 999, 12], ["duo", 7, 4], ["trio", 24, 8], ["quad", 5, 2]];
+      const cases = [["duo", 0, 8], ["duo", "abc", 8], ["duo", 1, 2], ["duo", 999, 8], ["duo", 7, 4], ["trio", 24, 5], ["quad", 5, 2]];
       for (const [m, reported, want] of cases) {
         await play(a, "ranked_ffa_jungle_coop" + TEAM[m].size);
         const r = await result(tokenA, { victory: false, kills: 0, damage: 10, timeAlive: 200, placement: reported, cap: 24, teamOutcome: "out" });
@@ -231,7 +234,7 @@ const MODES = Object.keys(TEAM);
       }
       await play(a, "ranked_ffa_jungle_coop2");
       const k = await result(tokenA, { victory: false, kills: 500, damage: 10, timeAlive: 100, placement: 3, teamOutcome: "bogus!" });
-      assert.strictEqual(k.json.ranked.entry.kills, 22, "kills within the 22 other contestants of a Duos match");
+      assert.strictEqual(k.json.ranked.entry.kills, 14, "kills within the 14 other contestants of a Duos match");
       assert.ok(!("teamOutcome" in k.json.ranked.entry), "an unknown outcome isn't kept");
     });
 
@@ -274,12 +277,12 @@ const MODES = Object.keys(TEAM);
       const c = await result(tokenA, { victory: true, placement: 1, timeAlive: 300 });
       assert.strictEqual(c.json.ranked, null);
       assert.strictEqual(rec(A, "duo").pending.id, pending);
-      // The next Ranked Duos match: the one left unfinished counts as last of 12.
+      // The next Ranked Duos match: the one left unfinished counts as last of 8 (16 contestants).
       const before = rec(A, "duo").matches;
       await play(a, "ranked_ffa_jungle_coop2");
       const h = rec(A, "duo");
       assert.strictEqual(h.matches, before + 1);
-      assert.deepStrictEqual([h.history[0].matchId, h.history[0].abandoned, h.history[0].placement], [pending, true, 12]);
+      assert.deepStrictEqual([h.history[0].matchId, h.history[0].abandoned, h.history[0].placement], [pending, true, 8]);
       await result(tokenA, { victory: false, placement: 5, timeAlive: 100 });
     });
 

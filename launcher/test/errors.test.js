@@ -14,6 +14,12 @@ test("offline and unreachable servers read as a connection problem", () => {
   }
 });
 
+test("a port Chromium blocks reads as a server setup problem, not the player's connection", () => {
+  const m = friendly(new Error("net::ERR_UNSAFE_PORT"));
+  assert.match(m, /server setup problem/);
+  assert.doesNotMatch(m, /Check your internet/);
+});
+
 test("a release that fails its signature check says nothing was installed", () => {
   assert.match(friendly(new SyncError("the release's signature doesn't match: refusing it", "signature")), /can't verify, so nothing was installed/);
 });

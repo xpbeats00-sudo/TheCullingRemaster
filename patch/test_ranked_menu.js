@@ -137,6 +137,41 @@ test("the Play tile queues the selected mode; Solo stays the stock ranked_ffa pa
   assert.deepStrictEqual([busy.queued, busy.stock], [[], ["ffa"]], "already searching: the stock handler decides");
 });
 
+test("a double click on Play queues once (the queue answers later); the answer or a new visit allows the next", () => {
+  const m = menu(fixture);
+  const pending = [];
+  m.ctx.QueueMatchmaking = (q) => { m.queued.push(q); return { then: (f) => pending.push(f) }; };   // like engine.call
+  m.ctx.$.when = (v) => v;
+  m.click("duo");
+  m.play();
+  m.play();
+  assert.deepStrictEqual(m.queued, ["ranked_coop2"], "one queue for two clicks");
+  pending.splice(0).forEach((f) => f(false));
+  assert.strictEqual(m.errors.length, 1);
+  m.play();
+  assert.deepStrictEqual(m.queued, ["ranked_coop2", "ranked_coop2"], "after a failed queue, Play queues again");
+  pending.splice(0).forEach((f) => f(true));
+  assert.strictEqual(m.pops(), 2, "one success: two pops, not four");
+  // An answer that never came: showing the screen again clears the guard.
+  m.play();
+  assert.strictEqual(m.queued.length, 3);
+  new m.ctx.RankedScreen().OnShow();
+  m.play();
+  assert.strictEqual(m.queued.length, 4);
+});
+
+test("a malformed /api/ranked answer (no tier, lists missing) neither throws nor draws garbage", () => {
+  for (const bad of [null, {}, { tier: null }, { modes: { solo: { rating: 1000 } } },
+    { tier: { name: "Hunter" }, rating: 1000, modes: { solo: { tier: { name: "Hunter" }, rating: 1000 } } }]) {
+    const m = menu(bad);
+    m.click("solo");
+    m.click("duo");
+    assert.ok(typeof m.panel() == "string", JSON.stringify(bad));
+  }
+  const m = menu({ tier: { name: "Hunter" }, rating: 1000, modes: { solo: { tier: { name: "Hunter" }, rating: 1000 } } });
+  assert.ok(m.panel().indexOf("1000 ELO") >= 0, "a summary without its lists still shows the rating");
+});
+
 test("a failed queue says so; the selected tab is remembered", () => {
   const store = {};
   const m = menu(fixture, { store });

@@ -2,14 +2,23 @@
 
 Strips comments, strings and regex literals, then flags ES2015+ syntax: arrow
 functions, let/const, template literals, classes, spread/rest, for...of,
-default parameters. Whole files by default; with --diff <git ref> only the
-lines added since that ref (for stock files that already use const).
+default parameters, shorthand methods, destructuring, async/await, **,
+optional chaining and ??. Whole files by default; with --diff <git ref> only
+the lines added since that ref (for stock files that already use const).
+
+--release lints every UI script the patch pak ships (patch/src/**/uiresources),
+whole files, with const allowed (the stock scripts use it and Coherent UI runs
+them): build_release.py runs it before every release.
 
 usage: python lint_es5.py [--diff REF] file.js ...
+       python lint_es5.py --release
 """
+import os
 import re
 import subprocess
 import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 RULES = [
     (re.compile(r"=>"), "arrow function"),
@@ -20,6 +29,16 @@ RULES = [
     (re.compile(r"\.\.\.\s*[A-Za-z_$\[{(]"), "spread/rest"),
     (re.compile(r"\bfor\s*\([^;)]*\bof\b"), "for...of"),
     (re.compile(r"\bfunction\b[^(]*\([^)]*="), "default parameter"),
+    # An object literal's foo() { ... }: a line that starts with a call and a
+    # block is no ES5 statement (if/for/while/switch/catch/with are).
+    (re.compile(r"^\s*(?!(?:if|for|while|switch|catch|with|function|return)\b)[A-Za-z_$][\w$]*\s*\([^()]*\)\s*\{"),
+     "shorthand method"),
+    (re.compile(r"\b(?:var|let|const)\s*[\[{]"), "destructuring"),
+    (re.compile(r"\basync\s+(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)"), "async function"),
+    (re.compile(r"\bawait\s+[A-Za-z_$(\[]"), "await"),
+    (re.compile(r"\*\*"), "exponent operator"),
+    (re.compile(r"\?\.(?!\d)"), "optional chaining"),
+    (re.compile(r"\?\?"), "nullish coalescing"),
 ]
 
 
@@ -79,28 +98,55 @@ def added_lines(path, ref):
     return lines
 
 
-def lint(path, only=None):
-    src = open(path, encoding="utf-8").read()
+def lint(path, only=None, allow_const=False):
+    src = open(path, encoding="utf-8-sig").read()
     bad = []
+    lines = src.split("\n")
     for no, line in enumerate(strip(src).split("\n"), 1):
         if only is not None and no not in only:
             continue
         for rule, what in RULES:
+            if allow_const and what == "const":
+                continue
             if rule.search(line):
-                bad.append("%s:%d: %s: %s" % (path, no, what, src.split("\n")[no - 1].strip()[:100]))
+                bad.append("%s:%d: %s: %s" % (path, no, what, lines[no - 1].strip()[:100]))
     return bad
 
 
-if __name__ == "__main__":
-    args = sys.argv[1:]
+def release_scripts(src=os.path.join(HERE, "src")):
+    """Every .js the patch pak ships under a uiresources folder (Coherent UI runs them)."""
+    out = []
+    for root, _, names in os.walk(src):
+        if "uiresources" not in root.replace(os.sep, "/").split("/"):
+            continue
+        out += [os.path.join(root, n) for n in names if n.lower().endswith(".js")]
+    return sorted(out)
+
+
+def main(args):
     ref = None
-    if args[:1] == ["--diff"]:
+    allow_const = False
+    if args[:1] == ["--release"]:
+        args, allow_const = release_scripts(), True
+        if not args:
+            print("FAIL no UI scripts under %s" % os.path.join(HERE, "src"))
+            return 1
+    elif args[:1] == ["--diff"]:
         ref, args = args[1], args[2:]
+    if not args:
+        print(__doc__)
+        return 2
     problems = []
     for f in args:
-        problems += lint(f, added_lines(f, ref) if ref else None)
+        problems += lint(f, added_lines(f, ref) if ref else None, allow_const)
     for p in problems:
         print("FAIL", p)
     if problems:
-        sys.exit(1)
-    print("ok    ES5: %d file(s)%s" % (len(args), " (lines added since %s)" % ref if ref else ""))
+        return 1
+    print("ok    ES5: %d file(s)%s" % (len(args), " (lines added since %s)" % ref if ref else
+                                       ", const allowed (stock)" if allow_const else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

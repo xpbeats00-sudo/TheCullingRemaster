@@ -61,6 +61,13 @@ mr.live_version = lambda base: ("1.3.5", "the live manifest (stand-in)")    # no
 
 try:
     @test
+    def tool_failures():
+        """a build tool that fails or isn't installed stops the release by name (no traceback)"""
+        refuses("make_pak.py failed (exit 3", mr.step, "make_pak.py", [sys.executable, "-c", "raise SystemExit(3)"])
+        refuses("make_manifest.js couldn't start (node-that-isnt-there", mr.step, "make_manifest.js", ["node-that-isnt-there"])
+        mr.step("ok tool", [sys.executable, "-c", "pass"])
+
+    @test
     def neither():
         """neither --full nor --pak-only is refused (a full release is the default)"""
         refuses("--pak-only", build, None)

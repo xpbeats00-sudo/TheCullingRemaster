@@ -341,7 +341,7 @@
     var duo = size > 0;
     var me = myName(), you = null;
     for (var i = 0; i < lobby.players.length; i++) if (lobby.players[i].name === me) you = lobby.players[i];
-    if (!you) you = lobby.players[0];
+    if (!you) you = lobby.players[0] || { name: me || "You" };
     if (duo) list.appendChild(divider("YOUR TEAM"));
     list.appendChild(row(you, true));
     names[you.name] = true;
@@ -394,6 +394,18 @@
   }
 
   function render(lobby) {
+    // A server older or newer than this menu may leave a field out: the
+    // pill draws what it can instead of throwing inside the socket handler.
+    if (!lobby || typeof lobby != "object") return;
+    var players = [];
+    if (lobby.players && typeof lobby.players.length == "number") {
+      for (var k = 0; k < lobby.players.length; k++) {
+        var lp = lobby.players[k];
+        if (lp && typeof lp == "object") players.push(lp);
+      }
+    }
+    lobby.players = players;
+    if (typeof lobby.maxPlayers != "number" || lobby.maxPlayers < 1) lobby.maxPlayers = 16;
     last = lobby;
     received = Date.now();
     var root = build();
@@ -443,6 +455,10 @@
 
   function hide() {
     if (panel) panel.className = "hidden";
+    // Its rows go with it: AnimatedCards.js animates every card row still on
+    // the page every 40 ms, hidden or not (drawn again by the next push).
+    var rows = panel && panel.querySelector(".rl-list");
+    if (rows) rows.textContent = "";
     document.body.className = document.body.className.replace(/\brl-on\b/g, "").trim();
     last = null;
     shownNames = {};

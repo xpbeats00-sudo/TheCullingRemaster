@@ -106,6 +106,33 @@ function friendsWhen(socket, check, ms = 3000) {
     assert.strictEqual(f.acceptInvite("b", again).error, "no-invite");
   });
 
+  // SERVER_AUDIT_2 F5: the leader leaving (or dropped for being offline) while
+  // an invite was out left a party with no members and no leader, which the
+  // invited player then joined alone: a leaderless party nobody could invite to.
+  await test("a leader leaving with an invite out leaves no empty, leaderless party", async () => {
+    const f = new Friends(null);
+    f.request("a", "b"); f.accept("b", "a");
+    const { partyId } = f.invite("a", "b");
+    f.leave("a");
+    assert.strictEqual(f.parties.has(partyId), false, "the empty party is dropped");
+    assert.strictEqual(f.acceptInvite("b", partyId).error, "no-invite");
+    assert.strictEqual(f.party("b"), null);
+    assert.deepStrictEqual(f.invitesFor("b"), []);
+  });
+
+  await test("an expired invite doesn't keep a party of one alive", async () => {
+    let t = 0;
+    const f = new Friends(null, { now: () => t });
+    for (const x of ["b", "c"]) { f.request("a", x); f.accept(x, "a"); }
+    const p = f.invite("a", "b").partyId;
+    f.invite("a", "c");
+    assert.ok(f.acceptInvite("c", p).ok);
+    t = 6 * 60 * 1000;                      // b's invite has expired
+    f.leave("c");
+    assert.strictEqual(f.party("a"), null, "a party of one with only an expired invite out is dropped");
+    assert.strictEqual(f.parties.size, 0);
+  });
+
   await test("joining another party leaves the first", async () => {
     const f = new Friends(null);
     for (const [x, y] of [["a", "c"], ["b", "c"], ["a", "d"]]) { f.request(x, y); f.accept(y, x); }

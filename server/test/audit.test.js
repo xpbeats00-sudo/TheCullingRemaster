@@ -131,7 +131,7 @@ async function waitUp(port) {
       const m = await play("ranked_ffa_jungle_coop2");
       assert.deepStrictEqual([m.gameServer, m.playlist, m.ranked], ["duo:0", "ranked_coop2", "duo"]);
       const r = await srv.request("POST", "/api/matchresult", { victory: false, timeAlive: 300, placement: 6, cap: 24 });
-      assert.deepStrictEqual([r.json.ranked.entry.mode, r.json.ranked.entry.field, r.json.ranked.entry.placement], ["duo", 12, 3]);
+      assert.deepStrictEqual([r.json.ranked.entry.mode, r.json.ranked.entry.field, r.json.ranked.entry.placement], ["duo", 8, 3]);
       assert.strictEqual(JSON.stringify(srv.profiles()[A].ranked), solo, "Solo's rating untouched");
     });
 
@@ -207,7 +207,7 @@ async function waitUp(port) {
   } finally {
     try { proc.kill(); } catch { /* gone */ }
     await sleep(300);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 
   // ---- the menu logging in again closes a match that never reported

@@ -35,6 +35,12 @@
   var PANEL_SECONDS = 12;
   var VICTORY_WAIT_MS = 4000;
   var BANNER_TO_BLACK_MS = 1000;
+  // 1v1: a death that may lose the series waits for the round's message
+  // (O: lost, the death screen; E: a draw, the series goes on). The module
+  // judges the round within a second or two; without a message by then, the
+  // death goes through as before.
+  var FINAL_DEATH_WAIT_MS = 6000;
+  var finalTimer = null;
   var SECTIONS = [
     { title: "WEAPONS", cats: ["melee", "ranged", "throwable", "trap"] },
     { title: "ARMOR", cats: ["armor"] },
@@ -308,11 +314,15 @@
       series.kit = parseInt(x, 10) || 0;
       series.over = false;
       series.held = null;                        // a new round: you stand again
+      dropFinal();
       if (blackTimer) { clearTimeout(blackTimer); blackTimer = null; }
       restoreHud();
       show();
       setTimeout(function () { black(false); }, 400);
     } else if (ev == "E") {
+      // 1v1: the round ended and the series goes on (a draw, or a loss that
+      // isn't the last): a death held as maybe the last one was not.
+      if (series.size <= 1 && series.held) { series.held = null; dropFinal(); }
       hide();
       report(round, x);
       var big = x == "W" ? "ROUND " + round + " WON" : x == "L" ? "ROUND " + round + " LOST" : "ROUND " + round + " DRAW";
@@ -325,12 +335,17 @@
       report(round, x);
       var won = series.wins > series.losses;
       banner(won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT", won, score, 9000);
+      dropFinal();
       releaseHeld(won);
     }
   }
 
   function scoreLine(wins, losses) {
     return series.size > 1 ? "YOUR TEAM " + wins + " — " + losses + " RIVALS" : "YOU " + wins + " — " + losses + " RIVAL";
+  }
+
+  function dropFinal() {
+    if (finalTimer) { clearTimeout(finalTimer); finalTimer = null; }
   }
 
   // Team Showdown: the death held back (below), at the series' end.
@@ -389,6 +404,22 @@
       }
       if (series.active && !series.over && !bIsVictory && series.losses + 1 < info.roundsToWin) {
         hide();
+        return;
+      }
+      // 1v1, a death that may lose the series: a draw (both down) at 0-3
+      // doesn't, and the death can come before or after the round's message.
+      // Held until the module says (onMessage), at most FINAL_DEATH_WAIT_MS.
+      if (series.active && !series.over && !bIsVictory) {
+        series.held = $.extend({}, deathData);
+        hide();
+        dropFinal();
+        finalTimer = setTimeout(function () {
+          finalTimer = null;
+          var held = series.held;
+          if (!held || series.over) return;
+          series.held = null;
+          if (setDeathData) setDeathData(held, false);
+        }, FINAL_DEATH_WAIT_MS);
         return;
       }
       if (bIsVictory) series.held = null;

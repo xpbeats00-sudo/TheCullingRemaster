@@ -45,6 +45,28 @@ function setup(options = {}) {
 }
 
 (async () => {
+  // SERVER_AUDIT_2 F6: the lobby timers called start/send with nothing around
+  // them; a throw there was an uncaught exception, and the server exits on one.
+  await test("a start or send that throws is reported, never thrown out of a timer", () => {
+    const time = fakeTime();
+    const errors = [];
+    let sendFails = true;
+    const lobbies = new MatchLobbies(Object.assign({
+      options: { gatherMs: 1000, countdownMs: 500, maxPlayers: 3 },
+      describe: (m) => ({ name: m.id }),
+      send: (m) => { if (sendFails && m.id === "a") throw new Error("send broke"); },
+      start: () => { throw new Error("start broke"); },
+      onError: (e, lobby, where) => errors.push([where, e.message, lobby.queue])
+    }, time));
+    lobbies.join("ffa", { id: "a" });
+    sendFails = false;
+    lobbies.join("ffa", { id: "b" });
+    assert.doesNotThrow(() => time.advance(2000));
+    assert.deepStrictEqual(errors, [["send", "send broke", "ffa"], ["start", "start broke", "ffa"]]);
+    assert.strictEqual(lobbies.lobbyOf("a"), null, "out of the lobby all the same");
+    assert.strictEqual(lobbies.lobbyOf("b"), null);
+  });
+
   await test("per-queue options: team Showdown lobbies hold one team, have no map vote and their own bots", () => {
     const { lobbies, last, started, time } = setup({ maps: ["jungle", "prison"], matchBots: 23, matchBotsByMap: { jungle: 23 },
       maxPlayers: { default: 16, showdown_duo: 2 }, queues: { showdown_duo: { maps: false, matchBots: 3 } } });

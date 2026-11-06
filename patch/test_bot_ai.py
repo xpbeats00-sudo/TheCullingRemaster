@@ -156,7 +156,7 @@ def check_design(stock):
 
 def check_ownership():
     mine = set(M.all_assets())
-    theirs = set(patch_assets.TUNING) | {k[0] for k in patch_assets.EQS_TUNING} | {k[0] for k in patch_assets.STR_ARRAYS}
+    theirs = patch_assets.all_assets()
     check(not (mine & theirs), "patch_assets.py also writes %s" % sorted(mine & theirs))
     for f in sorted(os.listdir(HERE)):
         if not f.endswith(".py") or f in ("make_bot_ai.py", "test_bot_ai.py"):
