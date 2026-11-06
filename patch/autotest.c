@@ -121,7 +121,7 @@ static struct {
     i32 tms_ms;                     /* last TMS line logged */
     i32 round_ms, round;            /* Showdown: when the round's S message came */
     i32 round_logged, sides_logged;
-    i32 kills_done, teams_logged, pods_logged, starts_logged;
+    i32 kills_done, teams_logged, pods_logged, starts_logged, pods_count;
     Weak seen[AT_MAX];              /* player states seen, by PlayerArray index */
     i32 dead[AT_MAX];
     i32 state[AT_MAX];              /* bots: weapon state last frame (-1 none) */
@@ -1099,7 +1099,7 @@ static int at_ensure(u8 *gm)
             T.last_sec = 0;
             T.last_ms = 0;
             T.frames = 0;
-            T.ended = T.quit = T.step = T.step_ms = T.kills_done = T.teams_logged = T.round_ms = T.pods_logged = T.starts_logged = 0;
+            T.ended = T.quit = T.step = T.step_ms = T.kills_done = T.teams_logged = T.round_ms = T.pods_logged = T.starts_logged = T.pods_count = 0;
             for (i = 0; i < AT_MAX; i++) { T.state[i] = -2; T.state_ms[i] = 0; T.seen[i].index = -1; T.seen[i].serial = 0; }
         }
     }
@@ -1132,6 +1132,13 @@ static void at_frame(u8 *gm)
     }
     if (T.scen == AT_BOTS && FIELD(gs, GS_ELAPSED, i32) >= 5) at_sample_bots(now);
     if (T.scen == AT_SD) at_sides(now);
+    /* In the pods the bots arrive in one batch, sometimes in the second the pods open:
+       a sample the frame the count of contestants changes. */
+    if (T.scen != AT_SD && T.pods_logged < 2 && FIELD(gs, GS_ELAPSED, i32) < 1 && NF != T.pods_count) {
+        T.pods_count = NF;
+        at_pods("pods");
+        if (T.scen == AT_PODS) at_everyone("pods_all");
+    }
     if (!T.last_sec || now - (i32)T.last_ms >= 1000) {
         T.fps = T.frames;
         T.frames = 0;

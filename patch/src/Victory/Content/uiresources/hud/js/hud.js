@@ -334,6 +334,11 @@ engine.on('ShowGameMessage', function(message, duration){
 		RemasterTeamStatus(message);
 		return;
 	}
+	// Your place at your death (patch/showdown_rounds.c place_tick): never shown.
+	if (typeof message == "string" && message.indexOf("PLC|") == 0) {
+		RemasterPlaceArrived(parseInt(message.substring(4), 10));
+		return;
+	}
 	AddGameMessage(message, duration);
 });
 
@@ -3312,7 +3317,7 @@ function LocalMatchResultBody(_deathData, bIsVictory)
 		// A victory is first place: the game's victory data carries no Rank
 		// (seen in game by patch/autotest: SetVictoryData has none), so it
 		// would post 0.
-		placement: bIsVictory ? 1 : parseInt(_deathData.Rank, 10) || 0,
+		placement: bIsVictory ? 1 : RemasterRank(_deathData),
 		// This build's limit on players plus bots: one per pod, 16 (the
 		// patched exe's module; 1.3.11 reported 24). The server scores
 		// placements out of the contestants the map really has.
@@ -3327,9 +3332,47 @@ function LocalMatchResultBody(_deathData, bIsVictory)
 	};
 }
 
+// Your place at your death. The game gives the HUD none: the death data has no
+// Rank and SetRewardRank is a letter grade (seen in game by patch/autotest:
+// every ranked loss was posted as 0 and scored last place). The patched exe
+// sends it ("PLC|<n>": the contestants alive at your death, you included) within
+// a second of your death; a death's result waits for it up to
+// REMASTER_RANK_WAIT_MS.
+var REMASTER_RANK_WAIT_MS = 2500;
+var remasterRankWaiting = null;
+var remasterPlace = 0;
+function RemasterRank(_deathData)
+{
+	var r = parseInt(_deathData && _deathData.Rank, 10);
+	if (r > 0) return r;
+	return remasterPlace > 0 ? remasterPlace : 0;
+}
+
+function RemasterPlaceArrived(place)
+{
+	if (place > 0) remasterPlace = place;
+	if (remasterRankWaiting) setTimeout(RemasterRankArrived, 0);
+}
+
+// The place came (or the wait is over): the death's result goes now.
+function RemasterRankArrived()
+{
+	var w = remasterRankWaiting;
+	if (!w || w.done) return;
+	w.done = true;
+	clearTimeout(w.timer);
+	if (!RemasterRank(w.data)) console.log("Remaster: no place for this death (no PLC| within " + REMASTER_RANK_WAIT_MS + " ms): posted as 0");
+	ReportLocalMatchResult(w.data, false);
+}
+
 function ReportLocalMatchResult(_deathData, bIsVictory)
 {
 	if (bLocalMatchResultSent) {
+		return;
+	}
+	// A death without its place yet: wait a moment for SetRewardRank.
+	if (!bIsVictory && !RemasterRank(_deathData) && !remasterRankWaiting) {
+		remasterRankWaiting = { data: _deathData, done: false, timer: setTimeout(RemasterRankArrived, REMASTER_RANK_WAIT_MS) };
 		return;
 	}
 	bLocalMatchResultSent = true;

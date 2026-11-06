@@ -213,21 +213,22 @@ def check_teamout(r, name, size, nteams, ranked_mode):
     before = first(r.ev("before_my_death"), {})
     deaths = jsons(r.probe_of("death"))
     results = jsons(r.probe_of("result"))
-    res = first(results, {})
-    raw = res.get("rawRank")
+    res = results[-1] if results else {}
+    raw = res.get("body", {}).get("placement") or res.get("rawRank")
     alive = before.get("alive")
     teams_alive = sum(1 for k, v in before.get("byteam", {}).items() if v[1] > 0) if before else None
     rr = r.lines(r"ranked result %s " % ranked_mode)
     m = re.search(r"place (\d+)/(\d+)", rr[-1]) if rr else None
     personal = isinstance(raw, int) and alive is not None and raw == alive
     team_place = isinstance(raw, int) and teams_alive is not None and raw == teams_alive
-    kind = "personal (contestants alive at your death)" if personal else "team place" if team_place else "neither"
+    kind = "your position (contestants alive at your death)" if personal else "a team place" if team_place else "neither"
     c.append(ok(name + ": result held until the team was out, posted once as 'out'",
-                res and res.get("body", {}).get("teamOutcome") == "out" and len(results) == 1,
-                "HUD results %d, teamOutcome %s" % (len(results), res.get("body", {}).get("teamOutcome"))))
-    c.append(ok(name + ": the game's Rank at your death is %s" % kind, personal or team_place,
-                "raw Rank %s; contestants alive just before %s, teams alive %s; death screen Rank %s"
-                % (raw, alive, teams_alive, [d.get("Rank") for d in deaths])))
+                res and res.get("body", {}).get("teamOutcome") == "out" and len(r.lines(r"match result \S+ \{")) == 1,
+                "server 'match result' lines %d, teamOutcome %s" % (len(r.lines(r"match result \S+ \{")),
+                                                                 res.get("body", {}).get("teamOutcome"))))
+    c.append(ok(name + ": the posted place at your death is %s" % kind, personal,
+                "posted placement %s (PLC| %s); contestants alive just before %s, teams alive %s; the game's own Rank %s"
+                % (raw, r.hud("PLC|"), alive, teams_alive, [d.get("Rank") for d in deaths])))
     want = None
     if isinstance(raw, int) and raw >= 1:
         want = min(nteams, max(2, math.ceil(raw / size))) if personal else min(nteams, max(2, raw))
@@ -240,13 +241,16 @@ def check_teamout(r, name, size, nteams, ranked_mode):
 def check_solodeath(r, name):
     c = ran(r, name)
     before = first(r.ev("before_my_death"), {})
-    res = first(jsons(r.probe_of("result")), {})
-    raw = res.get("rawRank")
+    res = jsons(r.probe_of("result"))
+    res = res[-1] if res else {}
+    raw = res.get("body", {}).get("placement") or res.get("rawRank")
     alive = before.get("alive")
     rr = r.lines(r"ranked result solo ")
     m = re.search(r"place (\d+)/(\d+)", rr[-1]) if rr else None
-    c.append(ok(name + ": Solo death Rank is your position (contestants alive at your death)", raw == alive,
-                "raw Rank %s, alive just before your death %s" % (raw, alive)))
+    plc = [m for m in r.hud("PLC|")]
+    c.append(ok(name + ": the posted place is your position (contestants alive at your death, PLC|)", raw == alive,
+                "posted placement %s, PLC| %s, alive just before your death %s (the game's own Rank: %s)"
+                % (raw, plc, alive, res.get("rawRank"))))
     c.append(ok(name + ": ranked solo scored that position", m and raw and int(m.group(1)) == min(16, max(2, raw)),
                 rr[-1][-140:] if rr else "no ranked result line"))
     return c

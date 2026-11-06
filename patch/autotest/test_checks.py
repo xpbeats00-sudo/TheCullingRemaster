@@ -59,6 +59,7 @@ out = run([{"ev": "start", "scenario": "teamout", "url": "x"}, dict(teams, mates
            {"ev": "before_my_death", "alive": 20, "byteam": {"1": [4, 4], "2": [4, 4], "3": [4, 4], "4": [4, 4], "5": [4, 4], "6": [4, 0]}},
            {"ev": "quit", "why": "team out"}],
           ['1 ui-trace AT|result|3|0/1|{"victory":false,"rawRank":20,"body":{"placement":20,"teamOutcome":"out"}}',
+           '1 match result steam:1 {"victory":false,"kills":2} +900 XP',
            '1 ranked result quad rkd-1 place 4/4 1000 -> 990 Scrapper out'])
 v = verdicts(SC.check_teamout(out, "Ranked Quads", 4, 4, "quad"))
 assert all(v.values()), v

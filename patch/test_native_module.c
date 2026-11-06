@@ -660,6 +660,9 @@ static char teleport(u8 *pawn, const float *at, const float *rot)
 static void unpossess(u8 *c) { F(c, 0x408, u8 *) = 0; }
 static i32 get_team(u8 *ps) { return F(ps, 0x490, i32); }
 
+/* Your place at your death: "PLC|<alive + 1>" once, the second the records say you died. */
+static void test_place(void);
+
 /* The start chooser's team (fix 12): 0 in ClassicTeams (one free start each), the stock team otherwise. */
 static void test_spawn_team(void)
 {
@@ -1178,6 +1181,55 @@ static void test_chokening(void)
     printf("ok    Chokening: gone user, new match and an Inert pylon end the credit\n");
 }
 
+/* Your place at your death (place_tick): you are tps[0], the player controller's. */
+static void test_place(void)
+{
+    static i32 list[2][2];
+    u8 *pc, *hud;
+    int i, n, count;
+    teams_setup(2, "?bEnableBots=true");               /* Duo, 24 contestants */
+    pc = new_obj(cls_pc);
+    hud = new_obj(cls_hud);
+    reg(pc);
+    F(pc, 0x420, u8 *) = tps[0];
+    F(pc, 0x490, u8 *) = hud;
+    weak_set(list[0], pc);
+    F(world, 0x178, i32 *) = &list[0][0];
+    F(world, 0x180, i32) = 1;
+    nmessages = 0;
+    CHECK(sd_should_end(tgm) == 0 && !*last_message("PLC|"));    /* alive: nothing */
+    for (i = 1; i <= 9; i++) team_die(i);                        /* 9 others down */
+    F(tps[20], 0x42c, unsigned) |= 1;                                 /* a spectator never counts */
+    F(tps[21], 0x800, u8) = 1;                                   /* nor one who left */
+    team_die(0);                                                  /* you: 24 - 10 dead - 2 = 12 others alive */
+    sd_should_end(tgm);
+    CHECK(!strcmp(last_message("PLC|"), "PLC|13"));
+    n = nmessages;
+    for (count = 0; count < 3; count++) sd_should_end(tgm);      /* once */
+    for (i = 0, count = 0; i < 64 && i < nmessages; i++) count += !strncmp(messages[i], "PLC|", 4);
+    CHECK(count == 1 && nmessages >= n);
+    /* Solo the same; Showdown never (its series is its own). */
+    teams_setup(1, "?bEnableBots=true");
+    F(pc, 0x420, u8 *) = tps[0];
+    F(world, 0x178, i32 *) = &list[0][0];
+    F(world, 0x180, i32) = 1;
+    nmessages = 0;
+    sd_should_end(tgm);
+    team_die(0);
+    sd_should_end(tgm);
+    CHECK(!strcmp(last_message("PLC|"), "PLC|24"));
+    teams_setup(3, "?bEnableBots=true");
+    F(pc, 0x420, u8 *) = tps[0];
+    F(world, 0x178, i32 *) = &list[0][0];
+    F(world, 0x180, i32) = 1;
+    nmessages = 0;
+    sd_should_end(tgm);
+    team_die(0);
+    sd_should_end(tgm);
+    CHECK(!*last_message("PLC|"));
+    printf("ok    your place at your death: \"PLC|<alive + 1>\" once (spectators and leavers not counted), Solo too, never in Showdown\n");
+}
+
 int main(void)
 {
     image = (u8 *)VirtualAlloc(0, 0x2600000, MEM_RESERVE, PAGE_NOACCESS);
@@ -1237,6 +1289,7 @@ int main(void)
     test_showdown();
     test_sides();
     test_team_hud();
+    test_place();
     printf("all native module tests passed\n");
     return 0;
 }

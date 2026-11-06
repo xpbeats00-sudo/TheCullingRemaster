@@ -41,9 +41,22 @@
     }
     send("msg", m);
   });
-  engine.on("SetDeathData", function (d) { send("death", JSON.stringify(pick(d, DEATH_KEYS))); });
+  engine.on("SetDeathData", function (d) {
+    var o = pick(d, DEATH_KEYS);
+    o.at = Date.now();
+    o.hudRank = typeof deathData != "undefined" && deathData ? deathData.Rank : null;
+    send("death", JSON.stringify(o));
+  });
   engine.on("SetVictoryData", function (d) { send("victory", JSON.stringify(pick(d, DEATH_KEYS))); });
   engine.on("OnTeamMemberAdded", function (name) { send("mate", String(name)); });
+  // Where the game's Rank comes from: SetRewardRank (hud.js keeps it in deathData.Rank) and
+  // the match stats, with when they come relative to SetDeathData.
+  engine.on("SetRewardRank", function (rank) { send("rank", JSON.stringify({ rank: rank, at: Date.now() })); });
+  engine.on("SetMatchStats", function (json) {
+    var placed = null;
+    try { placed = JSON.parse(json).currentMatch.placed; } catch (e) { /* not ours to judge */ }
+    send("stats", JSON.stringify({ placed: placed, at: Date.now() }));
+  });
 
   var boardAt = 0;
   engine.on("UpdateScoreboardList", function (players) {

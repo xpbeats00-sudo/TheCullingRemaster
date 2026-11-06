@@ -1175,12 +1175,54 @@ void sd_sides_probe(i32 *out)
     out[1] = S.placing;
 }
 
+/* Your place at your death, for the HUD's match result ("PLC|<n>"). The game
+   gives the HUD none: its death data has no Rank and SetRewardRank is a letter
+   grade (seen in game by patch/autotest), so hud.js posted 0 and every ranked
+   loss scored last. Once a second (InProgress, every mode but Showdown, which
+   keeps its own series): the local player alive by the game state's records
+   last second and not now -> n = the contestants still alive (the stock end
+   check's filters: PlayerArray, not spectator, a contestant, not left, alive)
+   + 1. Contestants who died in the same second count as still alive: the
+   place is never worse than the true one. */
+static struct { u8 *gm; i32 alive; } PL;
+
+static void place_tick(u8 *gm)
+{
+    u8 *gs, *world, *list, *pc = 0, *me, **players;
+    i32 i, n, num, alive, left = 0, at = 0;
+    if (!gm || FIELD(gm, GM_TYPE, u8) == LIGHTNING || !(gs = FIELD(gm, GM_GAMESTATE, u8 *)) || !(world = world_of(gm))) return;
+    if (PL.gm != gm) { PL.gm = gm; PL.alive = 0; }
+    list = world + W_CONTROLLERS;
+    num = FIELD(list, 8, i32);
+    for (i = 0; i < num && !pc; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC)) pc = c;
+    }
+    me = pc ? FIELD(pc, C_PLAYERSTATE, u8 *) : 0;
+    if (!is_a(me, R_CLS_PS)) return;
+    alive = !((fn_bool)AT(R_PS_HAS_LEFT))(me) && ((fn_bool)AT(R_PS_IS_ALIVE))(me);
+    if (alive || !PL.alive) { PL.alive = alive; return; }
+    PL.alive = 0;
+    players = FIELD(gs, GS_PLAYERS, u8 **);
+    n = FIELD(gs, GS_NUM_PLAYERS, i32);
+    for (i = 0; i < n; i++) {
+        u8 *ps = players[i];
+        if (!ps || ps == me || (FIELD(ps, PS_FLAGS, u32) & 1) || !FIELD(ps, PS_CONTESTANT, u8)) continue;
+        if (!((fn_bool)AT(R_PS_HAS_LEFT))(ps) && ((fn_bool)AT(R_PS_IS_ALIVE))(ps)) left++;
+    }
+    put(&at, 'P'); put(&at, 'L'); put(&at, 'C'); put(&at, '|');
+    put_int(&at, left + 1);
+    put(&at, 0);
+    send(pc, at);
+}
+
 static char should_end(u8 *gm);
 
 char sd_should_end(u8 *gm)
 {
     char end;
     B = base();
+    place_tick(gm);
     end = should_end(gm);
     at_match_end(end);
     return end;
