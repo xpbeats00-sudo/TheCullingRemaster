@@ -20,8 +20,10 @@
 // in the patch tree), so it can also be previewed outside the game.
 (function () {
   var MODES = { ffa: "Solo Play", coop2: "Duo Play", coop3: "Trio Play", coop4: "Quad Play", lightning: "Lightning",
-    ranked_ffa: "Ranked Solo", showdown: "Showdown" };
-  var TEAM_SIZES = { coop2: 2, coop3: 3, coop4: 4 };   // the team modes (server/server.js TEAM_MODES)
+    ranked_ffa: "Ranked Solo", ranked_coop2: "Ranked Duo", ranked_coop3: "Ranked Trio", ranked_coop4: "Ranked Quads",
+    showdown: "Showdown" };
+  // The team modes (server/server.js TEAM_MODES), casual and ranked.
+  var TEAM_SIZES = { coop2: 2, coop3: 3, coop4: 4, ranked_coop2: 2, ranked_coop3: 3, ranked_coop4: 4 };
   // The night maps (patch/make_weather.py) show only when the server offers
   // them (CULLING_NIGHT_MAPS=1): the vote lists the maps the server counts votes for.
   var MAPS = {
@@ -151,7 +153,10 @@
     q = String(q || "");
     if (MODES[q]) return MODES[q];
     if (q.indexOf("showdown") >= 0) return MODES.showdown;
-    if (q.indexOf("ranked") >= 0) return MODES.ranked_ffa;
+    if (q.indexOf("ranked") >= 0) {
+      return q.indexOf("coop4") >= 0 ? MODES.ranked_coop4 : q.indexOf("coop3") >= 0 ? MODES.ranked_coop3
+        : q.indexOf("coop2") >= 0 ? MODES.ranked_coop2 : MODES.ranked_ffa;
+    }
     if (q.indexOf("coop2") >= 0) return MODES.coop2;
     if (q.indexOf("coop3") >= 0) return MODES.coop3;
     if (q.indexOf("coop4") >= 0) return MODES.coop4;

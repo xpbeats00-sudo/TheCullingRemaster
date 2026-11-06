@@ -3314,7 +3314,12 @@ function LocalMatchResultBody(_deathData, bIsVictory)
 		// scores placements out of the contestants the map really has.
 		cap: 24,
 		// Showdown: the series' round this result ends (ShowdownHud.js).
-		showdownRound: (window.ShowdownHud && ShowdownHud.round) ? ShowdownHud.round() : 0
+		showdownRound: (window.ShowdownHud && ShowdownHud.round) ? ShowdownHud.round() : 0,
+		// Team matches (Duo, Trios, Quads; ranked too): how this HUD settled the
+		// team's result (remasterTeamOutcome, below). The server rates a ranked
+		// team match on the team's placement: victory is the team's win, even
+		// after your own death.
+		teamOutcome: remasterTeamOutcome
 	};
 }
 
@@ -3381,7 +3386,14 @@ function PostLocalMatchResult(result, _deathData, attempt)
 	});
 }
 
-// Ranked Solo: the rating change, under the outcome.
+// Ranked: the rating change, under the outcome. Team modes (Ranked Duos,
+// Trios, Quads) are placed among the teams.
+var REMASTER_RANKED_NAMES = { solo: "RANKED SOLO", duo: "RANKED DUOS", trio: "RANKED TRIOS", quad: "RANKED QUADS" };
+function RankedResultLabel(e) {
+	var team = e.teamSize > 1 || (e.mode && e.mode != "solo");
+	return (REMASTER_RANKED_NAMES[e.mode] || "RANKED SOLO") + " • " + (team ? "TEAM PLACE " : "PLACE ") + e.placement + " OF " + e.field;
+}
+
 function ShowRankedResult(ranked) {
 	var e = ranked.entry, s = ranked.summary;
 	var sign = e.delta >= 0 ? "+" : "";
@@ -3393,7 +3405,7 @@ function ShowRankedResult(ranked) {
 		' display:flex; align-items:center; padding:0.8vh 1.6vw; border-radius:1.2vh; background:rgba(8,8,12,0.82);' +
 		' border:2px solid rgba(204,0,0,0.9); color:white; font-family:Sucrose-Bold; font-size:1.4vw; pointer-events:none;">' +
 		'<img src="/images/ranked/' + s.tier.name.toLowerCase() + '.png" style="width:4.2vw; height:4.2vw; margin-right:1vw;">' +
-		'<div><div style="font-size:0.9vw; opacity:0.8;">RANKED SOLO • PLACE ' + e.placement + ' OF ' + e.field + '</div>' +
+		'<div><div style="font-size:0.9vw; opacity:0.8;">' + RankedResultLabel(e) + '</div>' +
 		'<div>' + e.ratingAfter + ' ELO <span style="color:' + (e.delta >= 0 ? '#5fe05f' : '#ff4b4b') + ';">(' + sign + e.delta + ')</span>' +
 		'  ' + status + '</div></div></div>');
 }
@@ -3413,8 +3425,13 @@ function ShowRankedResult(ranked) {
 //     60 s again up to 20 minutes.
 // Trios and Quads: a teammate is still alive while the game's panel's one or
 // any of the others ("TMS|", RemasterTeamStatus) is.
+// Ranked Duos, Trios and Quads are rated on the team's result, which this
+// posts: a team win is a victory for every member (also one who fell early),
+// and the body says how it was settled (teamOutcome: "won", "out" - the whole
+// team is down, "waited" - posted after the wait, "left" - you left first).
 var remasterTeam = { bInTeam: false, bMateAlive: false, bPanelMateAlive: false };
 var pendingTeamResult = null;               // { data, since, timer }
+var remasterTeamOutcome = null;             // the result's teamOutcome; null outside a team
 var TEAM_RESULT_WAIT_MS = 60000;
 var TEAM_RESULT_MAX_WAIT_MS = 20 * 60000;
 
@@ -3435,7 +3452,7 @@ function RemasterUpdateMateAlive()
 {
 	remasterTeam.bMateAlive = remasterTeam.bPanelMateAlive || remasterExtraMates.alive > 0;
 	if (!remasterTeam.bMateAlive && pendingTeamResult) {
-		PostPendingTeamResult(false);        // your whole team is out: the team lost
+		PostPendingTeamResult(false, "out");        // your whole team is out: the team lost
 	}
 }
 
@@ -3450,13 +3467,14 @@ function ArmTeamResultTimer(ms)
 			ArmTeamResultTimer(TEAM_RESULT_WAIT_MS);
 			return;
 		}
-		PostPendingTeamResult(false);
+		PostPendingTeamResult(false, "waited");
 	}, ms);
 }
 
 // The waiting death result, now: bSync when the HUD is going away (a
-// synchronous request finishes before the page does).
-function PostPendingTeamResult(bSync)
+// synchronous request finishes before the page does). outcome: the body's
+// teamOutcome.
+function PostPendingTeamResult(bSync, outcome)
 {
 	if (!pendingTeamResult) {
 		return;
@@ -3464,6 +3482,7 @@ function PostPendingTeamResult(bSync)
 	var data = pendingTeamResult.data;
 	clearTimeout(pendingTeamResult.timer);
 	pendingTeamResult = null;
+	remasterTeamOutcome = outcome || (bSync ? "left" : "out");
 	if (bSync) {
 		SendLocalMatchResultNow(data, false);
 	}
@@ -3495,7 +3514,7 @@ function SendLocalMatchResultNow(_deathData, bIsVictory)
 // Main Menu): a result still waiting goes first.
 function RemasterBeforeLeavingMatch()
 {
-	PostPendingTeamResult(true);
+	PostPendingTeamResult(true, "left");
 }
 
 window.addEventListener("beforeunload", RemasterBeforeLeavingMatch);
@@ -3514,6 +3533,7 @@ function OnLocalMatchResult(_deathData, bIsVictory)
 		var data = pendingTeamResult.data;
 		clearTimeout(pendingTeamResult.timer);
 		pendingTeamResult = null;
+		remasterTeamOutcome = "won";
 		ReportLocalMatchResult($.extend({}, data, { Rank: 1 }), true);
 		return;
 	}
@@ -3523,6 +3543,8 @@ function OnLocalMatchResult(_deathData, bIsVictory)
 		ShowResultStatus("Your result is saved when your team's match ends");
 		return;
 	}
+	// In a team: you won with your team alive, or you were its last one down.
+	remasterTeamOutcome = remasterTeam.bInTeam ? (bIsVictory ? "won" : "out") : null;
 	ReportLocalMatchResult(_deathData, bIsVictory);
 }
 

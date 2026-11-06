@@ -153,6 +153,7 @@ def tests(a, stage):
         p("test_match_urls.py", stage), p("test_eye_skins.py", stage), p("test_loot_tables.py"),
         p("test_vfx_camos.py", stage),
         p("test_custom_match.py", stage), n("test_showdown_hud.js"), n("test_team_hud.js"), n("test_hud_layout.js"),
+        n("test_ranked_hud.js"), n("test_ranked_menu.js"),
         p("test_airdrop_prices.py", stage), p("test_weapon_balance.py", stage), p("test_bot_ai.py", stage),
         p("test_weather.py", stage), p("test_tree_collision.py", stage), p("test_measure_loading.py"),
         p("test_netplay_check.py", exe),

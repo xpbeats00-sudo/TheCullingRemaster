@@ -119,8 +119,9 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #play-menu .play-ranked-bg { background-image: url("../images/RankedPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
 .play-tiled-menu-options-container ul li.play-ranked-bg:focus,
 .play-tiled-menu-options-container ul li.play-ranked-bg:hover { background-image: url("../images/RankedPlay_sel.png") !important; }
-/* Ranked screen (RankedUI.js): mode tabs, the play tile on the left, one
-   season panel on the right. Duo, Trio and Quads show as coming. */
+/* Ranked screen (RankedUI.js): mode tabs (Solo, Duo, Trio, Quads), the play
+   tile on the left (it queues the selected mode), one season panel on the
+   right for the selected mode. */
 #ranked-menu-options { position: absolute; left: 6vw; top: 26vh; width: 16vw; height: 21vw; }
 #ranked-menu-options ul { justify-content: flex-start; }
 #ranked-menu-options ul li { width: 16vw; height: 21vw; margin: 0; border-radius: 1.2vw; }
@@ -134,6 +135,8 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #ranked-modes .rm-tab { display: flex; align-items: center; margin-right: 0.6vw; padding: 0.9vh 1.3vw; border-radius: 3vh;
   font: 0.95vw Sucrose-Bold; letter-spacing: 0.12vw; text-transform: uppercase; color: rgba(235, 235, 235, 0.5);
   background: rgba(12, 8, 10, 0.8); box-shadow: 0 0 0 0.1vw rgba(255, 255, 255, 0.12); }
+#ranked-modes .rm-tab { cursor: pointer; }
+#ranked-modes .rm-tab:hover { color: white; }
 #ranked-modes .rm-tab.active { color: white; background: rgba(204, 0, 0, 1); box-shadow: none; }
 #ranked-modes .rm-tab small { margin-left: 0.5vw; font: 0.6vw Sucrose-Bold; letter-spacing: 0.08vw; opacity: 0.8; }
 #ranked-panel { position: absolute; left: 25vw; right: 6vw; top: 26vh; max-height: 63vh; display: flex; flex-direction: column;
@@ -168,6 +171,7 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #ranked-panel .rp-row span.r { text-align: right; }
 #ranked-panel .rp-row .up { color: rgba(95, 224, 95, 1); }
 #ranked-panel .rp-row .down { color: rgba(255, 85, 75, 1); }
+#ranked-panel .rp-row small { font-size: 0.65vw; opacity: 0.55; }
 #ranked-panel .rp-empty { padding: 1.4vh 0.6vw; font-size: 0.85vw; opacity: 0.6; }
 #ranked-panel .rp-tierrow { display: flex; align-items: center; height: 3.3vh; padding: 0 0.8vw 0 0.5vw; margin-top: 0.35vh;
   border-radius: 0.9vh; background: rgba(255, 255, 255, 0.04); opacity: 0.45; font-size: 0.8vw; }
@@ -329,8 +333,9 @@ RANKED_TILE = """          <li tabindex="0" class="play-ranked-bg" id="ranked_pl
 
 
 def add_ranked(html):
-    """Ranked Solo: a RANKED tile on the Play screen, the Ranked screen's
-    free-for-all tile renamed (Teams is hidden by CSS: a future playlist),
+    """Ranked: a RANKED tile on the Play screen, the Ranked screen's
+    free-for-all tile renamed (RankedUI.js retitles it for the selected mode
+    tab and queues that mode; the stock Teams tile is hidden by CSS),
     and the ranked UI script after the Ranked screen's."""
     duo = '<li tabindex="0" class="play-duo-bg" id="duo_play" data-push-screen="ffa_jungle_coop2">'
     assert html.count(duo) == 1
