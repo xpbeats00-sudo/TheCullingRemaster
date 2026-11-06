@@ -5,7 +5,7 @@
 // dedicated game server and no netplay. A party queues together into one
 // lobby and gets one shared match record (lobby id, match id) on every
 // member's ticket, but each member plays their own local match; the game's
-// Duo, Trios and Quads put AI teammates beside each of them. So `teamSize` is what the game
+// Duo, Trios and Quads (casual or ranked) put AI teammates beside each of them. So `teamSize` is what the game
 // mode is built for, and `maxParty` is how many friends may queue it together
 // (never more than the team, so a party is never split across teams).
 //
@@ -23,14 +23,14 @@ const LIST = [
   // ?TeamSize= in the native module; docs/TEAM_SIZES_TRIOS_QUADS.md).
   { id: "coop3", name: "Trios", kind: "survival", teamSize: 3, maxParty: 3, ranked: false, enabled: true },
   { id: "coop4", name: "Quads", kind: "survival", teamSize: 4, maxParty: 4, ranked: false, enabled: true },
-  // Ranked Survival: rated from server-issued tickets only.
+  // Ranked Survival: rated from server-issued tickets only. Ranked Duos,
+  // Trios and Quads are the casual team matches (same URLs, AI teammates)
+  // rated on the team's placement, each with its own rating (server/ranked.js,
+  // docs/RANKED_TEAMS.md); a party queues them as one, up to the team size.
   { id: "ranked_ffa", name: "Ranked Solo", kind: "survival", teamSize: 1, maxParty: 4, ranked: true, enabled: true },
-  { id: "ranked_coop2", name: "Ranked Duos", kind: "survival", teamSize: 2, maxParty: 2, ranked: true, enabled: false,
-    reason: "queue-unavailable", message: "Ranked Duos isn't a mode yet: Ranked is played Solo." },
-  { id: "ranked_coop3", name: "Ranked Trios", kind: "survival", teamSize: 3, maxParty: 3, ranked: true, enabled: false,
-    reason: "queue-unavailable", message: "Ranked Trios isn't a mode yet: Ranked is played Solo." },
-  { id: "ranked_coop4", name: "Ranked Quads", kind: "survival", teamSize: 4, maxParty: 4, ranked: true, enabled: false,
-    reason: "queue-unavailable", message: "Ranked Quads isn't a mode yet: Ranked is played Solo." },
+  { id: "ranked_coop2", name: "Ranked Duos", kind: "survival", teamSize: 2, maxParty: 2, ranked: true, enabled: true },
+  { id: "ranked_coop3", name: "Ranked Trios", kind: "survival", teamSize: 3, maxParty: 3, ranked: true, enabled: true },
+  { id: "ranked_coop4", name: "Ranked Quads", kind: "survival", teamSize: 4, maxParty: 4, ranked: true, enabled: true },
   // Showdown (patch/make_showdown.py, patch/showdown_rounds.c): you against
   // one AI rival in the Jungle arena, first to 4 rounds, all in one match.
   { id: "showdown", name: "Showdown Solo", kind: "showdown", format: "1v1", teamSize: 1, maxParty: 1, ranked: false, enabled: true },

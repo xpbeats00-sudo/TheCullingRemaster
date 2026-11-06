@@ -1,8 +1,10 @@
 // The global leaderboard (the menu's LEADERBOARD panel, js/Leaderboard.js).
 //
-// Boards, computed from profiles: this season's ranked rating, wins, kills,
-// K/D (players with at least `minMatches` matches), Showdown series won and
-// time played. Only players with an account are listed, by username: no IDs,
+// Boards, computed from profiles: this season's ranked rating (one board per
+// ranked mode: "ranked" is Ranked Solo, "ranked_duo" / "ranked_trio" /
+// "ranked_quad" the team modes, each from that mode's own rating), wins,
+// kills, K/D (players with at least `minMatches` matches), Showdown series
+// won and time played. Only players with an account are listed, by username: no IDs,
 // and never a player without an account. Each board lists the top `size`;
 // the asking player also gets their own row and position on every board.
 //
@@ -11,7 +13,12 @@
 // `ttlMs` in case a change went unannounced. A request is then a lookup.
 "use strict";
 
-const BOARDS = ["ranked", "wins", "kills", "kd", "showdown", "time"];
+// The team ranked boards come last: older menus find boards by id, and anything
+// reading them by position keeps its place.
+const BOARDS = ["ranked", "wins", "kills", "kd", "showdown", "time", "ranked_duo", "ranked_trio", "ranked_quad"];
+// The ranked boards and the mode each one ranks (server/ranked.js MODES).
+const RANKED_BOARDS = { ranked: "solo", ranked_duo: "duo", ranked_trio: "trio", ranked_quad: "quad" };
+const isRankedBoard = (board) => Object.prototype.hasOwnProperty.call(RANKED_BOARDS, board);
 
 class Leaderboard {
   // players(): iterable of { userID, username, profile } (account players).
@@ -53,6 +60,15 @@ class Leaderboard {
     const cfg = this.ranked.CONFIG;
     const rating = r && Number.isFinite(r.rating) ? Math.min(cfg.maxRating, r.rating) : null;
     const thisSeason = rating !== null && r.season === cfg.season.id && (r.matches || 0) > 0;
+    // Each ranked mode this season: { rating, matches, wins, rank } or null.
+    const modes = {};
+    for (const board of Object.keys(RANKED_BOARDS)) {
+      const mode = RANKED_BOARDS[board];
+      const m = mode === "solo" ? r : (this.ranked.record ? this.ranked.record(p, mode) : null);
+      const mr = m && Number.isFinite(m.rating) ? Math.min(cfg.maxRating, m.rating) : null;
+      modes[mode] = mr !== null && m.season === cfg.season.id && (m.matches || 0) > 0
+        ? { rating: mr, matches: m.matches || 0, wins: m.wins || 0, rank: this.ranked.tierFor(mr).name } : null;
+    }
     return {
       userID, username,
       level: Math.min(this.maxLevel, s.level || 1),
@@ -65,12 +81,17 @@ class Leaderboard {
       rating: thisSeason ? rating : null,
       rankedMatches: thisSeason ? r.matches || 0 : 0,
       rankedWins: thisSeason ? r.wins || 0 : 0,
+      modes,
       pos: {}
     };
   }
 
   // A row's value on a board, or null if it isn't listed there.
   value(board, x) {
+    if (board !== "ranked" && isRankedBoard(board)) {
+      const m = x.modes[RANKED_BOARDS[board]];
+      return m ? m.rating : null;
+    }
     switch (board) {
       case "ranked": return x.rating;
       case "wins": return x.wins > 0 ? x.wins : null;
@@ -85,6 +106,10 @@ class Leaderboard {
   // Ties on the value: the second key, then the name (both only order the
   // list; tied players share a position).
   second(board, x) {
+    if (board !== "ranked" && isRankedBoard(board)) {
+      const m = x.modes[RANKED_BOARDS[board]];
+      return m ? m.wins : 0;
+    }
     switch (board) {
       case "ranked": return x.rankedWins;
       case "wins": case "kills": return -x.games;       // in fewer matches is better
@@ -124,6 +149,12 @@ class Leaderboard {
     const e = { position: x.pos[board] || null, username: x.username, level: x.level, rank: x.rank, cardID: x.cardID,
       value: this.value(board, x) };
     if (board === "ranked") Object.assign(e, { matches: x.rankedMatches, wins: x.rankedWins });
+    else if (isRankedBoard(board)) {
+      // A team board shows the player's tier in that mode.
+      const m = x.modes[RANKED_BOARDS[board]];
+      Object.assign(e, { matches: m ? m.matches : 0, wins: m ? m.wins : 0 });
+      e.rank = m ? m.rank : null;
+    }
     else if (board === "kd") Object.assign(e, { kills: x.kills, deaths: x.deaths, matches: x.games });
     else if (board === "showdown") Object.assign(e, { lost: x.showdownLost });
     else e.matches = x.games;
@@ -151,15 +182,15 @@ class Leaderboard {
             if (id === "kd") you.needMatches = Math.max(0, this.minMatches - me.games);
           }
         }
-        return { id, players: b.players, top: b.top, you };
+        return { id, mode: isRankedBoard(id) ? RANKED_BOARDS[id] : null, players: b.players, top: b.top, you };
       })
     };
   }
 
   // Your own figure on a board you aren't listed on (0, or your K/D so far).
   valueOf(board, x) {
+    if (isRankedBoard(board)) return null;
     switch (board) {
-      case "ranked": return null;
       case "wins": return x.wins;
       case "kills": return x.kills;
       case "kd": return x.kd;
@@ -173,4 +204,4 @@ class Leaderboard {
     players: this.cache ? this.cache.rows.size : 0 }; }
 }
 
-module.exports = { Leaderboard, BOARDS };
+module.exports = { Leaderboard, BOARDS, RANKED_BOARDS };

@@ -126,10 +126,13 @@ async function waitUp(port) {
       assert.strictEqual((await fail).reason, "unknown-item");
     });
 
-    await test("Ranked Duo is refused instead of starting Ranked Solo", async () => {
-      const fail = next(a, "join-mm-fail");
-      a.emit("join-mm", { queueName: "ranked_coop2" });
-      assert.strictEqual((await fail).reason, "queue-unavailable");
+    await test("Ranked Duo starts Ranked Duos (the Duo match, its own rating), never Ranked Solo", async () => {
+      const solo = JSON.stringify(srv.profiles()[A].ranked);
+      const m = await play("ranked_ffa_jungle_coop2");
+      assert.deepStrictEqual([m.gameServer, m.playlist, m.ranked], ["duo:0", "ranked_coop2", "duo"]);
+      const r = await srv.request("POST", "/api/matchresult", { victory: false, timeAlive: 300, placement: 6, cap: 24 });
+      assert.deepStrictEqual([r.json.ranked.entry.mode, r.json.ranked.entry.field, r.json.ranked.entry.placement], ["duo", 12, 3]);
+      assert.strictEqual(JSON.stringify(srv.profiles()[A].ranked), solo, "Solo's rating untouched");
     });
 
     await test("a ranked placement beyond the field still scores (as last place at worst)", async () => {

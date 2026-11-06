@@ -335,9 +335,9 @@ async function run(srv, label) {
       }
     });
 
-    await test("Ranked teams and team Showdown are refused with a reason; Duos and Showdown Solo refuse a party of three", async () => {
-      for (const [q, reason] of [["ranked_ffa_jungle_coop3", "queue-unavailable"], ["ranked_coop4", "queue-unavailable"],
-        ["ffa_jungle_coop2", "party-too-large"], ["showdown_duo", "mode-not-supported"], ["showdown_trio", "mode-not-supported"], ["showdown_quad", "mode-not-supported"],
+    await test("team Showdown is refused with a reason; Duos, Ranked Duos and Showdown Solo refuse a party of three", async () => {
+      for (const [q, reason] of [["ranked_ffa_jungle_coop2", "party-too-large"],
+        ["ffa_jungle_coop2", "party-too-large"],["showdown_duo", "mode-not-supported"], ["showdown_trio", "mode-not-supported"], ["showdown_quad", "mode-not-supported"],
         ["ranked_showdown", "mode-not-supported"], ["showdown", "party-too-large"]]) {
         const fail = waitFor(M, "join-mm-fail");
         M.socket.emit("join-mm", { queueName: q });

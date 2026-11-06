@@ -543,10 +543,15 @@ app.post('/api/matchresult', (req, res) => {
   // Too short to be a real match: no win, and ranked counts it as last place.
   const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const field = matchField(claim.ticket.map, body.cap);
+  // A ranked team match (the ticket says which mode it scores): you can kill
+  // every contestant but your own team.
+  const rankedMode = claim.ticket.ranked ? ranked.modeId(claim.ticket.rankedMode) : null;
+  const teamSize = rankedMode ? ranked.MODES[rankedMode].teamSize : 1;
+  const maxKills = teamSize > 1 ? teamContestants(claim.ticket.map) - teamSize : field - 1;
   const r = {
     victory: !tooShort && (body.victory === true || body.victory === 'true'),
     // Every other contestant at most; damage within what 15 can take.
-    kills: bounded(parseInt(body.kills, 10), field - 1),
+    kills: bounded(parseInt(body.kills, 10), maxKills),
     damage: bounded(Number(body.damage), 5000),
     // No longer than the match has actually run.
     timeAlive: bounded(Number(body.timeAlive), Math.min(4 * 3600, claim.elapsed + 30)),
@@ -558,27 +563,48 @@ app.post('/api/matchresult', (req, res) => {
   p.cullCredits += credits;
   let rankedResult = null;
   // Only the result of the ranked match itself scores it: a Solo, Duo or
-  // Showdown result never finishes a ranked match left pending.
-  if (p.ranked && p.ranked.pending && claim.ticket.ranked && p.ranked.pending.id === claim.ticket.ranked) {
+  // Showdown result never finishes a ranked match left pending, and a ranked
+  // ticket scores only the pending match of its own mode (Ranked Duos can't
+  // finish a Ranked Solo match, or the other way round).
+  const pendingRanked = rankedMode ? ranked.record(p, rankedMode) : null;
+  if (pendingRanked && pendingRanked.pending && pendingRanked.pending.id === claim.ticket.ranked) {
     const reported = parseInt(body.placement, 10);
-    // Within the field: a map whose contestants outnumber its field still
-    // scores, as last place at worst; a malformed rank (missing, 0, negative)
-    // is last place, never first. First place is the win, which needs a
-    // victory on a match long enough to be real (tooShort); without one the
-    // best a report can claim is second.
-    const placement = tooShort ? field : r.victory ? 1
-      : Number.isInteger(reported) && reported >= 1 ? Math.min(field, Math.max(2, reported)) : field;
+    let placement, rankedField;
+    if (teamSize > 1) {
+      // The team's placement among the match's teams (ranked.teamPlacement):
+      // first for the team's win (posted after your own death too, by the
+      // HUD's team result), otherwise the team slice of your position; last
+      // when the match was too short to be real or the position is malformed.
+      rankedField = pendingRanked.pending.field;
+      placement = tooShort ? rankedField : ranked.teamPlacement(rankedMode, reported, r.victory, rankedField);
+    } else {
+      // Within the field: a map whose contestants outnumber its field still
+      // scores, as last place at worst; a malformed rank (missing, 0, negative)
+      // is last place, never first. First place is the win, which needs a
+      // victory on a match long enough to be real (tooShort); without one the
+      // best a report can claim is second.
+      rankedField = field;
+      placement = tooShort ? field : r.victory ? 1
+        : Number.isInteger(reported) && reported >= 1 ? Math.min(field, Math.max(2, reported)) : field;
+    }
     if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
     // The ranked match is the one the server's ticket names (a client-sent
     // matchId is ignored).
-    const out = ranked.finishMatch(p, { matchId: claim.ticket.ranked, placement, field, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
-      Date.now(), rankedGrant(p));
+    const out = ranked.finishMatch(p, { matchId: claim.ticket.ranked, placement, field: rankedField, kills: r.kills, damage: r.damage,
+      timeAlive: r.timeAlive }, Date.now(), rankedGrant(p), rankedMode);
     if (out.error) log('ranked result rejected', out.error, JSON.stringify(body).slice(0, 200));
     else {
-      rankedResult = { entry: out.entry, summary: ranked.summary(p) };
-      log('ranked result', out.entry.matchId, 'place', out.entry.placement, out.entry.ratingBefore, '->', out.entry.ratingAfter,
-        out.entry.tierAfter);
+      // How the HUD decided the team's result (hud.js teamOutcome): logged and
+      // kept on the entry, never scored.
+      if (teamSize > 1 && typeof body.teamOutcome === 'string' && /^(won|out|left|waited)$/.test(body.teamOutcome)) {
+        out.entry.teamOutcome = body.teamOutcome;
+      }
+      rankedResult = { entry: out.entry, summary: ranked.summary(p, Date.now(), rankedMode) };
+      log('ranked result', rankedMode, out.entry.matchId, 'place', out.entry.placement + '/' + out.entry.field,
+        out.entry.ratingBefore, '->', out.entry.ratingAfter, out.entry.tierAfter, out.entry.teamOutcome || '');
     }
+  } else if (claim.ticket.ranked) {
+    log('ranked result not scored: the ticket\'s', rankedMode, 'match', claim.ticket.ranked, 'is not pending');
   }
   const s = p.stats;
   s.xp = Math.min(seasonXPCap(), s.xp + earned);
@@ -925,15 +951,24 @@ function sanitizeProfile(raw, userID) {
   for (const k of STAT_KEYS) p.stats[k] = nonNegative(stats[k], p.stats[k]);
   const level = levelForXP(p.stats.xp);
   if (level) p.stats.level = level;
-  if (isPlainObject(raw.ranked)) {
+  // Ranked records: Solo (ranked) and the team modes (rankedTeams.duo/trio/quad).
+  const rankedRecord = (src) => {
     // Rating changes in the history can be negative; everything else not.
-    const r = cleanValue(raw.ranked, false);
-    r.history = Array.isArray(raw.ranked.history) ? raw.ranked.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
+    const r = cleanValue(src, false);
+    r.history = Array.isArray(src.history) ? src.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
     if (!isPlainObject(r.processed)) r.processed = {};
     if (!isPlainObject(r.tiersReached)) r.tiersReached = {};
     // A match left running on another server can't be finished here.
     r.pending = null;
-    p.ranked = r;
+    return r;
+  };
+  if (isPlainObject(raw.ranked)) p.ranked = rankedRecord(raw.ranked);
+  if (isPlainObject(raw.rankedTeams)) {
+    for (const mode of ranked.TEAM_MODE_IDS) {
+      if (!isPlainObject(raw.rankedTeams[mode])) continue;
+      if (!p.rankedTeams) p.rankedTeams = {};
+      p.rankedTeams[mode] = rankedRecord(raw.rankedTeams[mode]);
+    }
   }
   if (isPlainObject(raw.lastMatch)) p.lastMatch = cleanValue(raw.lastMatch, false);
   return p;
@@ -993,7 +1028,13 @@ app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: t
 app.get('/api/ranked', (req, res) => {
   const userID = userFromRequest(req);
   if (!userID) return res.status(401).json({ error: 'not-logged-in' });
-  res.json(ranked.summary(getProfile(userID)));
+  // The asked mode (?mode=solo|duo|trio|quad; Solo by default, as older menus
+  // and HUDs read it) at the top, and every mode's summary under `modes` (the
+  // Ranked screen's tabs). Reading a team mode never played writes nothing.
+  const p = getProfile(userID);
+  const mode = ranked.modeId(req.query && req.query.mode);
+  const modes = ranked.summaries(p);
+  res.json(Object.assign({}, modes[mode], { modes }));
 });
 
 // Breadcrumbs from the menus (UiTrace.js): the last one before a UI freeze
@@ -1143,7 +1184,8 @@ const lobbies = new MatchLobbies({
     // No lobby note: menus never say the other contestants are bots.
     note: null
   },
-  describe: (m) => lobbyCard(m.id),
+  // In a ranked team lobby, each player's rank is their rank in that mode.
+  describe: (m) => { const l = lobbies.lobbyOf(m.id); return lobbyCard(m.id, l ? l.queue : null); },
   send: (m, payload) => {
     setPresence(m.id, payload.state === 'searching' ? 'searching' : 'lobby', { mode: payload.queue });
     const s = memberSocket(m);
@@ -1155,11 +1197,15 @@ const lobbies = new MatchLobbies({
 });
 
 // What other players see of someone in a lobby: no IDs, nothing private.
-function lobbyCard(userID) {
+// `playlist`: the lobby's; a ranked team playlist shows that mode's rank (none
+// before the player's first match in it), anything else the Solo rank.
+function lobbyCard(userID, playlist) {
   const p = peekProfile(userID);
   const key = accounts.keyForUserID(userID);
   const a = key ? accounts.get(key) : null;
-  const rating = p && p.ranked && Number.isFinite(p.ranked.rating) ? Math.min(ranked.CONFIG.maxRating, p.ranked.rating) : null;
+  const teamMode = ranked.modeForPlaylist(playlist);
+  const rec = teamMode && teamMode !== 'solo' ? ranked.record(p, teamMode) : p && p.ranked;
+  const rating = rec && Number.isFinite(rec.rating) ? Math.min(ranked.CONFIG.maxRating, rec.rating) : null;
   return {
     name: a ? a.username : 'Player',
     level: p && p.stats ? Math.min(SEASON.maxLevel, p.stats.level || 1) : 1,
@@ -1182,6 +1228,18 @@ function lobbyQueue(raw) {
 // ("duo:<map>", "trio:<map>", "quad:<map>"; patch/make_duo.py's URLs). A party
 // never holds more than its team (playlists.js maxParty = teamSize).
 const TEAM_MODES = { coop2: { size: 2, start: 'duo:' }, coop3: { size: 3, start: 'trio:' }, coop4: { size: 4, start: 'quad:' } };
+// Ranked Duos, Trios and Quads launch exactly as the casual team matches (the
+// same URLs: Ranked Solo is Solo's offline:<map> too); only the ticket's
+// ranked match makes them ranked.
+TEAM_MODES.ranked_coop2 = TEAM_MODES.coop2;
+TEAM_MODES.ranked_coop3 = TEAM_MODES.coop3;
+TEAM_MODES.ranked_coop4 = TEAM_MODES.coop4;
+
+// Contestants a team match on `map` has (every team mode needs the patched
+// exe, which places the map's full field: 24 on Jungle, 16 on Prison).
+function teamContestants(map) {
+  return FIELD_BY_MAP[map] || ranked.CONFIG.maxField;
+}
 
 // A socket that is logged in and connected now, for a player.
 function liveSocket(userID) {
@@ -1398,11 +1456,16 @@ function launchMatch(socket, queue, map, shared = {}) {
   const team = TEAM_MODES[mode] || null;
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   let rankedId = null;
-  if (playlists.PLAYLISTS[mode] && playlists.PLAYLISTS[mode].ranked) {
+  const rankedMode = ranked.modeForPlaylist(mode);
+  if (rankedMode && playlists.PLAYLISTS[mode].ranked) {
     const p = getProfile(socket.userID);
-    const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
-    if (abandoned) log('ranked abandoned', abandoned.matchId, abandoned.ratingBefore, '->', abandoned.ratingAfter);
-    log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
+    // A team match is scored among its teams: the map's contestants / team size.
+    const ticketMap = Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle';
+    const opts = { mode: rankedMode, field: team ? ranked.teamField(rankedMode, teamContestants(ticketMap)) : undefined };
+    const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p), opts);
+    if (abandoned) log('ranked abandoned', rankedMode, abandoned.matchId, abandoned.ratingBefore, '->', abandoned.ratingAfter);
+    log('ranked match', rankedMode, match.id, 'rating', match.ratingBefore, 'mmr', match.mmr, 'field', match.field,
+      shared.partyId ? 'party ' + shared.partyId : '');
     rankedId = match.id;
     saveProfiles();
   }
@@ -1414,6 +1477,8 @@ function launchMatch(socket, queue, map, shared = {}) {
     map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle',
     mode,
     ranked: rankedId,
+    // Which mode's rating that ranked match is (solo, duo, trio, quad).
+    rankedMode: rankedId ? rankedMode : null,
     matchId,
     lobbyId: shared.lobbyId || null,
     partyId: shared.partyId || null
@@ -1437,6 +1502,8 @@ function launchMatch(socket, queue, map, shared = {}) {
     lobbyId: shared.lobbyId || null,
     partyId: shared.partyId || null,
     playlist: mode,
+    // The ranked mode this match is rated in (null: not ranked).
+    ranked: rankedId ? rankedMode : null,
     netplay: false
   });
 }
@@ -1468,7 +1535,8 @@ function sendShowdown(socket, loginAt) {
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
 const MATCH_PRESENCE_MS = 45 * 60 * 1000;
-const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', coop3: 'Trios', coop4: 'Quads', ranked_ffa: 'Ranked', showdown: 'Showdown',
+const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', coop3: 'Trios', coop4: 'Quads', ranked_ffa: 'Ranked',
+  ranked_coop2: 'Ranked Duos', ranked_coop3: 'Ranked Trios', ranked_coop4: 'Ranked Quads', showdown: 'Showdown',
   lightning: 'Lightning', custom: 'Custom' };
 
 function usernameOf(userID) {
@@ -1593,6 +1661,14 @@ function playerCard(userID, viewer) {
       tiersReached: ranked.TIERS.filter((t) => r.tiersReached && r.tiersReached[t.name]).map((t) => t.name)
     };
   }
+  // The team modes this season (null: not played this season).
+  card.rankedTeams = {};
+  for (const mode of ranked.TEAM_MODE_IDS) {
+    const t = ranked.record(p, mode);
+    const thisSeason = t && Number.isFinite(t.rating) && t.season === ranked.CONFIG.season.id && (t.matches || 0) > 0;
+    const rating = thisSeason ? Math.min(ranked.CONFIG.maxRating, t.rating) : null;
+    card.rankedTeams[mode] = thisSeason ? { tier: ranked.tierFor(rating).name, rating, matches: t.matches || 0, wins: t.wins || 0 } : null;
+  }
   if (viewer) {
     const me = friends.peek(viewer);
     card.relation = viewer === userID ? 'you' : me.friends.includes(userID) ? 'friend'
@@ -1682,7 +1758,8 @@ io.on('connection', (socket) => {
     socket.emit('player-counts', { online: socketsByUser.size, inQueue: 0 });
     socket.emit('update-queue-status', {
       ffa: { isActive: true }, coop2: { isActive: true }, coop3: { isActive: true }, coop4: { isActive: true },
-      lightning: { isActive: true }, ranked_ffa: { isActive: true }
+      lightning: { isActive: true }, ranked_ffa: { isActive: true }, ranked_coop2: { isActive: true },
+      ranked_coop3: { isActive: true }, ranked_coop4: { isActive: true }
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);
