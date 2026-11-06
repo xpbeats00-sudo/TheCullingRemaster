@@ -847,6 +847,78 @@ static void host_teleport_pair(u8 **conns, i32 nconn, u32 now)
     }
 }
 
+/* CULLING_NETPLAY_DAMAGE=1: from 5 s after the pair teleport, the host deals
+ * the second player 25 damage every 3 s, credited to the first player
+ * (UGameplayStatics::ApplyDamage, as the autotest mode kills with), until
+ * it dies; each hit and the victim's health are traced. */
+#define R_APPLY_DAMAGE     0x132cec0   /* float UGameplayStatics::ApplyDamage(victim, amount, instigator controller, causer, damage type) */
+#define R_HEALTH           0x262d20    /* health component (pawn +0x830): current health */
+#define O_CH_HEALTH        0x830       /* AShooterCharacter health component */
+typedef float (*apply_damage_fn)(void *victim, float amount, void *instigator, void *causer, void *type);
+typedef float (*health_fn)(void *comp);
+static i32 dmg_state = 1, dmg_hits;
+static u32 dmg_next;
+
+/* Is obj an AShooterCharacter? The class base-chain test the Remaster
+ * module uses (showdown_rounds.c is_a): the class's own chain entry at its
+ * depth in the object's class chain. */
+#define R_CLS_CHARACTER    0x302cc0    /* AShooterCharacter::StaticClass getter (takes the package name) */
+static i32 is_character(u8 *obj)
+{
+    u8 *cls = FN(R_CLS_CHARACTER, class_fn)((const u16 *)(image_base() + R_PKG_VICTORY));
+    u8 *oc = obj ? F(obj, O_OBJ_CLASS, u8 *) : 0;
+    i32 idx;
+    if (!cls || !oc)
+        return 0;
+    idx = F(cls, O_CLASS_CHAIN + 8, i32);
+    return idx <= F(oc, O_CLASS_CHAIN + 8, i32) && F(oc, O_CLASS_CHAIN, u8 **)[idx] == cls + O_CLASS_CHAIN;
+}
+
+/* A character's health; -1 for anything else (a dead player's controller
+ * gets another kind of pawn with no health component at +0x830: reading it
+ * crashed the client in game). */
+static i32 health_of(u8 *pawn)
+{
+    u8 *h;
+    if (!pawn || !is_character(pawn))
+        return -1;
+    h = F(pawn, O_CH_HEALTH, u8 *);
+    return h ? (i32)FN(R_HEALTH, health_fn)(h) : -1;
+}
+
+static void host_damage(u8 **conns, i32 nconn, u32 now)
+{
+    static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','D','A','M','A','G','E',0 };
+    u8 *pca = 0, *pa = 0, *pb = 0;
+    struct line l;
+    float dealt;
+    i32 c;
+    if (!tp2_done || !env_on(var, &dmg_state) || dmg_hits >= 8)
+        return;
+    for (c = 0; c < nconn; c++) {
+        u8 *pc = conns[c] ? F(conns[c], O_CONN_PC, u8 *) : 0;
+        u8 *p = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+        if (p && !pa) { pa = p; pca = pc; }
+        else if (p && !pb) pb = p;
+    }
+    if (!pa || !pb)
+        return;
+    if (!dmg_next) { dmg_next = now + 5000; return; }
+    if ((i32)(now - dmg_next) < 0)
+        return;
+    dmg_next = now + 3000;
+    if (health_of(pb) <= 0)
+        return;
+    dealt = FN(R_APPLY_DAMAGE, apply_damage_fn)(pb, 25.0f, pca, pa, 0);
+    dmg_hits++;
+    if (trace_begin(&l, "hit")) {
+        kv(&l, "n", (u64)dmg_hits, 0);
+        kv_s(&l, "dealt", (i32)dealt);
+        kv_s(&l, "victim_health", health_of(pb));
+        trace_end(&l);
+    }
+}
+
 static void host_teleport(u8 *remote, u32 now)
 {
     static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','L','E','P','O','R','T',0 };
@@ -910,6 +982,7 @@ static void server_replicate(u8 *driver)
             }
         }
         host_teleport_pair(conns, nconn, now);
+        host_damage(conns, nconn, now);
     }
     {
         u8 *gm1 = F(world, O_WORLD_AUTH_GM, u8 *);
@@ -1131,6 +1204,7 @@ static void client_trace(u8 *driver)
         kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
         kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
         kv(&l, "role", (u64)F(p, 0x118, u8), 0);            /* AActor::Role here (1 simulated, 2 autonomous) */
+        kv_s(&l, "health", health_of(p));
         kv_s(&l, "repx", (i32)F(p, 0xa0 + 0x18, float));     /* the last ReplicatedMovement.Location received */
         kv_s(&l, "repy", (i32)F(p, 0xa0 + 0x1c, float));
         trace_end(&l);
