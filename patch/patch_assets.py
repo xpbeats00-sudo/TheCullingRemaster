@@ -20,8 +20,10 @@ SRC = os.path.join(HERE, "src")
 # asset path -> {export name -> {property: value}}
 TUNING = {
     "Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset": {
-        # Victory.exe caps players plus bots (24 with patch_exe.py, 16 stock),
-        # so solo gets 23 bots whatever this asks for; 50 means "as many as allowed".
+        # 50 means "as many as allowed": Victory.exe caps players plus bots
+        # (24 with patch_exe.py, 16 stock) and the native module caps them at
+        # the mode's free starts (showdown_rounds.c sd_spawn_bots: Jungle's
+        # and Prison's 16 pods), so Solo gets 15 bots.
         "Default__VictoryGameMode_C": {"BotsToSpawn": 50},
     },
     # The match AI (MatchBot, BasicController and the AI's behaviours) is
@@ -49,8 +51,8 @@ TUNING = {
 
 # The names bots get in a match (VictoryGameMode's BotNames; each bot takes
 # the next one). A bot past the end of the list is named by its ID
-# ("0-3C69A0F7..."), so there must be a name for every bot: 23 with
-# patch_exe.py's 24 contestants. The community's names, stock ones (Tony The
+# ("0-3C69A0F7..."), so there must be a name for every bot: 15 with the
+# maps' 16 pods (23 with patch_exe.py's cap alone). The community's names, stock ones (Tony The
 # Ninja, Mandroid 5000, ...), then more. MatchLobby.js shows the same names in
 # the pregame lobby.
 BOT_NAMES = [
@@ -61,6 +63,30 @@ BOT_NAMES = [
 ]
 STR_ARRAYS = {
     ("Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset", "Default__VictoryGameMode_C", "BotNames"): BOT_NAMES,
+}
+
+# Contestants start with nothing but their fists, as the player does. The
+# stock match bot (BasicBot, the pawn every match's bots spawn as) has
+# SpawnsWithWeapons on: its BeginPlay (ExecuteUbergraph_BasicBot, "JumpIfNot
+# SpawnsWithWeapons") shuffles its MeleeWeaponList, RangedWeaponList and
+# BotUtilityWeapon lists and spawns one of each, so at the pods' opening every
+# opponent already had a weapon. Off here; the bots loot like the player
+# (make_bot_ai.py's BotWeaponScore). The stock tutorial bots (Lethargic,
+# Weakend, BlockBot) already run with it off. Showdown's rival gets the
+# round's kit from the native module either way (showdown_rounds.c).
+BOT_PAWN = "Victory/Content/Blueprints/AI/Base/BasicBot.uasset"
+BOOLS = {
+    (BOT_PAWN, "Default__BasicBot_C", "SpawnsWithWeapons"): False,
+}
+# BasicBot's direct children inherit the flag (none stores it), so each keeps
+# the stock value explicitly: the Survival waves (BasicBot_Child_Survival and
+# its SurvivalBot_* / DecoyBot children), the Tutorial bots, the clones.
+ARMED_CHILDREN = {
+    "Victory/Content/Blueprints/AI/Base/BasicBot_Child_Survival.uasset": "Default__BasicBot_Child_Survival_C",
+    "Victory/Content/Blueprints/AI/Base/BasicBot_Child_Tutorial.uasset": "Default__BasicBot_Child_Tutorial_C",
+    "Victory/Content/Blueprints/AI/Base/BasicBot_TutorialDeath.uasset": "Default__BasicBot_TutorialDeath_C",
+    "Victory/Content/Blueprints/AI/Base/BasicBot_CloneExploChild.uasset": "Default__BasicBot_CloneExploChild_C",
+    "Victory/Content/Blueprints/AI/Base/BasicBot_CloneTest.uasset": "Default__BasicBot_CloneTest_C",
 }
 
 # Behaviour tree EQS parameters: (asset, task node, param) -> value. Empty:
@@ -99,6 +125,67 @@ def patch_props(pkg, data, export, values):
         else:
             sys.exit("can't patch %s (%s)" % (prop, ptype))
         print("  %s.%s: %s -> %s" % (export, prop, old, value))
+
+
+def patch_bools(pkg, data, export, values):
+    """In place: a BoolProperty keeps its value in its tag (size 0), the byte
+    before the tag's has-GUID flag."""
+    stored = {p[0]: p for p in pkg.props(export)}
+    for prop, value in values.items():
+        if prop not in stored or stored[prop][1] != "BoolProperty":
+            sys.exit("%s.%s is not a stored BoolProperty" % (export, prop))
+        at = stored[prop][3] - 2
+        if data[at] not in (0, 1) or data[at + 1] != 0:
+            sys.exit("%s.%s: unexpected tag bytes %s" % (export, prop, bytes(data[at:at + 2]).hex()))
+        old = data[at]
+        data[at] = 1 if value else 0
+        print("  %s.%s: %s -> %s" % (export, prop, bool(old), bool(value)))
+
+
+def add_bool(data, export, prop, value):
+    """A copy of the package with a BoolProperty added to the export (it
+    must not store one yet)."""
+    from make_showdown import add_props, bool_prop     # make_showdown imports this module
+    if any(p[0] == prop for p in Package(bytes(data)).props(export)):
+        sys.exit("%s already stores %s" % (export, prop))
+    up = UPackage(bytes(data))
+    add_props(up, export, [bool_prop(up, prop, value)])
+    print("  %s.%s: (inherited) -> %s" % (export, prop, bool(value)))
+    return bytearray(up.save())
+
+
+def build(originals):
+    """{asset: patched bytes} from the stock packages."""
+    assets = all_assets()
+    out = {}
+    for rel in sorted(assets):
+        data = bytearray(originals[rel])
+        pkg = Package(bytes(data))
+        print(rel)
+        for export, values in TUNING.get(rel, {}).items():
+            patch_props(pkg, data, export, values)
+        for (asset, export, prop), value in BOOLS.items():
+            if asset == rel:
+                patch_bools(pkg, data, export, {prop: value})
+        for (asset, export, param), value in EQS_TUNING.items():
+            if asset == rel:
+                patch_eqs_param(pkg, data, export, param, value)
+        changes = [patch_str_array(pkg, data, export, prop, values)
+                   for (asset, export, prop), values in STR_ARRAYS.items() if asset == rel]
+        changes = [c for c in changes if c]
+        if changes:
+            data = resize(pkg, data, changes)
+        elif rel in ARMED_CHILDREN:
+            data = add_bool(data, ARMED_CHILDREN[rel], "SpawnsWithWeapons", True)
+        else:
+            assert len(data) == len(originals[rel])
+        out[rel] = bytes(data)
+    return out
+
+
+def all_assets():
+    return (set(TUNING) | {k[0] for k in EQS_TUNING} | {k[0] for k in STR_ARRAYS}
+            | {k[0] for k in BOOLS} | set(ARMED_CHILDREN))
 
 
 def patch_str_array(pkg, data, export, prop, values):
@@ -176,24 +263,7 @@ def patch_eqs_param(pkg, data, export, param, value):
 
 
 def main(paks_dir):
-    assets = set(TUNING) | {k[0] for k in EQS_TUNING} | {k[0] for k in STR_ARRAYS}
-    originals = find_in_paks(paks_dir, assets)
-    for rel in sorted(assets):
-        data = bytearray(originals[rel])
-        pkg = Package(bytes(data))
-        print(rel)
-        for export, values in TUNING.get(rel, {}).items():
-            patch_props(pkg, data, export, values)
-        for (asset, export, param), value in EQS_TUNING.items():
-            if asset == rel:
-                patch_eqs_param(pkg, data, export, param, value)
-        changes = [patch_str_array(pkg, data, export, prop, values)
-                   for (asset, export, prop), values in STR_ARRAYS.items() if asset == rel]
-        changes = [c for c in changes if c]
-        if changes:
-            data = resize(pkg, data, changes)
-        else:
-            assert len(data) == len(originals[rel])
+    for rel, data in build(find_in_paks(paks_dir, all_assets())).items():
         out = os.path.join(SRC, rel)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         open(out, "wb").write(data)

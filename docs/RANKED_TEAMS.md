@@ -35,8 +35,8 @@ rated on how your team placed.
 ## Placement
 
 - **Field = number of teams:** the map's contestants divided by the team
-  size. On Jungle (24) that is 12 duos, 8 trios or 6 quads (24 / team size).
-  Prison places 16 contestants, so it has 8, 5 or 4 teams. The field is fixed
+  size. Jungle and Prison place 16 contestants (one per pod; 1.3.11 put 24
+  in Jungle's 16 pods), so a match has 8 duos, 5 trios or 4 quads. The field is fixed
   when the match starts (`launchMatch`), and a result can't change it.
 - **The team's win is 1st, for every member.** The HUD's team result (hud.js,
   Duo's rule extended to N in Trios/Quads) holds your death's result while a

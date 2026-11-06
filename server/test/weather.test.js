@@ -33,7 +33,7 @@ async function play(srv, id, queue) {
     const on = weather.settings({ CULLING_NIGHT_MAPS: "1", CULLING_WEATHER_PRESETS: "storm, bogus,FOGGY" });
     assert.deepStrictEqual(on.presets, ["storm", "foggy"]);
     assert.deepStrictEqual(weather.maps(on), { jungle: 0, prison: 1, "jungle-night": 2, "prison-night": 3 });
-    assert.deepStrictEqual(weather.fieldByMap(on), { jungle: 24, prison: 16, "jungle-night": 24, "prison-night": 16 });
+    assert.deepStrictEqual(weather.fieldByMap(on), { jungle: 16, prison: 16, "jungle-night": 16, "prison-night": 16 });
   });
 
   await test("answers: stock forms without weather, map: URLs with it", async () => {
@@ -79,7 +79,7 @@ async function play(srv, id, queue) {
     await test("night maps on: four maps in the vote; Jungle Night opens by URL with weather", async () => {
       const { view, ready } = await play(on, "steam:76561190000000902", "ffa_jungle-night");
       assert.deepStrictEqual(Object.keys(view.maps).sort(), ["jungle", "jungle-night", "prison", "prison-night"]);
-      assert.strictEqual(view.matchBotsByMap["jungle-night"], 23);
+      assert.strictEqual(view.matchBotsByMap["jungle-night"], 15);
       const m = ANSWER.exec(ready.gameServer);
       assert.ok(m, ready.gameServer);
       assert.strictEqual(m[1], "solo");

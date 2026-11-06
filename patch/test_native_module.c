@@ -367,6 +367,122 @@ static void team_die(int i)
     F(F(tgs, 0x468, u8 *) + i * REC, 0x28, u8) = 0;
 }
 
+/* ---------------------------------------------------------------- one start each */
+
+/* FName stand-in: the same id for the same text (interned), as the engine. */
+static u16 fnames[32][32];
+static int nfnames;
+static u64 *fname(u64 *out, const u16 *s, i32 find)
+{
+    int i, k;
+    CHECK(find == 1);
+    for (i = 0; i < nfnames; i++) {
+        for (k = 0; fnames[i][k] && fnames[i][k] == s[k]; k++) {}
+        if (fnames[i][k] == s[k]) break;
+    }
+    if (i == nfnames) {
+        CHECK(nfnames < 32);
+        for (k = 0; s[k] && k < 31; k++) fnames[i][k] = s[k];
+        nfnames++;
+    }
+    *out = (u64)(i + 1) << 32 | 7;      /* index and number, as an FName's 8 bytes */
+    return out;
+}
+static u64 name_of(const char *s) { FString f = str(s); u64 n; return *fname(&n, f.data, 1); }
+
+/* A level like Jungle_P: 16 starts tagged SpawnsDecentral (one with a second
+   tag, Team01, as the pods have), 8 tagged SpawnsLightning. The mode's
+   SpawnPointTags: VictoryGameMode's {SpawnsDecentral, Default} or
+   Lightning's {SpawnsLightning, Default}. `humans` player controllers and no
+   bots yet. */
+static void level_setup(u8 type, const char *url, int lightning, int humans, int bots)
+{
+    static u8 *starts[24];
+    static FString tags[2];
+    static i32 cw[8][2];
+    int i;
+    teams_setup(type, url);
+    for (i = 0; i < 24; i++) {
+        u64 *t = (u64 *)calloc(2, 8);
+        starts[i] = new_obj(0);
+        t[0] = name_of(i < 16 ? "SpawnsDecentral" : "SpawnsLightning");
+        t[1] = name_of("Team01");
+        F(starts[i], 0x230, u64 *) = t;
+        F(starts[i], 0x238, i32) = i < 16 && i % 5 == 0 ? 2 : 1;
+    }
+    F(tgm, 0x490, u8 **) = starts;
+    F(tgm, 0x498, i32) = 24;
+    tags[0] = str(lightning ? "SpawnsLightning" : "SpawnsDecentral");
+    tags[1] = str("Default");
+    F(tgm, 0x4e8, FString *) = tags;
+    F(tgm, 0x4f0, i32) = 2;
+    reg(world);
+    for (i = 0; i < humans; i++) {
+        u8 *pc = new_obj(cls_pc);
+        reg(pc);
+        weak_set(cw[i], pc);
+    }
+    F(world, 0x178, void *) = cw;
+    F(world, 0x180, i32) = humans;
+    F(tgm, 0x518, i32) = bots;
+}
+
+static int bots_after(void)
+{
+    spawn_bots_calls = 0;
+    sd_spawn_bots(tgm);
+    CHECK(spawn_bots_calls == 1);
+    return F(tgm, 0x518, i32);
+}
+
+static void test_one_start_each(void)
+{
+    /* In game (1.3.11, Solo): 23 bots for Jungle's 16 pods, and at the pods'
+       opening contestants stood in the player's pod. */
+    level_setup(1, 0, 0, 1, 50);                     /* Solo: patch_assets' 50 */
+    CHECK(bots_after() == 15);
+    level_setup(1, 0, 0, 1, 23);
+    CHECK(bots_after() == 15);
+    level_setup(1, 0, 0, 2, 50);                     /* two players: 14 bots */
+    CHECK(bots_after() == 14);
+    level_setup(1, 0, 0, 1, 5);                      /* fewer asked: kept */
+    CHECK(bots_after() == 5);
+    level_setup(2, 0, 0, 1, 50);                     /* Duo: 8 pairs */
+    CHECK(bots_after() == 15);
+    level_setup(2, "?TeamSize=3", 0, 1, 50);         /* Trios: 5 whole teams */
+    CHECK(bots_after() == 14);
+    level_setup(2, "?TeamSize=3", 0, 3, 50);         /* a party of 3 */
+    CHECK(bots_after() == 12);
+    level_setup(2, "?TeamSize=4", 0, 1, 50);         /* Quads: 4 teams */
+    CHECK(bots_after() == 15);
+    level_setup(3, 0, 1, 1, 1);                      /* Showdown 1v1: its one rival */
+    CHECK(bots_after() == 1);
+    level_setup(3, "?TeamSize=4", 1, 1, 1);          /* 4v4: 7 on the arena's 8 starts */
+    CHECK(bots_after() == 7);
+    printf("ok    one start each: Solo/Duo 15 bots for 16 pods (14 with two players), Trios 14 (5 teams), "
+           "Quads 15, Showdown 1 and 7; fewer asked are kept\n");
+
+    /* The chooser's rules: a start counts only with one of the mode's tags; no
+       tags listed: every start; ?SpawnTag= or the starts not listed yet: the
+       stock count. */
+    level_setup(1, 0, 1, 1, 50);                     /* Lightning's tags: the 8 arena starts */
+    CHECK(bots_after() == 7);
+    level_setup(1, 0, 0, 1, 50);
+    F(tgm, 0x4f0, i32) = 0;                          /* no SpawnPointTags: all 24 */
+    CHECK(bots_after() == 23);
+    level_setup(1, "?SpawnTag=SpawnsLightning", 0, 1, 50);
+    F(tgm, 0x5e0, FString) = str("SpawnsLightning");
+    CHECK(bots_after() == 50);
+    level_setup(1, 0, 0, 1, 50);
+    F(tgm, 0x498, i32) = 0;                          /* no starts listed */
+    CHECK(bots_after() == 50);
+    level_setup(1, 0, 0, 1, 50);
+    F(tgm, 0x490, u8 **)[3] = 0;                     /* a hole */
+    CHECK(bots_after() == 14);
+    printf("ok    one start each: only starts with the mode's tags count; no tags: all; "
+           "?SpawnTag=, no starts listed: untouched\n");
+}
+
 static void test_team_sizes(void)
 {
     static const struct { const char *url; int size; } classic[] = {
@@ -1041,6 +1157,7 @@ int main(void)
     hook(0x24e7e0, (void *)set_team);
     hook(0x243c80, (void *)sort_scores);
     hook(0x2320f0, (void *)spawn_bots);
+    hook(0x5b0e60, (void *)fname);
     hook(0x262d20, (void *)comp_value);              /* health, max health */
     hook(0x2634c0, (void *)comp_max);
     hook(0x28ee40, (void *)comp_value);              /* stamina, max stamina */
@@ -1063,6 +1180,7 @@ int main(void)
     test_duo();
     test_chokening();
     test_team_sizes();
+    test_one_start_each();
     test_showdown();
     test_sides();
     test_team_hud();

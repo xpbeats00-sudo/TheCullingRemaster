@@ -42,10 +42,8 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 const weather = require('./weather');
 const WEATHER = weather.settings();
 const MAPS = weather.maps(WEATHER);
-// Contestants the game places on each map with patch_exe.py's 24 cap: Jungle
-// has 24 player starts. Prison has 16, and whether more than 16 spawn there
-// hasn't been measured, so it is scored as 16 (never more than it has). The
-// night maps are copies of the day ones.
+// Contestants the game places on each map: one per pod, 16 on Jungle and
+// Prison (weather.js FIELD; the night maps are copies of the day ones).
 const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // Showdown (patch/make_showdown.py): you against one rival in the Jungle centre
 // arena. No lobby or map vote; the menu starts it from "showdown:<format>".
@@ -1195,8 +1193,8 @@ const lobbies = new MatchLobbies({
     queues: { showdown_duo: { maps: false, matchBots: 3 }, showdown_trio: { maps: false, matchBots: 5 },
       showdown_quad: { maps: false, matchBots: 7 } },
     // Who else is in each player's match: the game fills it with bots up to
-    // 16 contestants (Victory.exe caps players plus bots at 16), or up to
-    // FIELD_BY_MAP with patch_exe.py (menus from those builds read the map's).
+    // the map's pods (FIELD_BY_MAP: 16; Victory.exe caps players plus bots at
+    // 16 stock, and the patched exe at the mode's free starts).
     matchBots: 15,
     matchBotsByMap: Object.fromEntries(Object.entries(FIELD_BY_MAP).map(([m, n]) => [m, n - 1])),
     // No lobby note: menus never say the other contestants are bots.
@@ -1255,7 +1253,7 @@ TEAM_MODES.ranked_coop3 = TEAM_MODES.coop3;
 TEAM_MODES.ranked_coop4 = TEAM_MODES.coop4;
 
 // Contestants a team match on `map` has (every team mode needs the patched
-// exe, which places the map's full field: 24 on Jungle, 16 on Prison).
+// exe, which places the map's full field: 16, one per pod; Trios take 15).
 function teamContestants(map) {
   return FIELD_BY_MAP[map] || ranked.CONFIG.maxField;
 }

@@ -37,5 +37,5 @@ The rest of the account-server findings are in SERVER_PERFORMANCE_AUDIT.md.
 
 | Issue | Notes |
 |---|---|
-| Prison may hold only 16 contestants | `patch_exe.py` raises Victory.exe's cap to 24 (Jungle has 24 player starts; tested in game: more than 17 bots spawned). Prison has 16 starts, ran stable with the 24 cap, but how many spawn there is unmeasured, so ranked scores Prison as 16 |
+| Matches hold 16 contestants, not 24 | `patch_exe.py` raises Victory.exe's cap to 24, but Solo, Duo, Trios and Quads spawn only at the 16 pods (PlayerStarts tagged `SpawnsDecentral`) on Jungle and Prison; Jungle's other 8 starts are Showdown's arena. Past 16, the game put contestants in pods already taken (1.3.11), so the native module now caps each mode at its free starts. 24 contestants would need 8 more pods in the maps |
 | No dedicated game server | Matches run on the player's PC against bots. The VPS only handles accounts. So server tick rate, replication and bot load on the VPS don't apply, and real multiplayer would need a dedicated server build of the game, which isn't available |

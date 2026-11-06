@@ -2,7 +2,8 @@
 
 Branch `team-sizes`. Trios (teams of 3) and Quads (teams of 4) are played
 locally like Duo: you and 2 or 3 AI teammates against AI teams of the same size,
-24 contestants (8 trios or 6 quads). Team Showdown (NvN rounds) is built and
+16 contestants, one per pod (5 trios and 15 contestants, or 4 quads; 1.3.11
+spawned 24, and 8 of them shared pods: see "One contestant a pod" below). Team Showdown (NvN rounds) is built and
 tested in the native module, but it is **not on the menu**: its spawns are
 blocked (see below).
 
@@ -69,7 +70,9 @@ PARTIAL.
     only: the module sends it only when the match URL has `?TeamDebug=1`,
     which no menu or server URL does (`test_match_urls.py` checks). Pin
     `1b53c5273fd5d629d29d4717b37611e0514e18609cc475266172fec0ca847b1d`.
-- 24 contestants divide by 2, 3 and 4. Teams are by PlayerArray index; you
+- One contestant a pod: the native module caps the bots at the mode's free
+  starts (16 pods; Trios round down to 15, whole teams). The team logic below
+  works for any count (it was tested with 24). Teams are by PlayerArray index; you
   join first, so you are on team 1 with the next N - 1 contestants.
 
 ### What already worked for any size (verified in code)

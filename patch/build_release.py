@@ -159,6 +159,7 @@ def tests(a, stage):
         # stops a whole menu or HUD script, so every shipped UI script is linted.
         p("lint_es5.py", "--release"), p("test_lint_es5.py"), p("test_build_release.py"),
         p("test_airdrop_prices.py", stage), p("test_weapon_balance.py", stage), p("test_bot_ai.py", stage),
+        p("test_patch_assets.py", stage),
         p("test_weather.py", stage), p("test_tree_collision.py", stage), p("test_measure_loading.py"),
         p("test_netplay_check.py", exe),
         # The native module (fixes 5, 7-10 and the weather) compiled and run against fake game
