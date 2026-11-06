@@ -133,6 +133,7 @@ class Friends {
       if (this.now() - inv.at > this.limits.inviteTtlMs || !this.parties.has(partyId)) { m.delete(partyId); continue; }
       out.push({ partyId, from: inv.from });
     }
+    if (!m.size) this.invites.delete(id);
     return out.reverse();
   }
 
@@ -162,7 +163,7 @@ class Friends {
     const m = this.invites.get(id);
     const inv = m && m.get(partyId);
     const p = this.parties.get(partyId);
-    if (!inv || !p || this.now() - inv.at > this.limits.inviteTtlMs) {
+    if (!inv || !p || !p.members.length || this.now() - inv.at > this.limits.inviteTtlMs) {
       if (m) m.delete(partyId);
       return { error: "no-invite" };
     }
@@ -190,12 +191,20 @@ class Friends {
     drop(p.members, id);
     this.partyOf.delete(id);
     if (p.leader === id) p.leader = p.members[0] || null;
-    if (p.members.length <= 1 && !this.pendingFor(p.id)) this.disband(p);
+    // Nobody left: gone, whatever invites are out (they can't be accepted:
+    // a party is never without its leader). One left: kept only while a live
+    // invite may still bring someone in.
+    if (!p.members.length || (p.members.length === 1 && !this.pendingFor(p.id))) this.disband(p);
     return p;
   }
 
+  // Whether an invite to the party is still open (an expired one isn't).
   pendingFor(partyId) {
-    for (const m of this.invites.values()) if (m.has(partyId)) return true;
+    const t = this.now();
+    for (const m of this.invites.values()) {
+      const inv = m.get(partyId);
+      if (inv && t - inv.at <= this.limits.inviteTtlMs) return true;
+    }
     return false;
   }
 
@@ -203,7 +212,10 @@ class Friends {
     for (const id of p.members) this.partyOf.delete(id);
     p.members = [];
     this.parties.delete(p.id);
-    for (const m of this.invites.values()) m.delete(p.id);
+    for (const [id, m] of this.invites) {
+      m.delete(p.id);
+      if (!m.size) this.invites.delete(id);       // no empty invite lists left behind
+    }
   }
 
   stats() { return { users: Object.keys(this.users).length, parties: this.parties.size }; }

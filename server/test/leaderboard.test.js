@@ -40,6 +40,22 @@ const get = (view, id) => view.boards.find((b) => b.id === id);
 
 (async () => {
   // ------------------------------------------------------------ rules
+  // SERVER_AUDIT_2 P1: ranked.CONFIG.season is a getter that works the season
+  // out from the date; the boards read it five times per player (about a
+  // quarter of a 50,000-player computation, which blocks the event loop).
+  await test("computing the boards works the season out once, not per player", async () => {
+    let reads = 0;
+    const CONFIG = Object.create(ranked.CONFIG, { season: { get() { reads++; return ranked.CONFIG.season; } } });
+    const counted = Object.assign({}, ranked, { CONFIG });
+    const list = [];
+    for (let i = 0; i < 200; i++) list.push(who("u" + i, "Player" + i, { games: 12, wins: i % 5, kills: i, rating: 1000 + i }));
+    const lb = board(list, { ranked: counted });
+    const v = lb.view("u3");
+    assert.ok(reads <= 3, "season read " + reads + " times for 200 players");
+    assert.strictEqual(get(v, "ranked").players, 200, "the boards are still all there");
+    assert.strictEqual(get(v, "ranked").top[0].username, "Player199");
+  });
+
   await test("every board is there, best first; ties share a position", async () => {
     const lb = board([
       who("a", "Ann", { games: 10, wins: 3, kills: 20 }),

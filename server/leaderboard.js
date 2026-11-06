@@ -49,7 +49,9 @@ class Leaderboard {
   }
 
   // One row per account player with everything the boards show.
-  row(userID, username, p) {
+  // seasonId: the current season (compute() works it out once: the getter
+  // computes it from the date on every read).
+  row(userID, username, p, seasonId = this.ranked.CONFIG.season.id) {
     const s = (p && p.stats) || {};
     const games = s.gamesPlayed || 0;
     const wins = s.wins || 0;
@@ -59,14 +61,14 @@ class Leaderboard {
     const r = p && p.ranked;
     const cfg = this.ranked.CONFIG;
     const rating = r && Number.isFinite(r.rating) ? Math.min(cfg.maxRating, r.rating) : null;
-    const thisSeason = rating !== null && r.season === cfg.season.id && (r.matches || 0) > 0;
+    const thisSeason = rating !== null && r.season === seasonId && (r.matches || 0) > 0;
     // Each ranked mode this season: { rating, matches, wins, rank } or null.
     const modes = {};
     for (const board of Object.keys(RANKED_BOARDS)) {
       const mode = RANKED_BOARDS[board];
       const m = mode === "solo" ? r : (this.ranked.record ? this.ranked.record(p, mode) : null);
       const mr = m && Number.isFinite(m.rating) ? Math.min(cfg.maxRating, m.rating) : null;
-      modes[mode] = mr !== null && m.season === cfg.season.id && (m.matches || 0) > 0
+      modes[mode] = mr !== null && m.season === seasonId && (m.matches || 0) > 0
         ? { rating: mr, matches: m.matches || 0, wins: m.wins || 0, rank: this.ranked.tierFor(mr).name } : null;
     }
     return {
@@ -123,23 +125,27 @@ class Leaderboard {
     this.computations++;
     this.dirty = false;
     const rows = new Map();
+    const seasonId = this.ranked.CONFIG.season.id;
     for (const { userID, username, profile } of this.players()) {
       if (typeof username !== "string" || !username || rows.has(userID)) continue;
-      rows.set(userID, this.row(userID, username, profile));
+      rows.set(userID, this.row(userID, username, profile, seasonId));
     }
     const boards = {};
     for (const id of BOARDS) {
+      // Each row's value and tie-break worked out once, not on every comparison.
       const list = [];
-      for (const x of rows.values()) if (this.value(id, x) !== null) list.push(x);
-      list.sort((a, b) => this.value(id, b) - this.value(id, a) || this.second(id, b) - this.second(id, a)
-        || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
-      let position = 0, last = null;
-      list.forEach((x, i) => {
+      for (const x of rows.values()) {
         const v = this.value(id, x);
-        if (v !== last) { position = i + 1; last = v; }
-        x.pos[id] = position;
+        if (v !== null) list.push({ x, v, s: this.second(id, x) });
+      }
+      list.sort((a, b) => b.v - a.v || b.s - a.s
+        || (a.x.username < b.x.username ? -1 : a.x.username > b.x.username ? 1 : 0));
+      let position = 0, last = null;
+      list.forEach((e, i) => {
+        if (e.v !== last) { position = i + 1; last = e.v; }
+        e.x.pos[id] = position;
       });
-      boards[id] = { players: list.length, top: list.slice(0, this.size).map((x) => this.entry(id, x)) };
+      boards[id] = { players: list.length, top: list.slice(0, this.size).map((e) => this.entry(id, e.x)) };
     }
     return { at, rows, boards };
   }

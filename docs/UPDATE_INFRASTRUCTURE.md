@@ -157,7 +157,17 @@ Use the second form only when step 2 below lists removals you expect. Either run
    Objects are never overwritten. (Tested by `deploy/stage_objects.test.js` and `deploy/publish.test.js`.)
 4. **The setup** is copied to the website's download folder from the staged setup object.
 5. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
-6. **Checks** over HTTPS (`deploy/check_published.js`).
+6. **Checks** over HTTPS (`deploy/check_published.js`), including that the live manifest's version is the one just published.
+
+**How it ends (docs/SERVER_AUDIT_2.md, D1 and D2).** The window's last lines are one of:
+
+- green `PUBLISHED <version> in N s: https://xplab.shop:8443/remaster/manifest.json says <version> (was <old>)`, with a yellow `NOTE` above it when that version was already live (nothing new went out) or is older than the live one (installed launchers refuse a downgrade);
+- red `PUBLISH FAILED: nothing was published (<old> is still live): <why>`;
+- red `PUBLISH FAILED AFTER GOING LIVE: release <version> is live, but: <why>` (the check found a problem after the swap).
+
+Then `Log: C:\culling\logs\publish-<time>.log`: everything the window showed, node's output included (the newest 30 logs are kept). The bat's own last line repeats the outcome, in a red window on failure, and its exit code is the publish's (0 only for PUBLISHED; run it as `cmd /c call "Publish Release.bat" <version>` to get the code: `cmd /c` without `call` doesn't pass it on reliably). `CULLING_NO_PAUSE=1` skips its pauses. A failed `git pull` stops it before anything is published.
+
+The bats used to lose their place when `git pull` changed them while they ran (cmd reads a batch file line by line, from a byte position): both earlier updates of `Publish Release.bat` made the running copy resume mid-line, print a "not recognized" error and stop without publishing. The pull and the call to the updated file are now one block that cmd reads whole (`deploy/bats.test.js` reproduces the old failure and checks the new behavior).
 
 On the build PC, objects in `releases\<v>\publish\objects` are hard links only of release files. Those are themselves links of the read-only install, or files written fresh for the release. The launcher setup from `launcher\dist` is always copied, and an object that no longer matches its name is replaced (`launcher/tools/make_manifest.js`, tested by `deploy/make_manifest.test.js`).
 
@@ -170,6 +180,10 @@ Only after step 2 checks out, and only with the release's commit (its `build.com
 ```
 
 It pulls the code and `server\data\catalog.json` and reinstalls the service. If the release adds no items, the order doesn't matter. If it does, a server updated first would sell items the live client lacks.
+
+The update (`deploy/install_vps.ps1`, docs/SERVER_AUDIT_2.md D3) builds the new code in `C:\culling\app.new` (npm ci there) while the server keeps running, then stops the service, backs up `C:\culling\data` to `C:\culling\data\backups\pre-update-<time>` (verified; the newest 10 kept), swaps the code in (the old one becomes `C:\culling\app.previous`) and waits up to 60 s for `/health`. If the new code doesn't answer, it puts the previous code and catalog back and starts that. It ends with a green `SERVER UPDATED` or a red `UPDATE FAILED: <why>. <what state the server is in>.` and the log's path (`C:\culling\logs\update-<time>.log`). The rollback has not been exercised on the VPS yet.
+
+The server also keeps a daily snapshot of `C:\culling\data` in `C:\culling\data\backups\daily-<time>` (the newest 14; `/metrics` shows the last one under `backups`). To restore one: stop the service, `node C:\culling\app\backup.js verify <snapshot folder>`, copy the snapshot's files over `C:\culling\data`, start the service.
 
 ## Rolling back a release
 
