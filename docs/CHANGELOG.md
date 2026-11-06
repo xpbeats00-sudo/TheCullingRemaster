@@ -2,6 +2,14 @@
 
 ## Game (next release)
 
+**Team Showdown: Showdown 2v2, 3v3 and 4v4**
+- The SHOWDOWN tile asks for the size: 1V1 as before, or 2V2, 3V3 and 4V4, where you and AI teammates take on a team of AI rivals in the centre arena. It is the same series as 1v1: first to 4 rounds, all in one match, with the kit changing every 2 rounds and the same kit for everyone. A round ends when a whole team is down.
+- Each team starts on its own side of the arena, side by side, at the start and after every round. In 1v1 the two fighters start where they always did.
+- A party of up to the team size queues together into one lobby. Each member plays their own match with AI teammates.
+- Your death doesn't end the match while a teammate stands: "YOU ARE DOWN" until the round ends. Your teammate's panel follows them from round to round.
+- The pay for a series is unchanged. Team series are recorded per size.
+- Needs the patched exe (native module) and the server update. Not yet checked in a match.
+
 **No more getting stuck in trees**
 - American Elm and European Linden (the trees on both Jungle and Prison) had trunk collision that stopped about 2 m up, where the trunk forks, and marked unwalkable: a player who ran or jumped into one could land on top of it inside the crown and not get out. Their trunk collision now goes on up into the crown (same footprint, so bots and the navmesh are unchanged): the tree is a solid trunk you bump into (`patch/make_tree_collision.py`).
 - A safety net for anything else like it: if you are stuck for 2 seconds while pushing a direction - hanging on something you can't stand on, or inside the world's geometry - you are put back where you last walked (or the nearest free spot) and told "You were stuck: moved to a free spot". Never in the pods, while dead or spectating, using or crafting, on a ladder or swimming; at most once every 20 s. Needs the patched exe (patch_exe.py fix 10, in the native module). Not yet checked in a match.

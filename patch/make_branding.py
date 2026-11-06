@@ -353,7 +353,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
               <div class="tiledhighlighttop"></div>
             </div>
             <div class="tiled-menu-rollover">
-              <p>1v1 in the centre arena. Fight before the gas closes in.</p>
+              <p>1v1 to 4v4 in the centre arena. First to 4 rounds.</p>
             </div>
             <div class="play-title">
               <h1>SHOWDOWN</h1>
@@ -366,7 +366,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
 PLAY_TEXT = {
     "solo_play": "Free-for-all. Vote for Jungle or Prison in the lobby.",
     "duo_play": "Fight in pairs with a teammate. Vote for Jungle or Prison in the lobby.",
-    "showdown_play": "1v1 in the centre arena. Fight before the gas closes in.",
+    "showdown_play": "1v1 to 4v4 in the centre arena. First to 4 rounds.",
 }
 # Queues the SHOWDOWN tile (the stock Play screen only queues Solo and Duo).
 SHOWDOWN_SCRIPT = '<script src="js/Showdown.js"></script>'
@@ -561,11 +561,13 @@ def fix_custom_screen(html):
 
 
 def apply_menu_changes(path):
-    """--menu-only: the friends menu, the leaderboard, the SURVIVAL item, the
-    CUSTOM screen and the TRIO and QUAD tiles applied to an already generated
-    FrontEnd.html in place, and css/Remaster.css beside it rewritten (no
-    logos, fonts or movies). Safe to repeat."""
+    """--menu-only: the Play screen's SHOWDOWN tile and tile texts, the friends
+    menu, the leaderboard, the SURVIVAL item, the CUSTOM screen and the TRIO
+    and QUAD tiles applied to an already generated FrontEnd.html in place,
+    and css/Remaster.css beside it rewritten (no logos, fonts or movies).
+    Safe to repeat."""
     html = open(path, "rb").read().decode("utf-8")
+    html = add_play_screen(html)
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)

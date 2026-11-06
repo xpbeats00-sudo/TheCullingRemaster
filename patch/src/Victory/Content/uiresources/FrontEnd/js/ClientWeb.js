@@ -21,6 +21,19 @@ var REMASTER_DUO_URLS = [
   "Jungle2_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
 ];
 var REMASTER_SHOWDOWN_URL = "Jungle_P?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C";
+// Showdown's match: the server answers "showdown:1v1" (1v1) or "showdown:<n>"
+// (team Showdown, n 2-4: make_showdown.TEAM_URLS, the arena URL with
+// ?TeamSize=n; the patched exe teams the fighters by it and puts each team on
+// its side). "showdown:<n>v<n>" is read the same. Anything else: null.
+function RemasterShowdownURL(gameServer) {
+  var m = /^showdown:([1-9])(v[1-9])?$/.exec(String(gameServer || ""));
+  if (!m) return null;
+  var n = parseInt(m[1], 10);
+  if (m[2] && m[2] != "v" + m[1]) return null;
+  if (n == 1) return REMASTER_SHOWDOWN_URL;
+  if (n >= 2 && n <= 4) return REMASTER_SHOWDOWN_URL + "?TeamSize=" + n;
+  return null;
+}
 // Trios and Quads: the Duo URLs with ?TeamSize=3 / 4 (make_duo.TEAM_URLS; the
 // patched exe teams contestants by it). The server answers "trio:<map>" and
 // "quad:<map>".
@@ -1583,14 +1596,20 @@ function BindClientwebEvents(deferred) {
           engine.call("StartTraining", mapUrl);
           return;
       }
-      // Showdown (make_showdown.py): you against one bot in the Jungle arena,
-      // opened the same way as Duo (the Training Range keeps its slot).
+      // Showdown (make_showdown.py): you (or your team) against a bot (or a
+      // team of them) in the Jungle arena, opened the same way as Duo (the
+      // Training Range keeps its slot).
       if (msg && typeof msg.gameServer == "string" && msg.gameServer.indexOf("showdown:") == 0) {
+          var showdownUrl = RemasterShowdownURL(msg.gameServer);
           console.log("match-ready:: showdown " + msg.gameServer.substring(9));
           Matchmaking.MatchmakingState = "JOINING";
           Matchmaking.SetMatchmaking(false);
+          if (!showdownUrl) {
+              ShowError("Failed to join match.  Unknown Showdown size.");
+              return;
+          }
           engine.call("PostSoundEvent", "Stop_MenuMusic");
-          engine.call("StartTraining", REMASTER_SHOWDOWN_URL);
+          engine.call("StartTraining", showdownUrl);
           return;
       }
       // CUSTOM (patch/custom_match.py): the lobby's map with its settings,
