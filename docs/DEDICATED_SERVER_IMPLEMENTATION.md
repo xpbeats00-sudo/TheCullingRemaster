@@ -18,11 +18,29 @@ The work lives on branch `netplay-host`, in its own exe section (`.netp`), built
 |---|---|---|---|
 | 1 | The host opens a match and listens on UDP 7777 | **PASS** (2026-11-05) | `netstat -ano`: `UDP 0.0.0.0:7777 *:* <host Victory.exe pid>`, 25 s after start. Trace: `listen-init ok=1 steam_lan=1 port=7777`. |
 | 2 | A second game connects, completes the handshake and gets a player on the host | **PASS** (2026-11-05) | Host trace: `accepted state=3`, then `control type=0` (Hello), `type=5` (Login, `prelogin error_len=0`), `type=4` (Netspeed: the client got the Welcome), and 18 s later `type=9` (Join). After Join, `pc=0x1fac28ac940 pc_vtable=0x25c6dc0`: the host spawned a PlayerController for the remote player. |
-| 3 | The host sends the world: the client sees the map's actors, other players and movement | NOT STARTED | Needs `ServerReplicateActors` and server NetGUID assignment, both compiled out of this exe (`SHARED_WORLD_REPLICATION_AUDIT.md`). The biggest piece: about 1,000–1,500 lines of engine code. |
+| 3 | The host sends the world: the client sees the map's actors, other players and movement | **PARTIAL: the core PASSES** (2026-11-06) | Host trace: 36 actors replicated per pass to the joined client for 60 s; both games alive at the end. Client trace: 36 actor channels, its own PlayerController and **its own pawn, in a pod** at (12885, -17323, 573), which is the SpawnsDecentral-teamA_0 start. A screenshot shows the pod view with the match timer. **13 of 17 pawns moved on the client over 62 s**, e.g. (16712, 4950, 311) to (13120, 13889, 1213). Not yet: the client moving its own pawn (its input reaching the host: ServerMove and the host's corrections), relevancy and bandwidth culling, weapons and inventory actors, world actors (loot, doors, gas), more than one client. |
 | 4 | Combat and damage across players | BLOCKED on 3 | |
 | 5 | Loot, containers, airdrops, gas, weather | BLOCKED on 3 | |
 | 6 | Match flow and results from the host (`shared-match-backend`: allocator, tickets, server results) | BLOCKED on 3 | The backend side is built and tested against a stand-in (`PARTY_MATCHMAKING_REWORK.md`). |
 | 7 | A headless host on the VPS (`-nullrhi`) | BLOCKED on 3 | |
+
+## Milestone 3: how the host sends its world
+
+The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, but everything under it survives, because the replay recorder uses it: channel creation, `SetChannelActor`, `ReplicateActor`, server NetGUID assignment in the package map, and closing a destroyed actor's channel. `np_tick_flush` replaces the Steam driver's TickFlush slot. On the host's listen driver it runs a minimal loop, modelled on `UDemoNetDriver::ReplicateActor` (0x1412ee2e0), before the stock TickFlush:
+
+- **What it sends:** the game state, its player states, every controller and every pawn. Each joined connection gets its own PlayerController first.
+- **Per actor and connection:**
+  - skip anything that doesn't replicate, owner-only actors of other players, and map actors whose level the client hasn't loaded;
+  - find the channel in the connection's `ActorChannels` map, or open one;
+  - then `ReplicateActor`.
+- **Limits:**
+  - **Readiness:** a connection that isn't ready (`IsNetReady`, vtable +0x268) is skipped, as the engine does.
+  - **New channels:** at most 4 per connection per pass.
+  - **Rate:** 20 passes a second.
+- **`CallPreReplication`** (it refreshes each character's replicated movement) runs only with `CULLING_NETPLAY_PREREP=1`. It ran safely in game, but stays opt-in until more runs back it.
+- **On a client** the same hook writes a trace every 2 s: its channels, controller and pawn, and every pawn with its position.
+
+**The host's own match ended by itself** about 35 s after it started listening, with or without a client: the listen socket closed and the world left. That first looked like crashes. The test host now sets FreeForAll's no-end flag (+0x74d); a lone host then stayed up 139 s and more. The likely cause is that the game's server-side match logic runs on a listen server and finds no network players. A real host will need the proper pre-match flow (wait for the expected players, then start), using the backend's player list.
 
 ## What the module changes (each edit checked against the stock bytes by `test_netplay.py`)
 
@@ -36,7 +54,8 @@ The work lives on branch `netplay-host`, in its own exe section (`.netp`), built
 2. **Three slots of UWorld's FNetworkNotify vtable** (accepting, accepted, control message): pass-through trace hooks. They only write when `CULLING_NETPLAY_TRACE` names a file.
 3. **FreeForAll's PreLogin slot** (0x1425a7fe0) goes to `np_prelogin`. The game's PreLogin refuses every login with "Match is over!" while its game state says so (in game: `match_over=1` 28 s after the host started, because a local match starts at once). The test host skips that one refusal and runs only the engine's checks (`AGameModeBase::PreLogin`).
    - **For shared matches proper:** the host should hold its match in the pre-match phase until the players the backend expects have joined, and then this goes away.
-4. **`UWorld::InternalGetNetMode`** (0x1416848f0) and its two inlined copies. This client build folded "has a NetDriver" into "is a client", so a hosting world would call itself a client. They now ask the driver: `UNetDriver::GetNetMode` is IsServer ? (GIsClient ? ListenServer : Dedicated) : Client. For every world a stock client has, the result is unchanged.
+4. **The Steam driver's TickFlush slot** (0x142e0ac10): `np_tick_flush`, the loop above.
+5. **`UWorld::InternalGetNetMode`** (0x1416848f0) and its two inlined copies. This client build folded "has a NetDriver" into "is a client", so a hosting world would call itself a client. They now ask the driver: `UNetDriver::GetNetMode` is IsServer ? (GIsClient ? ListenServer : Dedicated) : Client. For every world a stock client has, the result is unchanged.
 
 ## How to run it
 
