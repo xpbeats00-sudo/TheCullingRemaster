@@ -167,6 +167,38 @@ def _dir64_relocs(data, off, size):
     return out
 
 
+def _iat_names(data, sects):
+    """{IAT slot RVA: (dll, function)} from the PE import directory."""
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    imp_rva = struct.unpack_from("<I", data, pe + 24 + 112 + 8)[0]   # DataDirectory[1] (PE32+)
+
+    def off(rva):
+        for vs, va, rs, ro in sects.values():
+            if va <= rva < va + max(vs, rs):
+                return ro + rva - va
+        raise ValueError(hex(rva))
+
+    def cstr(rva):
+        o = off(rva)
+        return data[o:data.index(b"\0", o)].decode("ascii")
+
+    out, d = {}, off(imp_rva)
+    while True:
+        ilt, _, _, name, iat = struct.unpack_from("<IIIII", data, d)
+        if not name:
+            break
+        dll, i = cstr(name), 0
+        while True:
+            e = struct.unpack_from("<Q", data, off(ilt or iat) + 8 * i)[0]
+            if not e:
+                break
+            if not e >> 63:
+                out[iat + 8 * i] = (dll, cstr((e & 0x7FFFFFFF) + 2))
+            i += 1
+        d += 20
+    return out
+
+
 def test_real_exe(path):
     data = open(path, "rb").read()
     pe = struct.unpack_from("<I", data, 0x3C)[0]
@@ -175,6 +207,15 @@ def test_real_exe(path):
     sects = {data[table + 40 * i:table + 40 * i + 8].rstrip(b"\0"): struct.unpack_from("<IIII", data, table + 40 * i + 8)
              for i in range(PN.STOCK_NUM_SECTIONS)}
     rvs, rva, rrs, rro = sects[b".reloc"]
+    # 0. The kernel32 import slots the module's trace calls through (netplay.c IAT_*).
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "netplay.c"), encoding="utf-8").read()
+    iat = _iat_names(data, sects)
+    want = {"IAT_WRITEFILE": "WriteFile", "IAT_GETENVW": "GetEnvironmentVariableW",
+            "IAT_CREATEFILEW": "CreateFileW", "IAT_GETTICKCOUNT": "GetTickCount"}
+    import re as _re
+    for macro, fn in want.items():
+        slot = int(_re.search(r"#define %s\s+(0x[0-9a-f]+)" % macro, src).group(1), 16)
+        assert iat.get(slot) == ("KERNEL32.dll", fn), "%s %#x is %s, not %s" % (macro, slot, iat.get(slot), fn)
     for name, (start, raw, size) in ((b".text", PN.TEXT), (b".rdata", PN.RDATA)):
         assert (sects[name][1], sects[name][3]) == (start, raw), name
     # 1. The Listen call and its stub.
@@ -222,7 +263,7 @@ def test_real_exe(path):
         _verify_patched(copy)
         assert PN.patch(copy) is False
         print("real exe: pass (Listen stub, 3 notify slots with relocations, InternalGetNetMode, "
-              "2 inlined copies, GetNetMode (GIsClient at %#x) re-derived; patched copy verified)" % gis)
+              "2 inlined copies, GetNetMode (GIsClient at %#x), 4 kernel32 import slots re-derived; patched copy verified)" % gis)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
