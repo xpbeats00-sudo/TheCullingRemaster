@@ -429,6 +429,12 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define VT_A_NET_RELEVANT  0x400       /* AActor::IsNetRelevantFor(actor, RealViewer, ViewTarget, const FVector *SrcLocation) */
 #define VT_CH_CLOSE        0x218       /* UChannel::Close(ch) */
 #define O_A_CULL_DIST_SQ   0x12c       /* AActor::NetCullDistanceSquared (float) */
+#define R_SEND_CLIENT_ADJ  0x124a7d0   /* UCharacterMovementComponent::SendClientAdjustment (this = its INetworkPredictionInterface, component +0x180) */
+#define O_CMC_PREDICTION   0x180       /* UCharacterMovementComponent's INetworkPredictionInterface */
+#define O_PC_ACK_PAWN      0x478       /* APlayerController::AcknowledgedPawn */
+#define O_CH_MOVEMENT      0x468       /* ACharacter::CharacterMovement */
+#define ROLE_AUTONOMOUS    2           /* ENetRole::ROLE_AutonomousProxy */
+#define ROLE_SIMULATED     1           /* ENetRole::ROLE_SimulatedProxy */
 #define MAX_OPEN_PER_PASS  16          /* new actor channels per connection per pass (reliable buffer) */
 #define O_GS_PLAYERS       0x418       /* AGameState::PlayerArray */
 #define O_W_CONTROLLERS    0x178       /* UWorld controller list (weak pointers) */
@@ -467,9 +473,10 @@ typedef void *(*pc_view_target_fn)(void *pc);
 typedef void (*pc_view_point_fn)(void *pc, float *loc, float *rot);
 typedef u8 (*net_relevant_fn)(void *actor, void *viewer, void *view_target, const float *loc);
 typedef void (*ch_close_fn)(void *ch);
+typedef void (*send_adj_fn)(void *prediction);
 
 struct weak { i32 index, serial; };
-struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn, *remote_conn; u64 relevant, culled, closed; };
+struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn, *remote_conn; u64 relevant, culled, closed, adjusted; };
 
 /* The channel already replicating actor on conn: UNetConnection::ActorChannels'
  * hash lookup, as UDemoNetDriver::ReplicateActor does it (key = the actor's
@@ -529,7 +536,24 @@ static i32 replicate_to(u8 *conn, u8 *actor, void *pc, struct rep_stats *st)
     }
     if (F(ch, O_CH_FLAGS, u8) & 2)
         return 1;                                            /* closing */
-    FN(R_REPLICATE_ACTOR, replicate_fn)(ch);
+    {
+        /* A player's pawn is an autonomous proxy only to its owner (the
+         * connection whose PlayerController's Pawn it is: an Owner-chain test
+         * alone also downgraded the owner's own pawn, and the clients lost
+         * control of it in game); to every other connection it goes as a
+         * simulated proxy, which is what gets
+         * replicated movement. ReplicateActor here doesn't downgrade it (it
+         * only reads RemoteRole; the engine's ServerReplicateActors did), so
+         * this does, around the call (in game: the other player's pawn was
+         * sent but never moved on the client). */
+        u8 role = F(actor, O_A_REMOTE_ROLE, u8);
+        i32 swap = role == ROLE_AUTONOMOUS && actor != F((u8 *)pc, O_C_PAWN, u8 *) && !owned_by(actor, pc);
+        if (swap)
+            F(actor, O_A_REMOTE_ROLE, u8) = ROLE_SIMULATED;
+        FN(R_REPLICATE_ACTOR, replicate_fn)(ch);
+        if (swap)
+            F(actor, O_A_REMOTE_ROLE, u8) = role;
+    }
     st->replicated++;
     return 1;
 }
@@ -563,6 +587,16 @@ static i32 world_num;
 static void *world_of_list;
 static u32 last_scan;
 
+/* The base class at depth 2 of an object's class chain (APawn for a pawn,
+ * AController for a controller), as the chain entry is stored. */
+static u8 *depth2(u8 *obj)
+{
+    u8 *cls = obj ? F(obj, O_OBJ_CLASS, u8 *) : 0;
+    return cls && F(cls, O_CLASS_CHAIN + 8, i32) >= 2 ? F(cls, O_CLASS_CHAIN, u8 **)[2] : 0;
+}
+
+static u8 *pawn_kind, *controller_kind;    /* depth-2 chain entries of a pawn and a controller */
+
 static void scan_world(u8 *world, u8 *gm, u8 *gs, u32 now)
 {
     struct { u8 **data; i32 num, max; } found;
@@ -584,9 +618,18 @@ static void scan_world(u8 *world, u8 *gm, u8 *gs, u32 now)
     found.num = found.max = 0;
     FN(R_ACTORS_OF_CLASS, actors_fn)(gm, cls, &found);
     for (i = 0; found.data && i < found.num && n < MAX_WORLD; i++) {
-        u8 *a = found.data[i];
+        u8 *a = found.data[i], *owner, *k;
         if (!a || !F(a, O_A_REMOTE_ROLE, u8))
             continue;                                        /* doesn't replicate */
+        /* Pawns, controllers and what a pawn owns (its weapons) are always
+         * sent from the first list; here their channel would be closed again
+         * when far (in game: the other player's pawn froze on the client). */
+        k = depth2(a);
+        owner = F(a, O_A_OWNER, u8 *);
+        if (k && (k == pawn_kind || k == controller_kind))
+            continue;
+        if (owner && pawn_kind && depth2(owner) == pawn_kind)
+            continue;
         FN(R_WEAK_SET, weak_set_fn)((struct weak *)found.data + n, a);
         n++;
     }
@@ -763,13 +806,57 @@ typedef u8 (*teleport_fn)(void *actor, const float *loc, const float *rot);
 static i32 tp_state = 1, teleported;
 static u32 tp_at;
 
+/* CULLING_NETPLAY_TELEPORT=2: 10 s after a second player has a pawn, the
+ * host puts both players once side by side on the centre arena's floor, so
+ * the two can see each other move. */
+static i32 tp2_done;
+static u32 tp2_at;
+
+static void host_teleport_pair(u8 **conns, i32 nconn, u32 now)
+{
+    u8 *pa = 0, *pb = 0, *root;
+    float to[3], rot[3];
+    struct line l;
+    i32 c;
+    if (tp2_done || nconn < 2 || tp_state != 4)
+        return;
+    for (c = 0; c < nconn; c++) {
+        u8 *pc = conns[c] ? F(conns[c], O_CONN_PC, u8 *) : 0;
+        u8 *p = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+        if (p && !pa) pa = p;
+        else if (p && !pb) pb = p;
+    }
+    if (!pa || !pb)
+        return;
+    if (!tp2_at) { tp2_at = now + 10000; return; }
+    if ((i32)(now - tp2_at) < 0)
+        return;
+    (void)root;
+    /* Both on the open centre-arena floor, 300 apart (players who joined
+     * after the pods opened stand in pods that never open). */
+    rot[0] = rot[1] = rot[2] = 0.0f;
+    tp2_done = 1;
+    to[0] = 0.0f; to[1] = -700.0f; to[2] = 200.0f;
+    if (trace_begin(&l, "teleport-pair")) {
+        kv(&l, "ok_a", FN(R_TELEPORT, teleport_fn)(pa, to, rot), 0);
+        to[0] = 300.0f;
+        kv(&l, "ok_b", FN(R_TELEPORT, teleport_fn)(pb, to, rot), 0);
+        trace_end(&l);
+    }
+}
+
 static void host_teleport(u8 *remote, u32 now)
 {
     static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','L','E','P','O','R','T',0 };
     float to[3], rot[3];
     struct line l;
     u8 ok;
-    if (teleported || !remote || !env_on(var, &tp_state))
+    if (tp_state == 1) {
+        u16 v[8];
+        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(var, v, 8);
+        tp_state = n == 1 && v[0] == '1' ? 2 : n == 1 && v[0] == '2' ? 4 : 3;
+    }
+    if (teleported || !remote || tp_state != 2)
         return;
     if (!tp_at) { tp_at = now + 20000; return; }
     if ((i32)(now - tp_at) < 0)
@@ -797,7 +884,7 @@ static void server_replicate(u8 *driver)
     u8 *world = F(driver, O_ND_WORLD, u8 *);
     u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
     i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), n, i, c, live = 0;
-    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     struct line l;
     u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
     if (now - last_alive >= 5000 && trace_begin(&l, "host-alive")) {
@@ -820,10 +907,20 @@ static void server_replicate(u8 *driver)
                 break;
             }
         }
+        host_teleport_pair(conns, nconn, now);
     }
     {
         u8 *gm1 = F(world, O_WORLD_AUTH_GM, u8 *);
-        scan_world(world, gm1, gm1 ? F(gm1, O_GM_GAMESTATE, u8 *) : 0, now);
+        i32 c1;
+        for (c1 = 0; c1 < nconn && (!pawn_kind || !controller_kind); c1++) {
+            u8 *pc1 = conns[c1] ? F(conns[c1], O_CONN_PC, u8 *) : 0;
+            if (pc1 && !controller_kind)
+                controller_kind = depth2(pc1);
+            if (pc1 && F(pc1, O_C_PAWN, u8 *) && !pawn_kind)
+                pawn_kind = depth2(F(pc1, O_C_PAWN, u8 *));
+        }
+        if (pawn_kind && controller_kind)
+            scan_world(world, gm1, gm1 ? F(gm1, O_GM_GAMESTATE, u8 *) : 0, now);
     }
     n = collect(world, actors, kind);
     if (prerep_on()) {
@@ -848,6 +945,21 @@ static void server_replicate(u8 *driver)
         }
         ready = (conn_ready_fn)(*(void ***)conn)[VT_CONN_NET_READY / 8];
         st.opened_now = 0;
+        /* The host's movement corrections, as the engine's
+         * ServerReplicateActors starts each connection with
+         * APlayerController::SendClientAdjustment: when the client has
+         * acknowledged its pawn and the pawn is its autonomous proxy, the
+         * movement component sends ClientAckGoodMove / ClientAdjustPosition.
+         * Without it the host could never overrule a client's position (in
+         * game: a teleport on the host was undone by the client's moves). */
+        {
+            u8 *pawn = F((u8 *)pc, O_C_PAWN, u8 *);
+            u8 *cmc = pawn ? F(pawn, O_CH_MOVEMENT, u8 *) : 0;
+            if (pawn && cmc && F((u8 *)pc, O_PC_ACK_PAWN, u8 *) == pawn && F(pawn, O_A_REMOTE_ROLE, u8) == ROLE_AUTONOMOUS) {
+                FN(R_SEND_CLIENT_ADJ, send_adj_fn)(cmc + O_CMC_PREDICTION);
+                st.adjusted++;
+            }
+        }
         if (!ready(conn, 0)) { st.saturated++; continue; }   /* as the engine does: wait for room */
         replicate_to(conn, (u8 *)pc, pc, &st);               /* its own PlayerController first */
         {
@@ -934,6 +1046,27 @@ static void server_replicate(u8 *driver)
         kv(&l, "relevant", st.relevant, 0);
         kv(&l, "culled", st.culled, 0);
         kv(&l, "closed", st.closed, 0);
+        kv(&l, "adjusted", st.adjusted, 0);
+        /* Two players: does each connection have a channel to the other's pawn? */
+        if (nconn >= 2 && conns[0] && conns[1]) {
+            u8 *pc0 = F(conns[0], O_CONN_PC, u8 *), *pc1 = F(conns[1], O_CONN_PC, u8 *);
+            u8 *p0 = pc0 ? F(pc0, O_C_PAWN, u8 *) : 0, *p1 = pc1 ? F(pc1, O_C_PAWN, u8 *) : 0;
+            kv(&l, "c0_has_p1", p1 ? (u64)(find_channel(conns[0], p1) != 0) : 9, 0);
+            kv(&l, "c1_has_p0", p0 ? (u64)(find_channel(conns[1], p0) != 0) : 9, 0);
+            kv(&l, "p1_role", p1 ? (u64)F(p1, O_A_REMOTE_ROLE, u8) : 9, 0);
+            kv(&l, "p1_flags", p1 ? (u64)F(p1, O_A_FLAGS, u8) : 0, 1);
+            /* attachment and the replicated location (FRepMovement at +0xa0, Location at +0x18) */
+            if (p0 && F(p0, O_A_ROOT, u8 *)) {
+                kv(&l, "p0_attached", (u64)(F(F(p0, O_A_ROOT, u8 *), 0xf0, u8 *) != 0), 0);
+                kv_s(&l, "p0_repx", (i32)F(p0, 0xa0 + 0x18, float));
+                kv_s(&l, "p0_repy", (i32)F(p0, 0xa0 + 0x1c, float));
+            }
+            if (p1 && F(p1, O_A_ROOT, u8 *)) {
+                kv(&l, "p1_attached", (u64)(F(F(p1, O_A_ROOT, u8 *), 0xf0, u8 *) != 0), 0);
+                kv_s(&l, "p1_repx", (i32)F(p1, 0xa0 + 0x18, float));
+                kv_s(&l, "p1_repy", (i32)F(p1, 0xa0 + 0x1c, float));
+            }
+        }
         kv_s(&l, "loot", count_pickups(F(world, O_WORLD_AUTH_GM, u8 *)));
         if (st.remote_pawn && F(st.remote_pawn, O_A_ROOT, u8 *)) {
             u8 *root = F(st.remote_pawn, O_A_ROOT, u8 *);

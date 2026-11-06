@@ -299,6 +299,29 @@ def test_real_exe(path):
     assert mac("O_CH_CURRENT") in cur, "CurrentWeapon registered at %s" % sorted(map(hex, cur))
     sr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "showdown_rounds.c"), encoding="utf-8").read()
     assert int(_re.search(r"#define R_SPAWN_WEAPON\s+(0x[0-9a-f]+)", sr).group(1), 16) == mac("R_SPAWN_WEAPON")
+    # 2e. Movement corrections: UCharacterMovementComponent::SendClientAdjustment takes its
+    # INetworkPredictionInterface (lea r15, [rcx - 0x180]) and calls ClientAckGoodMove through
+    # vtable +0x968; the movement vtable's +0x968 is that RPC's thunk, which looks up the
+    # "ClientAckGoodMove" name global. AcknowledgedPawn and CharacterMovement from their
+    # property registrations.
+    sca = IMAGE_BASE + mac("R_SEND_CLIENT_ADJ")
+    body = data[PN._off(sca):PN._off(sca) + 0x80]
+    assert bytes.fromhex("4c8db9") + struct.pack("<i", -mac("O_CMC_PREDICTION")) in body, "SendClientAdjustment: lea r15,[rcx-0x180]"
+    assert bytes.fromhex("ff9268090000") in body, "SendClientAdjustment: call [rdx+0x968]"
+    thunk = struct.unpack_from("<Q", data, PN._off(0x1425BEDE0 + 0x968))[0]
+    tb = data[PN._off(thunk):PN._off(thunk) + 0x30]
+    i = tb.find(bytes.fromhex("488b15"))
+    assert i >= 0, "ClientAckGoodMove thunk: no name load"
+    name_global = thunk + i + 7 + struct.unpack_from("<i", tb, i + 3)[0]
+    init = data[PN._off(0x14015D0C0):PN._off(0x14015D0C0) + 0x20]
+    j = init.find(bytes.fromhex("488d0d"))
+    assert 0x14015D0C0 + j + 7 + struct.unpack_from("<i", init, j + 3)[0] == name_global
+    k = init.find(bytes.fromhex("488d15"))
+    sva = 0x14015D0C0 + k + 7 + struct.unpack_from("<i", init, k + 3)[0]
+    assert data[PN._off(sva):PN._off(sva) + 34] == "ClientAckGoodMove".encode("utf-16-le"), "not the ClientAckGoodMove name"
+    ack = {o for _, o in TNM.prop_offsets(ex, "AcknowledgedPawn")}
+    cm = {o for _, o in TNM.prop_offsets(ex, "CharacterMovement")}
+    assert mac("O_PC_ACK_PAWN") in ack and mac("O_CH_MOVEMENT") in cm, (sorted(ack), sorted(cm))
     # 3. InternalGetNetMode as the patch expects, and its demo path's GetNetMode call.
     o = PN._off(PN.NETMODE_VA)
     assert data[o:o + len(PN.NETMODE_STOCK)] == PN.NETMODE_STOCK

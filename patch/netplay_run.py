@@ -138,6 +138,7 @@ def main():
     ap.add_argument("--client-wait", type=int, default=90)
     ap.add_argument("--no-client", action="store_true")
     ap.add_argument("--after-join", type=int, default=45)
+    ap.add_argument("--clients", type=int, default=1, choices=(1, 2))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     result = {"steps": {}, "evidence": {}}
@@ -206,14 +207,35 @@ def main():
             started += [p for p in (client,) if p]
             log("client Victory.exe pid", client)
             t1 = time.time()
-            while time.time() - t1 < a.client_wait:
+            client2 = None
+            client2_trace = os.path.join(a.out, "client2.trace")
+            if os.path.exists(client2_trace):
+                os.remove(client2_trace)
+            while time.time() - t1 < a.client_wait + (90 if a.clients > 1 else 0):
                 time.sleep(3)
-                if "type=9" in read(host_trace):
+                joins = len(re.findall(r"control server=1 type=9 ", read(host_trace)))
+                if a.clients > 1 and joins >= 1 and client2 is None:
+                    # The second player: another client from the same folder, its own trace.
+                    set_window(settings_bytes, 485)
+                    client2_l = launch("127.0.0.1:%d" % PORT, client2_trace, os.path.join(a.out, "client2.func.log"))
+                    t2 = time.time()
+                    while time.time() - t2 < 90 and not client2:
+                        client2 = next((p for p, parent in victories().items() if parent == client2_l.pid), None)
+                        time.sleep(2)
+                    started += [p for p in (client2,) if p]
+                    log("second client Victory.exe pid", client2)
+                    if not client2:
+                        client2 = 0
+                if joins >= a.clients:
                     time.sleep(a.after_join)
                     break
             result["evidence"]["host_udp_at_end"] = udp_owners(PORT)[1]
             alive = victories()
             result["evidence"]["alive_at_end"] = {"host": host in alive, "client": client in alive}
+            if a.clients > 1:
+                result["evidence"]["alive_at_end"]["client2"] = bool(client2) and client2 in alive
+                result["steps"]["M2 second client joined"] = (
+                    "PASS" if len(re.findall(r"control server=1 type=9 ", read(host_trace))) >= 2 else "FAIL (one Join)")
             trace = read(host_trace)
             result["evidence"]["host_trace"] = trace.splitlines()[:200]
             result["evidence"]["client_trace"] = read(client_trace).splitlines()[:50]
