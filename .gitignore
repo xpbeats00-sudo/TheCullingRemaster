@@ -27,3 +27,7 @@ server/data/activity.json*
 # Remote Desktop connection files and archives (credentials, game copies)
 *.rdp
 *.rar
+# Shared matches (server/sharedmatch.js): secrets and running matches
+server/data/gameserver-secret.txt
+server/data/ticket-secret.txt
+server/data/shared-matches.json

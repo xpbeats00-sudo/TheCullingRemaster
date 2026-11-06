@@ -80,6 +80,8 @@ const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
 const custom = require('./custommatch');
 const backups = require('./backup');
+const { SharedMatches, config: sharedConfig } = require('./sharedmatch');
+const { payPlayer: paySharedPlayer } = require('./sharedresults');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -541,6 +543,8 @@ app.post('/api/matchresult', (req, res) => {
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
+  // A shared match is paid from its game server's result, never the HUD's.
+  if (claim.ticket.shared && sharedMatches.allocator) { const out = sharedMatches.clientResult(claim); return res.status(out.status).json(out.json); }
   activity.match(userID);
   if (claim.ticket.map === SHOWDOWN.map) return showdownMatchResult(res, claim, body, userID);
   const p = getProfile(userID);
@@ -750,6 +754,42 @@ app.get('/api/showdown', (req, res) => {
   const series = showdowns.current(ticket.userID);
   res.json(Object.assign({ active: Boolean(series) }, showdownState('round', series ? showdowns.view(series) : null)));
 });
+
+// ---------------------------------------------------------------- shared matches
+
+// Real shared matches on game servers (sharedmatch.js, allocator.js,
+// connticket.js, sharedresults.js; docs/PARTY_MATCHMAKING_REWORK.md). Off
+// unless CULLING_SHARED_MATCHES=1, then only for CULLING_SHARED_PLAYLISTS:
+// everything else is the local match as before.
+const sharedMatches = new SharedMatches({ cfg: sharedConfig(process.env), dataDir: DATA_DIR, deps: {
+  log,
+  playlist: (id) => playlists.PLAYLISTS[id] || null,
+  contestants: (map) => (map && FIELD_BY_MAP[map]) || Math.min(...Object.values(FIELD_BY_MAP)),
+  mapIndex: (map) => (Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0),
+  matchUrl: (playlist, map) => weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, TEAM_MODES[playlist] || null, null),
+  backendUrl: () => BASE,
+  liveSocket: (id) => liveSocket(id),
+  usernameOf: (id) => usernameOf(id),
+  setPresence: (id, state, extra) => setPresence(id, state, extra),
+  partyLeader: (partyId) => { const p = friends.parties.get(partyId); return p ? p.leader : null; },
+  launch: (socket, playlist, map, shared) => launchMatch(socket, playlist, map, shared),
+  requeue: (userID, playlist) => { const s = liveSocket(userID); if (!s) return false; startLocalMatch(s, playlist); return !!lobbies.lobbyOf(userID); },
+  fail: (ids, reason, message, playlist) => {
+    for (const id of ids) {
+      setPresence(id, 'menu');
+      const s = liveSocket(id);
+      if (s) s.emit('join-mm-fail', { reason, message, playlist });
+    }
+  },
+  voidRanked: (userID, mode, rankedId) => {
+    const rec = ranked.record(peekProfile(userID), mode);
+    if (rec && rec.pending && rec.pending.id === rankedId) { rec.pending = null; saveProfiles(); log('ranked match voided (shared match cancelled)', userID, mode, rankedId); }
+  },
+  pay: (userID, ctx) => paySharedPlayer({ getProfile, ranked, rankedGrant, matchXP, matchCredits, seasonXPCap, levelForXP,
+    maxLevel: SEASON.maxLevel, saveProfiles, log, liveSocket, sendPlayer, entitlements, setPresence,
+    activityMatch: (id) => activity.match(id) }, userID, ctx)
+} });
+sharedMatches.routes(app);
 
 // The HUD asks the game for the level matching the new XP and reports it back.
 app.post('/api/setlevel', (req, res) => {
@@ -1098,6 +1138,7 @@ function gauges() {
     presence: presence.size,
     backups: { dir: BACKUP_DIR, everyMs: BACKUP_EVERY_MS, keep: BACKUP_KEEP, last: lastBackup },
     matchLobbies: lobbies.stats(),
+    sharedMatches: sharedMatches.stats(),
     leaderboard: leaderboard.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
     rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
@@ -1182,7 +1223,8 @@ const queueName = playlists.queueName;
 // each other (matchlobby.js), then each starts the match. Gather and countdown
 // times are configurable (tests shorten them).
 const lobbies = new MatchLobbies({
-  options: {
+  // Shared playlists (when on): a lobby holds one match's teams (sharedmatch.js).
+  options: sharedMatches.lobbyOptions({
     gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
     // The pregame lobby: long enough to see the match's roster and the map.
     countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '10000', 10),
@@ -1199,7 +1241,7 @@ const lobbies = new MatchLobbies({
     matchBotsByMap: Object.fromEntries(Object.entries(FIELD_BY_MAP).map(([m, n]) => [m, n - 1])),
     // No lobby note: menus never say the other contestants are bots.
     note: null
-  },
+  }),
   // In a ranked team lobby, each player's rank is their rank in that mode.
   describe: (m) => { const l = lobbies.lobbyOf(m.id); return lobbyCard(m.id, l ? l.queue : null); },
   send: (m, payload) => {
@@ -1372,6 +1414,9 @@ function startLocalMatch(socket, raw) {
   }
   const ok = playlists.checkParty(playlist, size);
   if (!ok.ok) return refuseQueue(socket, ok.error, ok.message, { playlist: mode });
+  const shareOk = sharedMatches.checkParty(playlist, size);
+  if (!shareOk.ok) return refuseQueue(socket, shareOk.error, shareOk.message, { playlist: mode });
+  if (sharedMatches.busy(userID)) return refuseQueue(socket, 'match-starting', 'Your match is being set up on a game server.');
 
   // Already queued for this playlist (with the whole party, if in one):
   // nothing changes (a repeated request).
@@ -1432,6 +1477,7 @@ const ALLOCATION_FAILED = 'The match could not be set up. Nobody was sent in: qu
 // countdown), none of that party is, and each is told why; nothing (ticket,
 // ranked match) has been started for them.
 function allocateMatch(lobby) {
+  if (sharedMatches.applies(lobby.queue)) return sharedMatches.start(lobby);
   const matchId = newMatchId();
   const members = [...lobby.members.values()];
   const fail = (ids, message) => {
@@ -1530,7 +1576,9 @@ function launchMatch(socket, queue, map, shared = {}) {
     rankedMode: rankedId ? rankedMode : null,
     matchId,
     lobbyId: shared.lobbyId || null,
-    partyId: shared.partyId || null
+    partyId: shared.partyId || null,
+    // A shared match: paid from its game server's result (sharedmatch.js).
+    ...(shared.gameServer ? { shared: true } : {})
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode });
   else beginSeries(socket, sdPlaylist);
@@ -1540,10 +1588,19 @@ function launchMatch(socket, queue, map, shared = {}) {
   const sky = showdown ? null : weather.weatherFor(WEATHER, map);
   // Showdown: "showdown:1v1" (the arena URL), team Showdown "showdown:<N>"
   // (the arena URL with ?TeamSize=N; ClientWeb.js RemasterShowdownURL).
-  const answer = showdown ? 'showdown:' + (sdPlaylist.teamSize > 1 ? sdPlaylist.teamSize : SHOWDOWN.format)
+  const answer = shared.gameServer ? shared.gameServer
+    : showdown ? 'showdown:' + (sdPlaylist.teamSize > 1 ? sdPlaylist.teamSize : SHOWDOWN.format)
     : weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, team, sky);
   log('match-ready ->', socket.userID, showdown ? 'showdown ' + sdPlaylist.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
+  // A shared match (sharedmatch.js): the game server's address, the
+  // connection ticket (nonce: its id, serverNonce: the ticket) and the team.
+  if (shared.gameServer) {
+    socket.emit('match-ready', { gameServer: answer, nonce: shared.nonce, serverNonce: shared.serverNonce, matchId,
+      lobbyId: shared.lobbyId || null, partyId: shared.partyId || null, playlist: mode, ranked: rankedId ? rankedMode : null,
+      team: shared.team, ticketExpiresInMs: shared.ticketExpiresInMs, netplay: true });
+    return { rankedId, rankedMode: rankedId ? rankedMode : null };
+  }
   socket.emit('match-ready', {
     gameServer: answer,
     nonce: crypto.randomBytes(8).toString('hex'),
@@ -1897,11 +1954,13 @@ io.on('connection', (socket) => {
     const dropped = tickets.abandon(userID, ABANDON_GRACE_MS);
     if (dropped) log('match ended without a result', userID, dropped.mode || '', Math.round((Date.now() - dropped.startedAt) / 1000) + ' s');
     notifyFriends(userID);
+    sharedMatches.deliverNotices(socket);
   });
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => {
     const me = socket.userID;
+    if (sharedMatches.leave(me, 'cancelled')) { socket.emit('leave-mm-ack'); return; }
     // A party queued together leaves together, whoever cancels: the others'
     // menus are told who did.
     const p = friends.party(me);
@@ -2162,6 +2221,7 @@ io.on('connection', (socket) => {
     clearTimeout(socket.loginTimer);
     if (socket.userID && socketsByUser.get(socket.userID) === socket) {
       const me = socket.userID;
+      sharedMatches.leave(me, 'disconnected');
       // Gone mid-search: the party's search stops for everyone, with the
       // reason (never a party sent on without one of its members).
       const p = friends.party(me);
@@ -2229,6 +2289,7 @@ function flushAll(why) {
   const wroteAccounts = accounts.flushSync();
   friends.flushSync();
   activity.flushSync();
+  sharedMatches.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {
     log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
       .filter(Boolean).join(', '));

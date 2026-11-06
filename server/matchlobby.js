@@ -75,7 +75,7 @@ class MatchLobbies {
   joinGroup(queue, members, prefer, party = null) {
     for (const m of members) this.leave(m.id);
     let lobby = this.open.get(queue);
-    if (lobby && lobby.members.size + members.length > lobby.maxPlayers) { this.countdown(lobby); lobby = null; }
+    if (lobby && !this.hasRoom(lobby, members, party)) { this.countdown(lobby); lobby = null; }
     if (!lobby) lobby = this.openLobby(queue);
     const vote = this.validMap(prefer) ? prefer : null;
     for (const m of members) {
@@ -87,6 +87,14 @@ class MatchLobbies {
     if (lobby.members.size >= lobby.maxPlayers) this.countdown(lobby);
     else this.broadcast(lobby);
     return lobby;
+  }
+
+  // Whether a party fits in a lobby: its seats, and (options.fits, shared
+  // matches: sharedmatch.js) whether its team still fits beside the others.
+  hasRoom(lobby, members, party = null) {
+    if (lobby.members.size + members.length > lobby.maxPlayers) return false;
+    const fits = this.options.fits;
+    return !fits || fits(lobby.queue, [...lobby.members.values()], members.map((m) => ({ id: m.id, party })));
   }
 
   // The lobby a player is waiting in (searching or counting down), or null.
