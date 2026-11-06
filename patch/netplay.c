@@ -424,7 +424,7 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define O_CH_FLAGS         0x30        /* UChannel: bit 1 Closing */
 #define VT_CONN_LEVEL_INIT 0x2c8       /* UNetConnection::ClientHasInitializedLevelFor(conn, actor) */
 #define VT_CONN_NET_READY  0x268       /* UNetConnection::IsNetReady(conn, bool Saturate) -> int (game code 0x140209ea5) */
-#define MAX_OPEN_PER_PASS  4           /* new actor channels per connection per pass (reliable buffer) */
+#define MAX_OPEN_PER_PASS  16          /* new actor channels per connection per pass (reliable buffer) */
 #define O_GS_PLAYERS       0x418       /* AGameState::PlayerArray */
 #define O_W_CONTROLLERS    0x178       /* UWorld controller list (weak pointers) */
 #define O_W_PAWNS          0x198       /* UWorld pawn list (weak pointers) */
@@ -440,6 +440,13 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define R_SPAWN_WEAPON     0x27a810    /* AShooterCharacter::SpawnWeapon(pawn, UClass*): into its inventory (the Remaster's Showdown kit uses it) */
 #define MAX_INVENTORY      32
 #define MAX_REP            384
+#define R_ACTORS_OF_CLASS  0x1336ca0   /* UGameplayStatics::GetAllActorsOfClass(ctx, class, TArray<AActor*> *out) */
+#define R_FREE             0x50c510    /* FMemory::Free */
+#define R_FNAME            0x5b0e60    /* FName::FName(this, const TCHAR *, EFindName) -> this */
+#define O_CLASS_CHAIN      0x88        /* UStruct base chain: data (each entry = an ancestor + 0x88), then count - 1; [1] is Actor */
+#define O_OBJ_NAME         0x18        /* UObjectBase::NamePrivate (FName: index, number) */
+#define WORLD_SCAN_MS      2000
+#define MAX_WORLD          8000
 #define REP_PERIOD_MS      50
 
 typedef void (*tick_flush_fn)(void *driver, float dt);
@@ -518,6 +525,93 @@ static i32 replicate_to(u8 *conn, u8 *actor, void *pc, struct rep_stats *st)
     return 1;
 }
 
+/* ---- world objects: every other actor that replicates ------------------ */
+
+typedef u64 *(*fname_fn)(u64 *out, const u16 *name, i32 find);
+typedef void (*actors_fn)(void *ctx, void *cls, void *out);
+typedef void (*free_fn)(void *p);
+
+/* The base Actor class: depth 1 of any actor class's base chain, checked by
+ * its name ("Actor"). 0 if that doesn't hold. */
+static u8 *actor_class(u8 *any_actor)
+{
+    static const u16 actor_name[] = { 'A','c','t','o','r',0 };
+    u8 *cls = any_actor ? F(any_actor, O_OBJ_CLASS, u8 *) : 0;
+    u8 **chain = cls ? F(cls, O_CLASS_CHAIN, u8 **) : 0;
+    u8 *a;
+    u64 name;
+    if (!chain || F(cls, O_CLASS_CHAIN + 8, i32) < 1)
+        return 0;
+    a = chain[1] - O_CLASS_CHAIN;
+    FN(R_FNAME, fname_fn)(&name, actor_name, 0);            /* FNAME_Find */
+    return F(a, O_OBJ_NAME, u64) == name ? a : 0;
+}
+
+/* The world's replicated actors, kept between scans as weak pointers written
+ * in place over the array GetAllActorsOfClass allocated (both 8 bytes). */
+static struct weak *world_list;
+static i32 world_num;
+static void *world_of_list;
+static u32 last_scan;
+
+static void scan_world(u8 *world, u8 *gm, u8 *gs, u32 now)
+{
+    struct { u8 **data; i32 num, max; } found;
+    u8 *cls;
+    i32 i, n = 0;
+    if (world == world_of_list && now - last_scan < WORLD_SCAN_MS)
+        return;
+    last_scan = now;
+    if (world_list) {
+        FN(R_FREE, free_fn)(world_list);
+        world_list = 0;
+        world_num = 0;
+    }
+    world_of_list = world;
+    cls = actor_class(gs);
+    if (!cls || !gm)
+        return;
+    found.data = 0;
+    found.num = found.max = 0;
+    FN(R_ACTORS_OF_CLASS, actors_fn)(gm, cls, &found);
+    for (i = 0; found.data && i < found.num && n < MAX_WORLD; i++) {
+        u8 *a = found.data[i];
+        if (!a || !F(a, O_A_REMOTE_ROLE, u8))
+            continue;                                        /* doesn't replicate */
+        FN(R_WEAK_SET, weak_set_fn)((struct weak *)found.data + n, a);
+        n++;
+    }
+    world_list = (struct weak *)found.data;
+    world_num = n;
+}
+
+
+/* Loot: weapons and items lying in the world are AShooterWeapon actors with
+ * no owner (the Remaster module's dropped-item cleanup treats them so). The
+ * host's and the client's counts side by side show whether loot reached the
+ * client. */
+#define R_CLS_PICKUP       0x303d00    /* AShooterWeapon::StaticClass getter (takes the package name) */
+#define R_PKG_VICTORY      0x2567aa0   /* L"/Script/Victory" */
+typedef u8 *(*class_fn)(const u16 *pkg);
+
+static i32 count_pickups(void *ctx)
+{
+    struct { u8 **data; i32 num, max; } found;
+    u8 *cls = FN(R_CLS_PICKUP, class_fn)((const u16 *)(image_base() + R_PKG_VICTORY));
+    i32 n, i;
+    if (!cls || !ctx)
+        return -1;
+    found.data = 0;
+    found.num = found.max = 0;
+    FN(R_ACTORS_OF_CLASS, actors_fn)(ctx, cls, &found);
+    for (n = 0, i = 0; found.data && i < found.num; i++)
+        if (found.data[i] && !F(found.data[i], O_A_OWNER, u8 *))
+            n++;
+    if (found.data)
+        FN(R_FREE, free_fn)(found.data);
+    return n;
+}
+
 /* The actors replicated: the game state, its player states, every
  * controller and every pawn in the world (no relevancy culling yet). */
 static i32 collect(u8 *world, u8 **out, u8 *kind)
@@ -573,6 +667,7 @@ static i32 collect(u8 *world, u8 **out, u8 *kind)
 }
 
 static u32 last_rep, last_trace, last_alive;
+
 static i32 prerep_state = 1;       /* 1 = not looked up yet, 2 = on, 3 = off */
 static i32 move_state = 1;
 
@@ -680,10 +775,20 @@ static void server_replicate(u8 *driver)
             }
         }
     }
+    {
+        u8 *gm1 = F(world, O_WORLD_AUTH_GM, u8 *);
+        scan_world(world, gm1, gm1 ? F(gm1, O_GM_GAMESTATE, u8 *) : 0, now);
+    }
     n = collect(world, actors, kind);
-    if (prerep_on())
+    if (prerep_on()) {
         for (i = 0; i < n; i++)
             FN(R_PRE_REPLICATION, pre_rep_fn)(actors[i], driver);
+        for (i = 0; world_list && i < world_num; i++) {
+            u8 *a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(world_list + i);
+            if (a)
+                FN(R_PRE_REPLICATION, pre_rep_fn)(a, driver);
+        }
+    }
     for (c = 0; c < nconn; c++) {
         u8 *conn = conns[c];
         void *pc = conn ? F(conn, O_CONN_PC, void *) : 0;
@@ -715,6 +820,17 @@ static void server_replicate(u8 *driver)
                 if (kind[i] == 2)
                     items_ok = 1;
             }
+            /* Then the world's other replicated actors (loot, crates, doors,
+             * pylons, airdrops ...) from the last scan, straight from its
+             * weak list. Some are also in the list above; ReplicateActor
+             * sends only changes, so a second call costs little. */
+            for (i = 0; world_list && i < world_num; i++) {
+                u8 *a;
+                if (!ready(conn, 0)) { st.saturated++; break; }
+                a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(world_list + i);
+                if (a && a != pc)
+                    replicate_to(conn, a, pc, &st);
+            }
         }
     }
     st.actors = (u64)n;
@@ -727,6 +843,8 @@ static void server_replicate(u8 *driver)
         kv(&l, "skipped", st.skipped, 0);
         kv(&l, "deferred", st.deferred, 0);
         kv(&l, "saturated", st.saturated, 0);
+        kv(&l, "world", (u64)world_num, 0);
+        kv_s(&l, "loot", count_pickups(F(world, O_WORLD_AUTH_GM, u8 *)));
         if (st.remote_pawn && F(st.remote_pawn, O_A_ROOT, u8 *)) {
             u8 *root = F(st.remote_pawn, O_A_ROOT, u8 *);
             kv(&l, "remote_pawn", (u64)st.remote_pawn, 1);
@@ -768,6 +886,7 @@ static void client_trace(u8 *driver)
     kv(&l, "channels", (u64)(F(conn + O_CONN_CHMAP, 0x08, i32) - F(conn + O_CONN_CHMAP, 0x34, i32)), 0);
     kv(&l, "pc", (u64)pc, 1);
     kv(&l, "pawn", (u64)mine, 1);
+    kv_s(&l, "loot", pc ? count_pickups(pc) : -1);
     if (mine) {
         u8 **items = F(mine, O_CH_INVENTORY, u8 **);
         i32 k, ni = F(mine, O_CH_INVENTORY + 8, i32);
