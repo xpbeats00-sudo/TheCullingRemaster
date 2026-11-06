@@ -320,6 +320,46 @@ void np_notify_accepted(void *notify, void *conn)
     }
 }
 
+/* The game mode's PreLogin (AShooterGameMode, VA 0x140236e90) refuses every
+ * login with "Match is over!" while its game state's vfunc +0x640 is true. */
+#define O_WORLD_AUTH_GM    0xf0        /* UWorld::AuthorityGameMode */
+#define O_GM_GAMESTATE     0x458       /* AGameModeBase::GameState */
+#define VT_GS_MATCH_OVER   0x640
+typedef u8 (*gs_bool_fn)(void *gs);
+
+static u64 match_over(void *notify)
+{
+    u8 *world = (u8 *)notify - O_WORLD_NOTIFY;
+    u8 *gm = F(world, O_WORLD_AUTH_GM, u8 *);
+    u8 *gs = gm ? F(gm, O_GM_GAMESTATE, u8 *) : 0;
+    if (!gs)
+        return 2;                  /* no game state */
+    return ((gs_bool_fn)(*(void ***)gs)[VT_GS_MATCH_OVER / 8])(gs);
+}
+
+/* ---- the game mode's PreLogin ----------------------------------------- */
+
+/* Replaces AShooterGame_FreeForAll's vtable slot +0x6c8 (PreLogin; stock
+ * 0x140245320 -> AShooterGameMode::PreLogin 0x140236e90). The game's PreLogin
+ * refuses everyone with "Match is over!" while its game state's vfunc +0x640
+ * is true: in game that was already so 28 s after the host started (a local
+ * match starts at once). Until the host holds its match for the expected
+ * players, the netplay exe skips that one check and runs only what the
+ * game's PreLogin runs otherwise: AGameModeBase::PreLogin (0x141343270, the
+ * engine's checks: the game session's ApproveLogin). Logged in the trace. */
+#define R_BASE_PRELOGIN    0x1343270
+typedef void (*prelogin_fn)(void *gm, void *options, void *address, void *uid, void *error);
+
+void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
+{
+    struct line l;
+    FN(R_BASE_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
+    if (trace_begin(&l, "prelogin")) {
+        kv(&l, "error_len", (u64)((struct fstring *)error)->num, 0);
+        trace_end(&l);
+    }
+}
+
 void np_notify_control(void *notify, void *conn, u8 type, void *bunch)
 {
     struct line l;
@@ -328,6 +368,8 @@ void np_notify_control(void *notify, void *conn, u8 type, void *bunch)
         kv(&l, "server", server, 0);
         kv(&l, "type", type, 0);   /* 0 Hello, 4 Netspeed, 5 Login, 6 Failure, 9 Join, 17 DebugText, 18 NetGUIDAssign */
         kv(&l, "conn", (u64)conn, 1);
+        if (server && type == 5)
+            kv(&l, "match_over", match_over(notify), 0);
         trace_end(&l);
     }
     FN(R_NOTIFY_CONTROL, notify_control_fn)(notify, conn, type, bunch);

@@ -18,6 +18,9 @@ What it does, from exact stock bytes (each checked first):
      (NotifyAcceptingConnection, NotifyAcceptedConnection,
      NotifyControlMessage) -> the module's pass-through trace hooks. Each slot
      has a DIR64 base relocation, so the loader rebases the new pointer.
+  2b. AShooterGame_FreeForAll's PreLogin slot (VA 0x1425a7fe0) -> np_prelogin,
+     which skips the game's "Match is over!" refusal (a local match starts at
+     once) and runs only AGameModeBase::PreLogin. For the test host only.
   3. UWorld::InternalGetNetMode (VA 0x1416848f0): this client-only build
      folded "NetDriver ? (IsRunningClientOnly() ? NM_Client : NetDriver->GetNetMode())"
      to "NetDriver ? NM_Client", so a world that listens would still call
@@ -64,6 +67,10 @@ NOTIFY_VTABLE_VA = 0x142B05CF0
 NOTIFY_SLOTS = ((0, 0x1416858F0, "np_notify_accepting"),
                 (1, 0x1411D9E00, "np_notify_accepted"),
                 (3, 0x141685A90, "np_notify_control"))
+# 2b. AShooterGame_FreeForAll's vtable slot +0x6c8 (PreLogin, VA 0x1425a7fe0): stock
+# 0x140245320 (jmp AShooterGameMode::PreLogin, which refuses with "Match is over!")
+# -> np_prelogin (only AGameModeBase::PreLogin's checks). Test exe only.
+PRELOGIN_SLOT = (0x1425A7FE0, 0x140245320, "np_prelogin")
 
 # 3. UWorld::InternalGetNetMode, in place.
 NETMODE_VA = 0x1416848F0
@@ -108,6 +115,8 @@ def layout():
     for slot, stock_fn, entry in NOTIFY_SLOTS:
         edits.append((_off(NOTIFY_VTABLE_VA + 8 * slot), struct.pack("<Q", stock_fn),
                       struct.pack("<Q", sect_va + getattr(NP, entry.upper()))))
+    slot_va, stock_fn, entry = PRELOGIN_SLOT
+    edits.append((_off(slot_va), struct.pack("<Q", stock_fn), struct.pack("<Q", sect_va + getattr(NP, entry.upper()))))
     edits.append((_off(NETMODE_VA), NETMODE_STOCK, NETMODE_NEW))
     for va, stock, reg, demo, join in INLINE_SITES:
         while len(content) % 16:

@@ -81,6 +81,9 @@ def _verify_patched(path):
     for slot, stock_fn, entry in PN.NOTIFY_SLOTS:
         got = struct.unpack_from("<Q", data, PN._off(PN.NOTIFY_VTABLE_VA + 8 * slot))[0]
         assert got == sect_va + getattr(NP, entry.upper()), (slot, hex(got))
+    slot_va, stock_fn, entry = PN.PRELOGIN_SLOT
+    got = struct.unpack_from("<Q", data, PN._off(slot_va))[0]
+    assert got == sect_va + getattr(NP, entry.upper()), ("prelogin", hex(got))
     # 3. InternalGetNetMode: driver ? jump to its "mov rcx, rax; jmp GetNetMode" : the stock demo path.
     nm = data[PN._off(PN.NETMODE_VA):PN._off(PN.NETMODE_VA) + len(PN.NETMODE_NEW)]
     assert nm == PN.NETMODE_NEW
@@ -246,6 +249,20 @@ def test_real_exe(path):
         slot_va = PN.NOTIFY_VTABLE_VA + 8 * slot
         assert struct.unpack_from("<Q", data, PN._off(slot_va))[0] == stock_fn, "notify slot %d" % slot
         assert slot_va - IMAGE_BASE in relocs, "notify slot %d has no base relocation" % slot
+    # 2b. The FreeForAll PreLogin slot: the stub jumping to AShooterGameMode::PreLogin, whose
+    # refusal is the "Match is over!" string and whose other path calls AGameModeBase::PreLogin.
+    slot_va, stock_fn, entry = PN.PRELOGIN_SLOT
+    assert struct.unpack_from("<Q", data, PN._off(slot_va))[0] == stock_fn, "PreLogin slot"
+    assert slot_va - IMAGE_BASE in relocs, "PreLogin slot has no base relocation"
+    stub = data[PN._off(stock_fn):PN._off(stock_fn) + 5]
+    game_pre = stock_fn + 5 + struct.unpack_from("<i", stub, 1)[0]
+    assert stub[0] == 0xE9 and game_pre == 0x140236E90, hex(game_pre)
+    body = data[PN._off(game_pre):PN._off(game_pre) + 0x130]
+    base = mac("R_BASE_PRELOGIN")
+    calls = [game_pre + i + 5 + struct.unpack_from("<i", body, i + 1)[0] for i in range(len(body) - 5) if body[i] == 0xE8]
+    assert IMAGE_BASE + base in calls, "AShooterGameMode::PreLogin doesn't call AGameModeBase::PreLogin %#x" % base
+    msg = "Match is over!".encode("utf-16-le")
+    assert data.find(msg) > 0, "no 'Match is over!' string"
     # 3. InternalGetNetMode as the patch expects, and its demo path's GetNetMode call.
     o = PN._off(PN.NETMODE_VA)
     assert data[o:o + len(PN.NETMODE_STOCK)] == PN.NETMODE_STOCK
