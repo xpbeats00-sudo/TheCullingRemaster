@@ -45,6 +45,24 @@ function setup(options = {}) {
 }
 
 (async () => {
+  await test("per-queue options: team Showdown lobbies hold one team, have no map vote and their own bots", () => {
+    const { lobbies, last, started, time } = setup({ maps: ["jungle", "prison"], matchBots: 23, matchBotsByMap: { jungle: 23 },
+      maxPlayers: { default: 16, showdown_duo: 2 }, queues: { showdown_duo: { maps: false, matchBots: 3 } } });
+    lobbies.join("showdown_duo", { id: "a" }, "prison");
+    let v = last("a");
+    assert.deepStrictEqual([v.maps, v.matchBots, v.matchBotsByMap, v.maxPlayers, "vote" in v.players[0]], [null, 3, null, 2, false]);
+    assert.strictEqual(lobbies.vote("a", "jungle"), false, "no vote in team Showdown");
+    lobbies.join("showdown_duo", { id: "b" });
+    v = last("b");
+    assert.strictEqual(v.state, "starting", "a full team counts down");
+    assert.strictEqual(v.map, null);
+    time.advance(5000);
+    assert.deepStrictEqual(started.pop(), { queue: "showdown_duo", players: ["a", "b"] });
+    lobbies.join("ffa", { id: "c" }, "prison");
+    v = last("c");
+    assert.deepStrictEqual([v.maps.prison, v.matchBots, v.maxPlayers], [1, 23, 16], "other queues keep the defaults");
+  });
+
   await test("players searching one playlist share a lobby and see each other", () => {
     const { lobbies, last } = setup();
     lobbies.join("ffa", { id: "a" });

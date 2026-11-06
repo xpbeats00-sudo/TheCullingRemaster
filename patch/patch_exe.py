@@ -237,7 +237,7 @@ SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 # fix (1-10, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "f1fc1bf65c79021af9a5b1cb8666da136003dfb3ec31f1ccc6cbeaaa6b07ba93"
+PATCHED_SHA256 = "c4b6f75364efed888c66d959bab539152668d64f1dec3f31dc91b1afe6b2871b"
 
 
 def _cap(data, path, contestants):

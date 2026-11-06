@@ -3,9 +3,21 @@
 //
 // The whole series (first to 4 rounds) is one match. The patched game runs
 // the rounds and tells the HUD through ShowGameMessage strings it never shows:
-//   SDR|S|<round>|<you>|<rival>|<kit>   a round starts (kit 0-6)
-//   SDR|E|<round>|<you>|<rival>|<W/L/D> a round is over, the series goes on
-//   SDR|O|<round>|<you>|<rival>|<W/L/D> the last round: the series is over
+//   SDR|S|<round>|<you>|<rival>|<kit>|<N>   a round starts (kit 0-6)
+//   SDR|E|<round>|<you>|<rival>|<W/L/D>|<N> a round is over, the series goes on
+//   SDR|O|<round>|<you>|<rival>|<W/L/D>|<N> the last round: the series is over
+// N is the team size (1: 1v1; older builds send no N). In team Showdown (2v2
+// to 4v4) "you" and "rival" are the teams' round wins: the score reads
+// YOUR TEAM w — l RIVALS.
+//
+// Team Showdown: your death doesn't end the round while a teammate stands.
+// It shows no death screen and sends no result (whatever the score): "YOU
+// ARE DOWN" until the round ends. Only the series' end decides: lost, the
+// death you had is shown and posted then; won, the game's victory is (or, if
+// it doesn't come within VICTORY_WAIT_MS, your death's stats as a victory).
+// The game's teammate panel finds your teammate's new pawn after each reset
+// (the patched exe re-arms it), so "<name> is your Teammate!" is shown once a
+// match, not every round.
 //
 // Between rounds: the round banner and the score, the screen fades to black
 // while the game puts both fighters back at their starts with the next kit,
@@ -21,6 +33,7 @@
 (function () {
   var API = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
   var PANEL_SECONDS = 12;
+  var VICTORY_WAIT_MS = 4000;
   var BANNER_TO_BLACK_MS = 1000;
   var SECTIONS = [
     { title: "WEAPONS", cats: ["melee", "ranged", "throwable", "trap"] },
@@ -72,7 +85,7 @@
   var panel = null, hideTimer = null, bannerTimer = null, blackTimer = null;
   // What the server knows (kits, rounds to win) and what the game has said.
   var info = { kits: null, kit: null, roundsToWin: 4 };
-  var series = { active: false, round: 1, wins: 0, losses: 0, kit: 0, over: false, reported: {} };
+  var series = { active: false, round: 1, wins: 0, losses: 0, kit: 0, over: false, reported: {}, size: 1, sizeFromGame: false, held: null };
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -140,12 +153,12 @@
     var p = el("div", "sd-panel");
     var head = el("div", "sd-head");
     var left = el("div");
-    left.appendChild(el("div", "sd-mode", "SHOWDOWN 1V1"));
+    left.appendChild(el("div", "sd-mode", "SHOWDOWN " + series.size + "V" + series.size));
     left.appendChild(el("div", "sd-round", "ROUND " + series.round));
     head.appendChild(left);
-    head.appendChild(el("div", "sd-score", "YOU " + series.wins + " — " + series.losses + " RIVAL"));
+    head.appendChild(el("div", "sd-score", scoreLine(series.wins, series.losses)));
     p.appendChild(head);
-    p.appendChild(el("div", "sd-kit", "FIRST TO " + info.roundsToWin + (kit ? " · " + kit.name.toUpperCase() + " · SAME KIT FOR BOTH SIDES" : "")));
+    p.appendChild(el("div", "sd-kit", "FIRST TO " + info.roundsToWin + (kit ? " · " + kit.name.toUpperCase() + (series.size > 1 ? " · SAME KIT FOR EVERYONE" : " · SAME KIT FOR BOTH SIDES") : "")));
     var items = kit ? kit.items : [];
     for (var s = 0; s < SECTIONS.length; s++) {
       var sec = SECTIONS[s], mine = [];
@@ -243,6 +256,7 @@
         if (state.kits) info.kits = state.kits;
         if (state.kit) info.kit = state.kit;
         if (state.series && state.series.roundsToWin) info.roundsToWin = state.series.roundsToWin;
+        if (state.series && state.series.teamSize && !series.sizeFromGame) series.size = state.series.teamSize;
         if (state.active && state.series && !series.active) {
           series.active = true;
           series.round = state.series.round || 1;
@@ -269,6 +283,12 @@
       if (e) e.classList.remove("hidden");
     }
     if (typeof OnStartPlaying == "function") OnStartPlaying();
+    // Trios/Quads-style extra teammate panels (hud.js) hide when you die:
+    // back with you.
+    if (typeof remasterExtraMates != "undefined" && remasterExtraMates.youDied) {
+      remasterExtraMates.youDied = false;
+      if (typeof RemasterShowExtraMates == "function") RemasterShowExtraMates();
+    }
   }
 
   function onMessage(text) {
@@ -279,10 +299,15 @@
     series.round = round;
     series.wins = parseInt(f[3], 10) || 0;
     series.losses = parseInt(f[4], 10) || 0;
-    var score = "YOU " + series.wins + " — " + series.losses + " RIVAL";
+    if (f.length > 6 && parseInt(f[6], 10) >= 1) {
+      series.size = parseInt(f[6], 10);
+      series.sizeFromGame = true;
+    }
+    var score = scoreLine(series.wins, series.losses);
     if (ev == "S") {
       series.kit = parseInt(x, 10) || 0;
       series.over = false;
+      series.held = null;                        // a new round: you stand again
       if (blackTimer) { clearTimeout(blackTimer); blackTimer = null; }
       restoreHud();
       show();
@@ -300,14 +325,50 @@
       report(round, x);
       var won = series.wins > series.losses;
       banner(won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT", won, score, 9000);
+      releaseHeld(won);
     }
   }
 
-  // The game's messages: the "SDR|" ones are for us, never shown.
+  function scoreLine(wins, losses) {
+    return series.size > 1 ? "YOUR TEAM " + wins + " — " + losses + " RIVALS" : "YOU " + wins + " — " + losses + " RIVAL";
+  }
+
+  // Team Showdown: the death held back (below), at the series' end.
+  function releaseHeld(won) {
+    var held = series.held;
+    if (!held) return;
+    series.held = null;
+    if (!won) {
+      // Your whole team is down: hud.js's "wait for the team" rule has
+      // nothing left to wait for.
+      if (typeof remasterTeam != "undefined") {
+        remasterTeam.bMateAlive = false;
+        remasterTeam.bPanelMateAlive = false;
+      }
+      if (typeof remasterExtraMates != "undefined") remasterExtraMates.alive = 0;
+      if (setDeathData) setDeathData(held, false);
+      return;
+    }
+    // Your team won the series after your death: the game's victory carries
+    // the result; if it doesn't come, your stats as the victory.
+    setTimeout(function () {
+      if (typeof bLocalMatchResultSent != "undefined" && bLocalMatchResultSent) return;
+      if (typeof ReportLocalMatchResult == "function") ReportLocalMatchResult($.extend({}, held, { Rank: 1 }), true);
+    }, VICTORY_WAIT_MS);
+  }
+
+  // The game's messages: the "SDR|" ones are for us, never shown. In team
+  // Showdown "<name> is your Teammate!" comes again each round (the panel
+  // finds the new pawn): once a match is enough.
+  var mateSeen = {};
   if (typeof AddGameMessage == "function") {
     var addMessage = AddGameMessage;
     AddGameMessage = function (message, duration) {
       if (typeof message == "string" && message.indexOf("SDR|") == 0) return onMessage(message);
+      if (series.active && series.size > 1 && typeof message == "string" && / is your Teammate!$/.test(message)) {
+        if (mateSeen[message]) return;
+        mateSeen[message] = true;
+      }
       return addMessage.apply(this, arguments);
     };
   }
@@ -315,13 +376,22 @@
   // A death that doesn't end the series: no death screen, no match result
   // (the round goes to the server from the round message). The death that
   // loses the series, and the win that takes it, end the match normally.
+  // Team Showdown: every death waits for the series' end (releaseHeld).
+  var setDeathData = null;
   if (typeof SetDeathData == "function") {
-    var setDeathData = SetDeathData;
+    setDeathData = SetDeathData;
     SetDeathData = function (deathData, bIsVictory) {
+      if (series.active && !series.over && !bIsVictory && series.size > 1) {
+        series.held = $.extend({}, deathData);
+        hide();
+        banner("YOU ARE DOWN", false, "YOUR TEAM FIGHTS ON  ·  " + scoreLine(series.wins, series.losses), 4000);
+        return;
+      }
       if (series.active && !series.over && !bIsVictory && series.losses + 1 < info.roundsToWin) {
         hide();
         return;
       }
+      if (bIsVictory) series.held = null;
       return setDeathData.apply(this, arguments);
     };
   }
@@ -337,7 +407,7 @@
     if (!state || !state.series || series.over) return;
     var s = state.series, won = s.rounds[s.rounds.length - 1] == "won";
     var big = s.over ? (s.won ? "SHOWDOWN VICTORY" : "SHOWDOWN DEFEAT") : "ROUND " + s.round + (won ? " WON" : " LOST");
-    banner(big, s.over ? s.won : won, "YOU " + s.wins + " — " + s.losses + " RIVAL", 9000);
+    banner(big, s.over ? s.won : won, scoreLine(s.wins, s.losses), 9000);
   };
 
   // At the start of the match (the HUD page loads with it).

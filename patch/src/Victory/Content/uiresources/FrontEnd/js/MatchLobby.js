@@ -21,9 +21,10 @@
 (function () {
   var MODES = { ffa: "Solo Play", coop2: "Duo Play", coop3: "Trio Play", coop4: "Quad Play", lightning: "Lightning",
     ranked_ffa: "Ranked Solo", ranked_coop2: "Ranked Duo", ranked_coop3: "Ranked Trio", ranked_coop4: "Ranked Quads",
-    showdown: "Showdown" };
-  // The team modes (server/server.js TEAM_MODES), casual and ranked.
-  var TEAM_SIZES = { coop2: 2, coop3: 3, coop4: 4, ranked_coop2: 2, ranked_coop3: 3, ranked_coop4: 4 };
+    showdown: "Showdown", showdown_duo: "Showdown 2v2", showdown_trio: "Showdown 3v3", showdown_quad: "Showdown 4v4" };
+  // The team modes (server/server.js TEAM_MODES, casual and ranked; team Showdown: playlists.js).
+  var TEAM_SIZES = { coop2: 2, coop3: 3, coop4: 4, ranked_coop2: 2, ranked_coop3: 3, ranked_coop4: 4,
+    showdown_duo: 2, showdown_trio: 3, showdown_quad: 4 };
   // The night maps (patch/make_weather.py) show only when the server offers
   // them (CULLING_NIGHT_MAPS=1): the vote lists the maps the server counts votes for.
   var MAPS = {
@@ -152,7 +153,8 @@
   function modeName(q) {
     q = String(q || "");
     if (MODES[q]) return MODES[q];
-    if (q.indexOf("showdown") >= 0) return MODES.showdown;
+    if (q.indexOf("showdown") >= 0) return MODES[/quad|4v4/.test(q) ? "showdown_quad" : /trio|3v3/.test(q) ? "showdown_trio"
+      : /duo|2v2/.test(q) ? "showdown_duo" : "showdown"];
     if (q.indexOf("ranked") >= 0) {
       return q.indexOf("coop4") >= 0 ? MODES.ranked_coop4 : q.indexOf("coop3") >= 0 ? MODES.ranked_coop3
         : q.indexOf("coop2") >= 0 ? MODES.ranked_coop2 : MODES.ranked_ffa;

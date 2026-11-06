@@ -37,6 +37,13 @@ class MatchLobbies {
     this.nextId = 1;
   }
 
+  // Per-queue view overrides (options.queues[queue]): maps: false (no map
+  // vote: team Showdown is always the arena), matchBots (its own count).
+  queueOptions(queue) {
+    const q = this.options.queues;
+    return (q && q[queue]) || {};
+  }
+
   maxFor(queue) {
     const m = this.options.maxPlayers;
     return typeof m === "object" ? (m[queue] || m.default || DEFAULTS.maxPlayers) : m;
@@ -112,12 +119,15 @@ class MatchLobbies {
     return true;
   }
 
-  validMap(map) { return !!this.options.maps && this.options.maps.includes(map); }
+  validMap(map, queue) {
+    if (queue !== undefined && this.queueOptions(queue).maps === false) return false;
+    return !!this.options.maps && this.options.maps.includes(map);
+  }
 
   // A player's map vote, while their lobby is still searching.
   vote(id, map) {
     const lobby = this.byMember.get(id);
-    if (!lobby || lobby.state !== "searching" || !this.validMap(map)) return false;
+    if (!lobby || lobby.state !== "searching" || !this.validMap(map, lobby.queue)) return false;
     const m = lobby.members.get(id);
     if (m.vote === map) return true;
     m.vote = map;
@@ -134,7 +144,7 @@ class MatchLobbies {
 
   // The map with the most votes; a tie (or no votes) is drawn among the leaders.
   decideMap(lobby) {
-    if (!this.options.maps) return null;
+    if (!this.options.maps || this.queueOptions(lobby.queue).maps === false) return null;
     const votes = this.tally(lobby);
     const top = Math.max(...Object.values(votes));
     const leaders = Object.keys(votes).filter((m) => votes[m] === top);
@@ -167,21 +177,23 @@ class MatchLobbies {
     // them; no party ids or player ids go out.
     const groups = new Map();
     for (const m of lobby.members.values()) if (m.party && !groups.has(m.party)) groups.set(m.party, groups.size + 1);
+    const q = this.queueOptions(lobby.queue);
+    const maps = this.options.maps && q.maps !== false;
     return {
       id: lobby.id,
       queue: lobby.queue,
       state: lobby.state,
-      players: [...lobby.members.values()].map((m) => Object.assign(this.describe(m), this.options.maps ? { vote: m.vote } : {},
+      players: [...lobby.members.values()].map((m) => Object.assign(this.describe(m), maps ? { vote: m.vote } : {},
         { party: m.party ? groups.get(m.party) : null })),
       maxPlayers: lobby.maxPlayers,
       searchingMs: now - lobby.createdAt,
       startsInMs: lobby.state === "starting" ? Math.max(0, lobby.startAt - now) : null,
       gatherEndsInMs: lobby.state === "searching" ? Math.max(0, lobby.createdAt + this.options.gatherMs - now) : null,
-      maps: this.options.maps ? this.tally(lobby) : null,
+      maps: maps ? this.tally(lobby) : null,
       // Bots in each player's own match (for the pregame roster).
-      matchBots: this.options.matchBots || 0,
+      matchBots: Number.isInteger(q.matchBots) ? q.matchBots : this.options.matchBots || 0,
       // Per map, for menus that know the game places more on some maps.
-      matchBotsByMap: this.options.matchBotsByMap || null,
+      matchBotsByMap: Number.isInteger(q.matchBots) ? null : this.options.matchBotsByMap || null,
       map: lobby.map,
       note: this.options.note || null
     };

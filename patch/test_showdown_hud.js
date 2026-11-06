@@ -2,6 +2,9 @@
 // (patch/showdown_rounds.c) drive the panel, the banner, the black fade and
 // the round reports; a death that doesn't end the series shows no death
 // screen; the one that ends it, and every other message, reach hud.js.
+// Team Showdown (the messages' 7th field, N > 1): the team score, every
+// death held until the series' end (shown and posted if the team lost; the
+// victory, or the held stats as one, if it won), "is your Teammate!" once.
 //
 // usage: node test_showdown_hud.js
 "use strict";
@@ -23,7 +26,7 @@ function element(tag) {
   return e;
 }
 
-function page() {
+function page(opts = {}) {
   const byId = {};
   const body = element("body");
   const head = element("head");
@@ -41,7 +44,7 @@ function page() {
     byId[id] = element("div");
     byId[id].classList.add("hidden");
   }
-  const posts = [], shown = [], deaths = [];
+  const posts = [], shown = [], deaths = [], reports = [];
   let started = 0;
   const timers = [];
   const sandbox = {
@@ -53,9 +56,15 @@ function page() {
     clearTimeout: () => {},
     AddGameMessage: (m) => shown.push(m),
     SetDeathData: (d, v) => deaths.push(v),
+    // hud.js's globals the team rules touch.
+    remasterTeam: { bInTeam: true, bMateAlive: true, bPanelMateAlive: true },
+    remasterExtraMates: { alive: 1, youDied: true },
+    RemasterShowExtraMates: () => reports.push("extra panels"),
+    bLocalMatchResultSent: false,
+    ReportLocalMatchResult: (d, v) => reports.push({ data: d, victory: v }),
     OnStartPlaying: () => started++,
-    $: { ajax: (o) => {
-      if (o.type == "GET") o.success({ active: true, series: { round: 1, wins: 0, losses: 0, roundsToWin: 4 },
+    $: { extend: Object.assign, ajax: (o) => {
+      if (o.type == "GET") o.success({ active: true, series: Object.assign({ round: 1, wins: 0, losses: 0, roundsToWin: 4 }, opts.series || {}),
         kits: [0, 1, 2, 3, 4, 5, 6].map((k) => ({ name: "Kit " + k, items: [{ name: "W" + k, category: "melee", tier: 3, description: "", icon: "x" }] })) });
       else posts.push(JSON.parse(o.data));
     } }
@@ -67,7 +76,7 @@ function page() {
   const fn = new Function("g", "with (g) { " + code + " }");
   fn(g);
   return {
-    g, posts, shown, deaths, doc, byId,
+    g, posts, shown, deaths, reports, doc, byId,
     started: () => started,
     flush: () => { while (timers.length) timers.shift()(); },
     say: (m) => g.AddGameMessage(m, 0)
@@ -128,6 +137,91 @@ test("the series won: the last round message, then the stock VICTORY", () => {
   assert.deepStrictEqual(p.posts[p.posts.length - 1], { round: 7, result: "W", wins: 4, losses: 3, nickname: "" });
   p.g.SetDeathData({}, true);
   assert.deepStrictEqual(p.deaths, [true]);
+});
+
+test("1v1 with the team size field (|1): as before", () => {
+  const p = page();
+  p.say("SDR|S|1|0|0|2|1");
+  p.flush();
+  const hud = p.doc.getElementById("sd-hud");
+  assert.ok(hud.textContent.indexOf("SHOWDOWN 1V1") >= 0 && hud.textContent.indexOf("YOU 0 — 0 RIVAL") >= 0, hud.textContent);
+  p.say("SDR|E|1|0|1|L|1");
+  p.flush();
+  assert.deepStrictEqual(p.posts, [{ round: 1, result: "L", wins: 0, losses: 1, nickname: "" }]);
+  assert.deepStrictEqual(p.shown, []);
+});
+
+test("team Showdown: the team score and size on the panel and the banners", () => {
+  for (const n of [2, 3, 4]) {
+    const p = page();
+    p.say("SDR|S|1|0|0|4|" + n);
+    p.flush();
+    const hud = p.doc.getElementById("sd-hud");
+    assert.ok(hud.textContent.indexOf("SHOWDOWN " + n + "V" + n) >= 0, hud.textContent);
+    assert.ok(hud.textContent.indexOf("YOUR TEAM 0 — 0 RIVALS") >= 0 && hud.textContent.indexOf("SAME KIT FOR EVERYONE") >= 0);
+    p.say("SDR|E|1|1|0|W|" + n);
+    p.flush();
+    assert.ok(p.doc.getElementById("sd-banner").textContent.indexOf("YOUR TEAM 1 — 0 RIVALS") >= 0);
+  }
+  const q = page({ series: { teamSize: 3 } });           // before the game says: the server's size
+  q.flush();
+  assert.ok(q.doc.getElementById("sd-hud").textContent.indexOf("SHOWDOWN 3V3") >= 0);
+});
+
+test("team Showdown: your death waits for the series' end, even at match point; a new round clears it", () => {
+  const p = page();
+  p.say("SDR|S|1|0|0|0|2");
+  p.g.SetDeathData({ NumKills: 1 }, false);
+  assert.deepStrictEqual(p.deaths, [], "no death screen while your team fights on");
+  p.flush();
+  assert.ok(p.doc.getElementById("sd-banner").textContent.indexOf("YOU ARE DOWN") >= 0);
+  p.say("SDR|E|1|1|0|W|2");                              // your teammate won the round
+  p.say("SDR|S|2|1|0|0|2");
+  p.flush();
+  assert.ok(!p.g.remasterExtraMates.youDied && p.reports.indexOf("extra panels") >= 0, "the extra panels come back with you");
+  for (const [r, l] of [[2, 1], [3, 2], [4, 3]]) { p.say("SDR|E|" + r + "|1|" + l + "|L|2"); p.say("SDR|S|" + (r + 1) + "|1|" + l + "|0|2"); }
+  p.g.SetDeathData({ NumKills: 2 }, false);              // 3 losses: in 1v1 this one would end the match
+  assert.deepStrictEqual(p.deaths, [], "held at match point too");
+  p.say("SDR|O|5|1|4|L|2");                              // the team is down: the series is lost
+  assert.deepStrictEqual(p.deaths, [false], "the held death now: death screen and result");
+  assert.ok(!p.g.remasterTeam.bMateAlive && p.g.remasterExtraMates.alive === 0, "nothing left to wait for");
+  assert.strictEqual(p.g.window.ShowdownHud.round(), 5);
+});
+
+test("team Showdown: the series won after your death is a victory (the game's, else your held stats)", () => {
+  const p = page();
+  p.say("SDR|S|7|3|3|0|4");
+  p.g.SetDeathData({ NumKills: 3, Rank: 5 }, false);
+  p.say("SDR|O|7|4|3|W|4");
+  assert.deepStrictEqual(p.deaths, []);
+  p.flush();                                             // no victory from the game within the wait
+  const posted = p.reports.filter((r) => typeof r == "object");
+  assert.strictEqual(posted.length, 1);
+  assert.deepStrictEqual([posted[0].victory, posted[0].data.Rank, posted[0].data.NumKills], [true, 1, 3]);
+  const q = page();
+  q.say("SDR|S|7|3|3|0|4");
+  q.g.SetDeathData({ NumKills: 3 }, false);
+  q.say("SDR|O|7|4|3|W|4");
+  q.g.SetDeathData({ NumKills: 3 }, true);               // the game's victory
+  q.g.bLocalMatchResultSent = true;                      // ...which hud.js posted
+  q.flush();
+  assert.deepStrictEqual(q.deaths, [true]);
+  assert.strictEqual(q.reports.filter((r) => typeof r == "object").length, 0, "posted once");
+});
+
+test("team Showdown: \"is your Teammate!\" once a match; 1v1 untouched", () => {
+  const p = page();
+  p.say("SDR|S|1|0|0|0|3");
+  p.say("Bot A is your Teammate!");
+  p.say("SDR|S|2|1|0|0|3");
+  p.say("Bot A is your Teammate!");
+  p.say("Bot B is your Teammate!");
+  assert.deepStrictEqual(p.shown, ["Bot A is your Teammate!", "Bot B is your Teammate!"]);
+  const q = page();
+  q.say("SDR|S|1|0|0|0");
+  q.say("X is your Teammate!");
+  q.say("X is your Teammate!");
+  assert.strictEqual(q.shown.length, 2);
 });
 
 console.log("all %d Showdown HUD tests passed", passed);

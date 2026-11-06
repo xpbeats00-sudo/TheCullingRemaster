@@ -34,12 +34,13 @@ const LIST = [
   // Showdown (patch/make_showdown.py, patch/showdown_rounds.c): you against
   // one AI rival in the Jungle arena, first to 4 rounds, all in one match.
   { id: "showdown", name: "Showdown Solo", kind: "showdown", format: "1v1", teamSize: 1, maxParty: 1, ranked: false, enabled: true },
-  { id: "showdown_duo", name: "Showdown Duos", kind: "showdown", format: "2v2", teamSize: 2, maxParty: 2, ranked: false, enabled: false,
-    reason: "mode-not-supported", message: "Showdown Duos isn't playable yet: Showdown is 1v1 against one rival." },
-  { id: "showdown_trio", name: "Showdown Trios", kind: "showdown", format: "3v3", teamSize: 3, maxParty: 3, ranked: false, enabled: false,
-    reason: "mode-not-supported", message: "Showdown Trios isn't playable yet: Showdown is 1v1 against one rival." },
-  { id: "showdown_quad", name: "Showdown Quads", kind: "showdown", format: "4v4", teamSize: 4, maxParty: 4, ranked: false, enabled: false,
-    reason: "mode-not-supported", message: "Showdown Quads isn't playable yet: Showdown is 1v1 against one rival." },
+  // Team Showdown: you and N - 1 AI teammates against N AI rivals (the match
+  // URL's ?TeamSize=N; the patched exe teams them and puts each team on its
+  // side of the arena). A party of up to N shares one lobby and match record;
+  // each member plays their own local match.
+  { id: "showdown_duo", name: "Showdown Duos", kind: "showdown", format: "2v2", teamSize: 2, maxParty: 2, ranked: false, enabled: true },
+  { id: "showdown_trio", name: "Showdown Trios", kind: "showdown", format: "3v3", teamSize: 3, maxParty: 3, ranked: false, enabled: true },
+  { id: "showdown_quad", name: "Showdown Quads", kind: "showdown", format: "4v4", teamSize: 4, maxParty: 4, ranked: false, enabled: true },
   { id: "ranked_showdown", name: "Ranked Showdown", kind: "showdown", format: "1v1", teamSize: 1, maxParty: 1, ranked: true, enabled: false,
     reason: "mode-not-supported", message: "Ranked Showdown isn't available yet: Showdown series aren't rated." }
 ];
