@@ -308,6 +308,34 @@ def run_one(out, port, name, queue, scenario, timeout, user):
 
 # ---------------------------------------------------------------- report
 
+# What the table can't say by itself (2026-11-05 runs; keep in step with the runs).
+REPORT_NOTES = [
+    "## Notes on these runs",
+    "",
+    "- **Builds.** The scenarios ran on successive builds of this branch as fixes landed; each row is the",
+    "  scenario's latest run. pods_solo and pods_prison ran before fix 12 (sd_spawn_team), so their chooser",
+    "  row has no spawn_team events; the same check passes on the fixed build in ranked_solo_death and the",
+    "  Prison unstick run. ranked_quad_out ran before the PLC| place fix (its place rows show the old bug:",
+    "  scored 4/4 with 15 alive); the fix is verified in game by ranked_solo_death (5 alive, scored 5/16)",
+    "  and ranked_duo_out (team out first, PLC|16, scored 8/8).",
+    "- **Showdown is paused** (user instruction, until dedicated servers work). sd_2v2 is from the build",
+    "  with the repossess fix; sd_3v3 and sd_4v4 are from the build before it; sd_1v1's latest run",
+    "  (with the fix) ran 390 s and the game exited without the module's quit line: not investigated.",
+    "  The repossess fix is unit tested and was not otherwise verified in game.",
+    "- **Unstick: FAIL, not fixed.** The pawn put at the American Elm fork (12446, -27962, z 4296 / 4396)",
+    "  with K2_SetActorLocation stays Walking and does not move at all for 15 s while pushing (input",
+    "  acceleration 2048), and unstick.c never counts it stuck: its Walking rule needs a capsule overlap",
+    "  with a pawn-blocking component, and CapsuleOverlapComponents found none there. Either the spot is",
+    "  not inside the (patched) trunk collision and the pawn is held by something the overlap query does",
+    "  not return, or the test placement is wrong; it needs a control placement in the open and a look at",
+    "  what the movement sweep hits.",
+    "- **Smarter opponents: inconclusive.** Since 452b07e bots start with only their fists; in the 135 s",
+    "  sample the only weapon states were Idle and Interrupted, so there were no blocks, charges or bow",
+    "  draws to time against the Experienced tier. The per-frame sampling itself works.",
+    "",
+]
+
+
 def write_report(results, out, exe_sha):
     import patch_exe
     passed = sum(1 for _n, checks in results for _c, okay, _e in checks if okay)
@@ -327,7 +355,7 @@ def write_report(results, out, exe_sha):
         for check, okay, evidence in checks:
             ev = str(evidence).replace("|", "/").replace("\n", " ")
             lines.append("| %s | %s | %s | %s |" % (name, check.replace("|", "/"), "PASS" if okay else "**FAIL**", ev[:400]))
-    lines += ["", "Raw files of each run (results.jsonl, server log, Func client log): `%s`." % out, ""]
+    lines += [""] + REPORT_NOTES + ["Raw files of each run (results.jsonl, server log, Func client log): `%s`." % out, ""]
     open(DOC, "w", encoding="utf-8", newline="\n").write("\n".join(lines))
     log("wrote", DOC, "(%d/%d pass)" % (passed, total))
 
