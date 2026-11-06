@@ -34,7 +34,7 @@ teams = {"ev": "teams", "el": 6, "fighters": 16, "byteam": {str(t): [4, 4] for t
          "mates": 3, "board": 16, "sorted": 16, "roster": roster}
 pods = {"ev": "pods_open", "el": 1, "contestants": 16, "starts": 16, "bots_to_spawn": 15, "closest": 820.0, "a": 0, "b": 3,
         "armed": [], "bots_armed": 0}
-good = run([{"ev": "start", "scenario": "teamwin", "url": "x"}, teams, pods,
+good = run([{"ev": "start", "scenario": "teamwin", "url": "x"}, teams, dict(pods, ev="pods", el=0, closest=900.0), pods,
             {"ev": "state", "el": 10, "board": 16, "sorted": 16},
             {"ev": "hud", "msg": "TMS|2|90|80|1|A|70|60|1|B"}, {"ev": "end", "el": 110}, {"ev": "quit", "why": "match over"}],
            ['1 ui-trace AT|msg|1|0/1|TMS|2|90|80|1|A|70|60|1|B',

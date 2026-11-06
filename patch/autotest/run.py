@@ -295,6 +295,8 @@ def run_one(out, port, name, queue, scenario, timeout, user):
         f.write("".join(json.dumps(e) + "\n" for e in events))
     with open(os.path.join(out, name + ".server.log"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+    json.dump({"quit": quit_at is not None, "killed": killed, "code": code, "seconds": seconds, "url": url, "crashes": crashes},
+              open(os.path.join(out, name + ".exit.json"), "w"))
     log("%s: %d events, %d server lines, %.0f s, quit %s, killed %s, crash reports %d"
         % (name, len(events), len(lines), seconds, quit_at is not None, killed, len(crashes)))
     return SC.Run(events, lines, crashes, {"quit": quit_at is not None, "killed": killed, "code": code,
@@ -327,6 +329,33 @@ def write_report(results, out, exe_sha):
     log("wrote", DOC, "(%d/%d pass)" % (passed, total))
 
 
+def recheck(a):
+    """The checks again on the files each run left in --out (results, server log, exit), and the report."""
+    import patch_exe
+    results = []
+    for name, _q, _s, _t, check in SC.SCENARIOS:
+        if a.only and name not in a.only.split(","):
+            continue
+        path = os.path.join(a.out, name + ".results.jsonl")
+        if not os.path.exists(path):
+            continue
+        events = [json.loads(ln) for ln in open(path, encoding="utf-8") if ln.strip()]
+        lines = open(os.path.join(a.out, name + ".server.log"), encoding="utf-8", errors="replace").read().splitlines()
+        ex = os.path.join(a.out, name + ".exit.json")
+        info = json.load(open(ex)) if os.path.exists(ex) else {
+            "quit": any(e.get("ev") == "quit" for e in events), "killed": False, "code": None, "seconds": 0.0}
+        run = SC.Run(events, lines, info.get("crashes", []), info)
+        try:
+            checks = check(run)
+        except Exception as e:
+            checks = [(name + ": checks", False, "check error: %r" % e)]
+        for c, okay, ev in checks:
+            log("  %s %s: %s" % ("PASS" if okay else "FAIL", c, str(ev)[:200]))
+        results.append((name, checks))
+    exe = os.path.join(a.out, "Victory.exe")
+    write_report(results, a.out, patch_exe.sha256(exe) if os.path.exists(exe) else "?")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--only", help="comma-separated scenario names")
@@ -336,8 +365,11 @@ def main():
     ap.add_argument("--out", default=os.path.join(os.environ.get("TEMP", PATCH), "culling-autotest"))
     ap.add_argument("--user", default="76561190000004242", help="the stand-in menu's player id")
     ap.add_argument("--restore-only", action="store_true", help="put the test copy back as it was, and stop")
+    ap.add_argument("--recheck", action="store_true", help="run the checks again on the runs saved in --out (no game)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    if a.recheck:
+        return recheck(a)
     if a.restore_only:
         if not wait_for_free_game(600):
             raise SystemExit("a Victory.exe is running: not restoring now")

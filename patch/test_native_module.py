@@ -113,6 +113,15 @@ def exe_checks(path):
         sys.exit("FAIL IsSpawnpointPreferred at %x doesn't refuse a used start" % (TW.BASE + PREFERRED))
     print("ok    the start chooser (VA %x): the mode's starts by SpawnPointTags; a used start is only a fallback (VA %x)"
           % (TW.BASE + CHOOSER, TW.BASE + PREFERRED))
+    # AController::Possess: its exec thunk calls vtable +V_POSSESS (the module possesses the
+    # player's pawn again after the game's delayed spectating took it).
+    poss = " | ".join("%s %s" % (i.mnemonic, i.op_str) for t in ex.natives("Possess") for i in ex.code(t, 0x100))
+    if "call qword ptr [rax + 0x%x]" % d["V_POSSESS"] not in poss:
+        sys.exit("FAIL AController::Possess is not vtable +0x%x" % d["V_POSSESS"])
+    unposs = " | ".join("%s %s" % (i.mnemonic, i.op_str) for t in ex.natives("UnPossess") for i in ex.code(t, 0x100))
+    if "[rax + 0x%x]" % d["V_UNPOSSESS"] not in unposs:
+        sys.exit("FAIL AController::UnPossess is not vtable +0x%x" % d["V_UNPOSSESS"])
+    print("ok    AController::Possess is vtable +0x%x, UnPossess +0x%x (their exec thunks)" % (d["V_POSSESS"], d["V_UNPOSSESS"]))
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     imm = set()
     for i in md.disasm(ROUNDS.BLOB[:ROUNDS.SD_SELF_RVA], 0):

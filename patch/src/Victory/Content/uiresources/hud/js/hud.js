@@ -3309,7 +3309,10 @@ function LocalMatchResultBody(_deathData, bIsVictory)
 		damage: _deathData.DamageDone,
 		func: _deathData.FUNC,
 		distance: _deathData.DistanceTraveled,
-		placement: parseInt(_deathData.Rank, 10) || 0,
+		// A victory is first place: the game's victory data carries no Rank
+		// (seen in game by patch/autotest: SetVictoryData has none), so it
+		// would post 0.
+		placement: bIsVictory ? 1 : parseInt(_deathData.Rank, 10) || 0,
 		// This build's limit on players plus bots: one per pod, 16 (the
 		// patched exe's module; 1.3.11 reported 24). The server scores
 		// placements out of the contestants the map really has.

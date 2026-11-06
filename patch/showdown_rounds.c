@@ -298,6 +298,7 @@ static u16 message[256];
 static void at_message(const u16 *m, i32 n);
 static void at_match_end(char ended);
 static void at_gas(u8 *victim, u8 *by, const char *why);
+static void at_note(const char *what);
 
 static u8 *base(void) { return (u8 *)&sd_self_rva - sd_self_rva; }
 
@@ -1092,6 +1093,41 @@ static void sides_tick(u8 *world, i32 teams)
     if (!place(world, teams)) S.placing = 0;
 }
 
+/* The player's pawn of this round, kept possessed. After the player's own
+   death the game puts its controller in the spectating state a few seconds
+   later (APlayerController::BeginSpectatingState unpossesses the pawn it has
+   then). The round's 3 black seconds are shorter than that, so it took the
+   pawn reset() had just given the player: the next round was lost about a
+   second in, without a blow (seen by patch/autotest, round after a lost
+   round). The pawn is still there, uncontrolled: the controller possesses it
+   again (AController::Possess, vtable +0x648). */
+#define V_POSSESS      0x648
+static struct { Weak ctrl, pawn; } K;
+
+static void keep_record(u8 *world)
+{
+    u8 *list = world + W_CONTROLLERS;
+    i32 i, num = FIELD(list, 8, i32);
+    K.ctrl.index = K.pawn.index = -1;
+    K.ctrl.serial = K.pawn.serial = 0;
+    for (i = 0; i < num; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC) && FIELD(c, C_PAWN, u8 *)) {
+            weak_set(&K.ctrl, c);
+            weak_set(&K.pawn, FIELD(c, C_PAWN, u8 *));
+            return;
+        }
+    }
+}
+
+static int keep_possessed(void)
+{
+    u8 *c = weak(&K.ctrl), *p = weak(&K.pawn);
+    if (!c || !p || FIELD(c, C_PAWN, u8 *) || FIELD(p, P_CONTROLLER, u8 *) || !((fn_bool)AT(US_CH_ALIVE))(p)) return 0;
+    ((fn_void2)VFN(c, V_POSSESS))(c, p);
+    return FIELD(c, C_PAWN, u8 *) == p;
+}
+
 /* For the tests: the sides' state. */
 void sd_sides_probe(i32 *out)
 {
@@ -1135,6 +1171,7 @@ static char should_end(u8 *gm)
     if (teams > DUO) report_mates(gm, world);
     ensure(gm);
     S.size = teams ? teams : 1;
+    if (S.phase == FIGHT && S.round > 1 && keep_possessed()) at_note("repossessed");
     count(world, &n, teams);
     if (!n.mine || !n.theirs) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     if (!S.announced) {
@@ -1152,6 +1189,7 @@ static char should_end(u8 *gm)
         S.round++;
         S.kit = kit_for(S.round);
         reset(gm, world);
+        keep_record(world);
         new_round_sides(world, teams);
         sides_tick(world, teams);
         S.kitted = kit_rival(world) ? S.round : 0;

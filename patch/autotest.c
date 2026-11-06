@@ -486,6 +486,16 @@ static void at_match_end(char ended)
     at_end();
 }
 
+/* Something the module did on its own (showdown_rounds.c). */
+static void at_note(const char *what)
+{
+    if (!T.on) return;
+    at_begin("note");
+    at_s("what", what);
+    at_i("round", S.round);
+    at_end();
+}
+
 /* sd_gas_instigator's answer for a wound with no stock instigator. */
 static void at_gas(u8 *victim, u8 *by, const char *why)
 {
@@ -893,6 +903,13 @@ static void at_pods(const char *ev)
     at_i("bots_to_spawn", FIELD(T.gm, GM_BOTS, i32));
     at_f("closest", best < 1e11f ? at_sqrt(best) : -1.0f);
     at_i("a", a); at_i("b", b);
+    if (a >= 0) {
+        at_fs("a_name", (FString *)(F[a].ps + PS_NAME));
+        at_fs("b_name", (FString *)(F[b].ps + PS_NAME));
+        at_i("a_team", F[a].team); at_i("b_team", F[b].team);
+        at_key("a_at"); at_c('['); at_fnum(p[a][0]); at_c(','); at_fnum(p[a][1]); at_c(','); at_fnum(p[a][2]); at_c(']');
+        at_key("b_at"); at_c('['); at_fnum(p[b][0]); at_c(','); at_fnum(p[b][1]); at_c(','); at_fnum(p[b][2]); at_c(']');
+    }
     at_key("armed");
     at_c('[');
     for (i = 0, n = 0; i < NF; i++) {
@@ -936,9 +953,10 @@ static void at_second(u8 *world, i32 now)
         at_end();
     }
     at_deaths();
-    if (T.scen != AT_SD && T.pods_logged < 2 && el >= T.pods_logged) {
-        at_pods(T.pods_logged ? "pods_open" : "pods");
-        T.pods_logged = el >= 1 ? 2 : 1;
+    /* In the pods (InProgress second 0, every second: the bots arrive), then as they open. */
+    if (T.scen != AT_SD && T.pods_logged < 2) {
+        at_pods(el < 1 ? "pods" : "pods_open");
+        if (el >= 1) T.pods_logged = 2;
     }
     if (el >= 6 && !T.teams_logged) {
         at_snapshot("teams", 1);

@@ -657,6 +657,9 @@ static char teleport(u8 *pawn, const float *at, const float *rot)
     return 1;
 }
 static void unpossess(u8 *c) { F(c, 0x408, u8 *) = 0; }
+static int possessions;
+static void possess(u8 *c, u8 *p) { F(c, 0x408, u8 *) = p; F(p, 0x438, u8 *) = c; possessions++; }
+static char ch_alive(u8 *p) { (void)p; return 1; }
 static void destroy(u8 *a) { kill_obj(a); }
 
 /* You (a PlayerController) and n - 1 bots, in that order in PlayerArray. */
@@ -744,6 +747,27 @@ static void test_showdown(void)
     CHECK(sd_should_end(sgm) == 1);
     CHECK(!*last_message("TMS|"));
     printf("ok    Showdown 1v1: rounds, resets, first to 4 (unchanged)\n");
+
+    /* Your death, then the game's delayed spectating takes the pawn the reset
+       gave you: it is possessed again, and the round goes on. */
+    showdown_setup(2, 3, "?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C");
+    nmessages = 0;
+    CHECK(sd_should_end(sgm) == 0 && sd_should_end(sgm) == 0);
+    fdie(0);
+    CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|1|0|1|L"));
+    next_round(2);
+    {
+        u8 *mine = F(fc[0], 0x408, u8 *);
+        CHECK(mine);
+        F(fc[0], 0x408, u8 *) = 0;                    /* BeginSpectatingState's UnPossess */
+        F(mine, 0x438, u8 *) = 0;
+        possessions = 0;
+        for (i = 0; i < 4; i++) CHECK(sd_should_end(sgm) == 0);
+        CHECK(possessions == 1 && F(fc[0], 0x408, u8 *) == mine && series_msg("SDR|S|2|"));
+        fdie(1);
+        CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|2|1|1|W"));
+    }
+    printf("ok    Showdown: the pawn the reset gave you, taken by the delayed spectating after your death, is yours again\n");
 
     /* Team Showdown: N v N, sd_teams' teams (you and N - 1 bots, then N bots). */
     for (size = 2; size <= 4; size++) {
@@ -1141,6 +1165,8 @@ int main(void)
     vtable[0x290 / 8] = (void *)destroy;
     vtable[0x650 / 8] = (void *)unpossess;
     vtable[0x700 / 8] = (void *)restart_player;
+    vtable[0x648 / 8] = (void *)possess;
+    hook(0x26e0d0, (void *)ch_alive);
     hook(0x244d30, (void *)ffa_should_end);
     hook(0x249d20, (void *)ps_has_left);
     hook(0x249ca0, (void *)ps_is_alive);

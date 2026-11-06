@@ -87,6 +87,15 @@ test("you die early, your teammate wins: one post, a victory at first place, wit
   assert.strictEqual(h.posted.length, 1, "never twice");
 });
 
+test("a win posts first place even though the game's victory data has no Rank", () => {
+  const h = hud();
+  const won = death(undefined);
+  delete won.Rank;
+  h.api.OnLocalMatchResult(won, true);
+  assert.strictEqual(h.posted.length, 1);
+  assert.deepStrictEqual([h.posted[0].body.victory, h.posted[0].body.placement], [true, 1]);
+});
+
 test("you die early, your whole team goes down: posted as your death, team out", () => {
   const h = hud();
   h.api.RemasterTeammateAdded();

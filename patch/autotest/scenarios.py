@@ -104,17 +104,20 @@ def teams_check(r, name, size, nteams):
 
 def pods_check(r, name, want):
     """release-next 452b07e: one contestant a start, bots with only their fists, as the pods open."""
-    ev = first(r.ev("pods_open")) or first([e for e in r.ev("pods") if e.get("el", 0) >= 1]) or first(r.ev("pods"))
+    # The last look while the pods are closed (everyone in their pod), and the opening.
+    closed = [e for e in r.ev("pods") if e["contestants"] == max(x["contestants"] for x in r.ev("pods"))] if r.ev("pods") else []
+    pods = closed[-1] if closed else {}
+    ev = first(r.ev("pods_open")) or pods
     if not ev:
         return [ok(name + ": pods: one contestant each, %d contestants, bots with fists only" % want, False, "no pods event")]
-    pods = first(r.ev("pods"), {})
     return [ok(name + ": %d contestants (BotsToSpawn capped at the mode's free starts)" % want, ev["contestants"] == want,
                "%d contestants at InProgress second %s; the mode's starts %s, BotsToSpawn %s"
                % (ev["contestants"], ev.get("el"), ev.get("starts"), ev.get("bots_to_spawn"))),
-            ok(name + ": as the pods open no two contestants are within 150 units",
-               ev.get("closest") is not None and ev["closest"] >= 150,
-               "closest two pawns %s apart (fighters %s/%s) at second %s; in the pods (second %s) %s"
-               % (ev.get("closest"), ev.get("a"), ev.get("b"), ev.get("el"), pods.get("el"), pods.get("closest"))),
+            ok(name + ": in the pods no two contestants are within 150 units",
+               pods.get("contestants") == want and pods.get("closest", -1) >= 150,
+               "pods closed: %s contestants, closest %s apart (%s team %s at %s, %s team %s at %s); 1 s after opening: closest %s (%s, %s)"
+               % (pods.get("contestants"), pods.get("closest"), pods.get("a_name"), pods.get("a_team"), pods.get("a_at"),
+                  pods.get("b_name"), pods.get("b_team"), pods.get("b_at"), ev.get("closest"), ev.get("a_name"), ev.get("b_name"))),
             ok(name + ": no bot has a weapon besides its fists", ev["bots_armed"] == 0,
                "%d bots armed%s" % (ev["bots_armed"], (": " + ", ".join(ev["armed"])) if ev["armed"] else ""))]
 
@@ -280,7 +283,14 @@ def check_sd(r, name, size):
     if size > 1:
         pages = jsons(r.probe_of("page"))
         down = [p for p in pages if "YOU ARE DOWN" in p.get("banner", "")]
-        early_screen = [p for p in pages if p.get("deathScreen")]
+        # Before the series is over (the victory or defeat at its end shows the screen, as it should).
+        before_end = []
+        for tag, text in r.probe:
+            if tag == "victory" or (tag == "msg" and text.startswith("SDR|O|")):
+                break
+            if tag == "page":
+                before_end += jsons([text])
+        early_screen = [p for p in before_end if p.get("deathScreen")]
         mid = [e for e in r.ev("before_my_death")]
         c.append(ok(name + ": your death mid-round: no death screen, 'YOU ARE DOWN'", down and not early_screen,
                     "my death with %s alive; banners %s; death screen shown %s"
@@ -289,7 +299,8 @@ def check_sd(r, name, size):
         # A team wipe ends the round, one down doesn't: round 2's end came only after the last mate died.
         e2 = [e for e in r.ev("hud") if e.get("msg", "").startswith("SDR|E|2|")]
         kills2 = [k for k in r.ev("kill") if k.get("why") in ("me", "mate")]
-        c.append(ok(name + ": round 2 ended only at the team wipe", e2 and kills2 and e2[0]["ms"] > kills2[-1]["ms"],
+        c.append(ok(name + ": round 2 ended only at the team wipe",
+                    e2 and len(kills2) == size and e2[0]["ms"] >= kills2[-1]["ms"] and e2[0]["ms"] > kills2[0]["ms"],
                     "my/mate kills at %s ms, SDR|E|2 at %s ms" % ([k["ms"] for k in kills2], e2 and e2[0]["ms"])))
     return c
 
