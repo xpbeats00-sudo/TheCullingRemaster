@@ -814,6 +814,19 @@ static u32 tp_at;
 static i32 tp2_done;
 static u32 tp2_at;
 
+/* CULLING_NETPLAY_ATTACK=1: the joined players attack each other from their
+ * own games (client_attack); the host puts the pair closer and traces both
+ * players' health (host_watch). */
+#define O_PC_CONTROL_ROT   0x430       /* AController::ControlRotation (FRotator: pitch, yaw, roll) */
+static const u16 attack_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','A','T','T','A','C','K',0 };
+static i32 host_attack_state = 1, client_attack_state = 1;
+/* CULLING_NETPLAY_ATTACK_ONE_SIDE=1: only the player standing at the arena's
+ * x=0 (the first joined) attacks, so the other's health shows whether the
+ * damage comes from the attacker's own game (and the attacker's, that
+ * nothing else in the arena hurts them). */
+static const u16 one_side_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','A','T','T','A','C','K','_','O','N','E','_','S','I','D','E',0 };
+static i32 one_side_state = 1;
+
 static void host_teleport_pair(u8 **conns, i32 nconn, u32 now)
 {
     u8 *pa = 0, *pb = 0, *root;
@@ -841,7 +854,7 @@ static void host_teleport_pair(u8 **conns, i32 nconn, u32 now)
     to[0] = 0.0f; to[1] = -700.0f; to[2] = 200.0f;
     if (trace_begin(&l, "teleport-pair")) {
         kv(&l, "ok_a", FN(R_TELEPORT, teleport_fn)(pa, to, rot), 0);
-        to[0] = 300.0f;
+        to[0] = env_on(attack_var, &host_attack_state) ? 110.0f : 300.0f;   /* within arm's reach for the attack test */
         kv(&l, "ok_b", FN(R_TELEPORT, teleport_fn)(pb, to, rot), 0);
         trace_end(&l);
     }
@@ -919,6 +932,28 @@ static void host_damage(u8 **conns, i32 nconn, u32 now)
     }
 }
 
+static u32 watch_next;
+
+static void host_watch(u8 **conns, i32 nconn, u32 now)
+{
+    struct line l;
+    i32 c;
+    if (!tp2_done || !env_on(attack_var, &host_attack_state) || (i32)(now - watch_next) < 0)
+        return;
+    watch_next = now + 1000;
+    if (!trace_begin(&l, "watch"))
+        return;
+    for (c = 0; c < nconn && c < 2; c++) {
+        u8 *pc = conns[c] ? F(conns[c], O_CONN_PC, u8 *) : 0;
+        u8 *p = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+        u8 *root = p ? F(p, O_A_ROOT, u8 *) : 0;
+        kv_s(&l, c ? "p1_health" : "p0_health", health_of(p));
+        kv_s(&l, c ? "p1_x" : "p0_x", root ? (i32)F(root, O_SC_LOCATION, float) : 0);
+        kv_s(&l, c ? "p1_yaw" : "p0_yaw", pc ? (i32)F(pc, O_PC_CONTROL_ROT + 4, float) : 0);
+    }
+    trace_end(&l);
+}
+
 static void host_teleport(u8 *remote, u32 now)
 {
     static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','L','E','P','O','R','T',0 };
@@ -983,6 +1018,7 @@ static void server_replicate(u8 *driver)
         }
         host_teleport_pair(conns, nconn, now);
         host_damage(conns, nconn, now);
+        host_watch(conns, nconn, now);
     }
     {
         u8 *gm1 = F(world, O_WORLD_AUTH_GM, u8 *);
@@ -1236,6 +1272,80 @@ static void client_move(u8 *driver)
     ((add_move_fn)(*(void ***)pawn)[VT_ADD_MOVEMENT / 8])(pawn, dir, 1.0f, 1);
 }
 
+/* CULLING_NETPLAY_ATTACK=1 on a client: once another character stands
+ * within 400 units, every 2 s the client turns to face it (its
+ * PlayerController's ControlRotation, which the movement updates carry to
+ * the host) and presses primary attack for 300 ms through the functions the
+ * attack button drives: AShooterCharacter::OnStartPrimary and OnStopPrimary
+ * (the natives "OnStartPrimary" 0x140368700 and "OnStopPrimary" 0x140368a80
+ * call them). They run the weapon locally and send ServerStartInput and
+ * ServerStopInput; the client's weapon finds the hits and sends
+ * ServerNotifyHit, and the host applies the damage. */
+#define R_ON_START_PRIMARY 0x272f60
+#define R_ON_STOP_PRIMARY  0x2743d0
+typedef void (*pawn_input_fn)(void *pawn);
+static u32 attack_next, release_at, attacks;
+static u8 *pressed_pawn;
+
+static void client_attack(u8 *driver)
+{
+    u8 *conn = F(driver, O_ND_SERVERCONN, u8 *);
+    u8 *world = F(driver, O_ND_WORLD, u8 *);
+    u8 *pc = conn ? F(conn, O_CONN_PC, u8 *) : 0;
+    u8 *pawn = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+    u8 *root = pawn ? F(pawn, O_A_ROOT, u8 *) : 0;
+    u8 *weapon, *data, *target = 0;
+    float best = 400.0f * 400.0f, tx = 0, mx, my;
+    struct line l;
+    i32 i, num;
+    u32 now;
+    if (!root || !world || !is_character(pawn) || !env_on(attack_var, &client_attack_state))
+        return;
+    now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+    if (pressed_pawn && (i32)(now - release_at) >= 0) {
+        if (pressed_pawn == pawn)
+            FN(R_ON_STOP_PRIMARY, pawn_input_fn)(pawn);
+        pressed_pawn = 0;
+    }
+    if (pressed_pawn || (i32)(now - attack_next) < 0)
+        return;
+    attack_next = now + 2000;
+    mx = F(root, O_SC_LOCATION, float);
+    my = F(root, O_SC_LOCATION + 4, float);
+    data = F(world + O_W_PAWNS, 0, u8 *);
+    num = F(world + O_W_PAWNS, 8, i32);
+    for (i = 0; data && i < num; i++) {
+        u8 *p = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
+        u8 *r = p && p != pawn && is_character(p) ? F(p, O_A_ROOT, u8 *) : 0;
+        float dx, dy;
+        if (!r || health_of(p) <= 0)
+            continue;
+        dx = F(r, O_SC_LOCATION, float) - mx;
+        dy = F(r, O_SC_LOCATION + 4, float) - my;
+        if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; target = p; tx = dx; }
+    }
+    weapon = F(pawn, O_CH_CURRENT, u8 *);
+    if (!target || !weapon || (env_on(one_side_var, &one_side_state) && tx < 0))
+        return;
+    /* The arena pair stands on one X line: face +X or -X. */
+    F(pc, O_PC_CONTROL_ROT, float) = 0.0f;
+    F(pc, O_PC_CONTROL_ROT + 4, float) = tx >= 0 ? 0.0f : 180.0f;
+    F(pc, O_PC_CONTROL_ROT + 8, float) = 0.0f;
+    FN(R_ON_START_PRIMARY, pawn_input_fn)(pawn);
+    pressed_pawn = pawn;
+    release_at = now + 300;
+    attacks++;
+    if (trace_begin(&l, "attack")) {
+        kv(&l, "n", (u64)attacks, 0);
+        kv(&l, "weapon", (u64)weapon, 1);
+        kv(&l, "target", (u64)target, 1);
+        kv_s(&l, "dx", (i32)tx);
+        kv_s(&l, "target_health", health_of(target));
+        kv_s(&l, "my_health", health_of(pawn));
+        trace_end(&l);
+    }
+}
+
 /* Replaces the Steam driver's vtable slot +0x278 (TickFlush). */
 #define O_GM_NO_END        0x74d       /* AShooterGame_FreeForAll: while set, its end-of-match check never ends the match (showdown_rounds.c GM_NO_END) */
 
@@ -1252,6 +1362,7 @@ void np_tick_flush(void *driver, float dt)
         server_replicate((u8 *)driver);
     } else if (driver && F(driver, O_ND_SERVERCONN, void *)) {
         client_move((u8 *)driver);
+        client_attack((u8 *)driver);
         client_trace((u8 *)driver);
     }
     FN(R_STEAM_TICKFLUSH, tick_flush_fn)(driver, dt);
