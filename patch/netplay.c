@@ -435,6 +435,7 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define O_CH_MOVEMENT      0x468       /* ACharacter::CharacterMovement */
 #define ROLE_AUTONOMOUS    2           /* ENetRole::ROLE_AutonomousProxy */
 #define ROLE_SIMULATED     1           /* ENetRole::ROLE_SimulatedProxy */
+#define O_ND_REP_FRAME     0x280       /* UNetDriver::ReplicationFrame (UDemoNetDriver::TickDemoRecord increments it, 0x14130541f) */
 #define MAX_OPEN_PER_PASS  16          /* new actor channels per connection per pass (reliable buffer) */
 #define O_GS_PLAYERS       0x418       /* AGameState::PlayerArray */
 #define O_W_CONTROLLERS    0x178       /* UWorld controller list (weak pointers) */
@@ -513,6 +514,20 @@ static i32 owned_by(u8 *actor, void *pc)
         if (actor == pc)
             return 1;
     return 0;
+}
+
+static i32 prerep_state = 1;       /* 1 = not looked up yet, 2 = on, 3 = off */
+static i32 move_state = 1;
+
+/* "1" in the environment variable var (UTF-16), looked up once into *state. */
+static i32 env_on(const u16 *var, i32 *state)
+{
+    u16 v[8];
+    if (*state == 1) {
+        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(var, v, 8);
+        *state = (n == 1 && v[0] == '1') ? 2 : 3;
+    }
+    return *state == 2;
 }
 
 /* Replicates actor to conn. Returns 0 when it was deferred (no channel yet
@@ -720,19 +735,6 @@ static i32 collect(u8 *world, u8 **out, u8 *kind)
 
 static u32 last_rep, last_trace, last_alive;
 
-static i32 prerep_state = 1;       /* 1 = not looked up yet, 2 = on, 3 = off */
-static i32 move_state = 1;
-
-/* "1" in the environment variable var (UTF-16), looked up once into *state. */
-static i32 env_on(const u16 *var, i32 *state)
-{
-    u16 v[8];
-    if (*state == 1) {
-        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(var, v, 8);
-        *state = (n == 1 && v[0] == '1') ? 2 : 3;
-    }
-    return *state == 2;
-}
 
 /* CULLING_NETPLAY_PREREP=1 turns on AActor::CallPreReplication before
  * replicating (it updates replicated movement); off until it's proven safe
@@ -923,6 +925,12 @@ static void server_replicate(u8 *driver)
             scan_world(world, gm1, gm1 ? F(gm1, O_GM_GAMESTATE, u8 *) : 0, now);
     }
     n = collect(world, actors, kind);
+    /* A new replication frame, as the engine's ServerReplicateActors starts
+     * with ReplicationFrame++: property comparisons are shared between
+     * connections per frame, so without it the first pass's comparison was
+     * reused (in game: a player's pawn reached the other client once, then
+     * its ReplicatedMovement there never changed). */
+    F(driver, O_ND_REP_FRAME, i32)++;
     if (prerep_on()) {
         for (i = 0; i < n; i++)
             FN(R_PRE_REPLICATION, pre_rep_fn)(actors[i], driver);
@@ -1047,6 +1055,7 @@ static void server_replicate(u8 *driver)
         kv(&l, "culled", st.culled, 0);
         kv(&l, "closed", st.closed, 0);
         kv(&l, "adjusted", st.adjusted, 0);
+        kv(&l, "rep_frame", (u64)F(driver, O_ND_REP_FRAME, u32), 0);
         /* Two players: does each connection have a channel to the other's pawn? */
         if (nconn >= 2 && conns[0] && conns[1]) {
             u8 *pc0 = F(conns[0], O_CONN_PC, u8 *), *pc1 = F(conns[1], O_CONN_PC, u8 *);
@@ -1121,6 +1130,9 @@ static void client_trace(u8 *driver)
         kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
         kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
         kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
+        kv(&l, "role", (u64)F(p, 0x118, u8), 0);            /* AActor::Role here (1 simulated, 2 autonomous) */
+        kv_s(&l, "repx", (i32)F(p, 0xa0 + 0x18, float));     /* the last ReplicatedMovement.Location received */
+        kv_s(&l, "repy", (i32)F(p, 0xa0 + 0x1c, float));
         trace_end(&l);
     }
 }

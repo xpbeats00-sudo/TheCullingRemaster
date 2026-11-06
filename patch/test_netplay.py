@@ -322,6 +322,12 @@ def test_real_exe(path):
     ack = {o for _, o in TNM.prop_offsets(ex, "AcknowledgedPawn")}
     cm = {o for _, o in TNM.prop_offsets(ex, "CharacterMovement")}
     assert mac("O_PC_ACK_PAWN") in ack and mac("O_CH_MOVEMENT") in cm, (sorted(ack), sorted(cm))
+    # 2f. UNetDriver::ReplicationFrame: the replay recorder's record step (0x141305110, which
+    # calls the per-actor template) increments it, as the engine's ServerReplicateActors does.
+    rec = data[PN._off(0x141305110):PN._off(0x141305110) + 0xc00]
+    assert bytes.fromhex("ff83") + struct.pack("<I", mac("O_ND_REP_FRAME")) in rec, "inc dword [rbx+ReplicationFrame]"
+    assert any(0x141305110 + i + 5 + struct.unpack_from("<i", rec, i + 1)[0] == 0x1412EE2E0
+               for i in range(len(rec) - 5) if rec[i] == 0xE8), "the record step calls the per-actor template"
     # 3. InternalGetNetMode as the patch expects, and its demo path's GetNetMode call.
     o = PN._off(PN.NETMODE_VA)
     assert data[o:o + len(PN.NETMODE_STOCK)] == PN.NETMODE_STOCK
