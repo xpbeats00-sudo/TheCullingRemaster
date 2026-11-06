@@ -158,14 +158,16 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
       assert.ok(!restore.ok && /Wait for Game Sync to finish/.test(restore.e.message), "Restore: " + (restore.e && restore.e.message));
       const check = await settle(call("check-updates"));
       assert.ok(!check.ok && /Wait for Game Sync to finish/.test(check.e.message), "Check for updates: " + (check.e && check.e.message));
-      for (let i = 0; i < 200 && !fetches.length; i++) await new Promise((r) => setTimeout(r, 20));
-      assert.strictEqual(fetches.length, 2, "one manifest fetch (and its .sig), for one sync");
+      // tasklist (game.isRunning) can take seconds on a busy PC.
+      for (let i = 0; i < 1500 && !fetches.length; i++) await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 50));
+      assert.strictEqual(fetches.length, 2, "one manifest fetch (and its .sig), for one sync: " + fetches.join(", "));
       releaseFetch();
       const r = await first;
       assert.ok(!r.ok && /Can't reach the update server/.test(r.e.message), "the first sync ends with the network's error: " + (r.e && r.e.message));
       // Over: the next one may run.
       const again = settle(call("sync", {}));
-      for (let i = 0; i < 200 && fetches.length < 4; i++) await new Promise((res) => setTimeout(res, 20));
+      for (let i = 0; i < 1500 && fetches.length < 4; i++) await new Promise((res) => setTimeout(res, 20));
       assert.strictEqual(fetches.length, 4, "a new sync runs once the first is over");
       releaseFetch();
       await again;
