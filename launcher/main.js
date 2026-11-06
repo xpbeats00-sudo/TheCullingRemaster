@@ -21,6 +21,7 @@ const discord = require("./lib/discord");
 const build = require("./lib/build");
 const status = require("./lib/status");
 const { createReconnect } = require("./lib/reconnect");
+const { createSerial, createExclusive } = require("./lib/serial");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
 
@@ -40,6 +41,15 @@ let accounts = null;             // saved sign-ins (lib/account.js)
 let accountApi = null;
 // A launcher update in progress or failed: { version, done, total, error }.
 let launcherUpdate = null;
+// One game-folder job at a time (lib/serial.js): plans, syncs, restores.
+const folder = createSerial();
+// The window's long actions, claimed before their first await: a second
+// click while one runs is refused, not run alongside it.
+const action = createExclusive({
+  sync: "Wait for Game Sync to finish",
+  rollback: "Wait for the restore to finish",
+  check: "Wait for the update check to finish"
+});
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -97,7 +107,12 @@ function createWindow() {
   }));
   // Pages never navigate away or open windows; links go through openLink.
   win.webContents.on("will-navigate", (e) => e.preventDefault());
+  win.webContents.on("will-redirect", (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // The pages need no browser permission (notifications, camera, location,
+  // clipboard reads...): every request and check is refused.
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, done) => done(false));
+  win.webContents.session.setPermissionCheckHandler(() => false);
   win.once("ready-to-show", () => win.show());
   win.loadFile(settings.playIntro ? PAGES.splash : PAGES.main);
   // Without the intro the main page shows at once; it is told when the checks
@@ -107,10 +122,16 @@ function createWindow() {
 
 // ---------------------------------------------------------------- boot checks
 
-async function refreshPlan(onHash, opts = {}) {
+// Inside a folder job only (a sync, a restore): everything else queues
+// through refreshPlan.
+async function planNow(onHash, opts = {}) {
   const check = checkGame();
   if (!(check.ok || check.installable) || !manifest) { todo = null; return; }
   todo = await sync.plan(manifest, settings.gamePath, onHash, opts);
+}
+
+function refreshPlan(onHash, opts = {}) {
+  return folder.run(() => planNow(onHash, opts));
 }
 
 // The latest signed manifest; an older release than the installed one is
@@ -130,7 +151,7 @@ async function latestManifest() {
 // Offline at start-up: the release is fetched again with growing waits, and
 // when the player presses Retry; once it arrives the window shows it.
 const reconnect = createReconnect(async () => {
-  if (busy) return false;
+  if (busy || action.current) return false;
   try {
     await latestManifest();
   } catch (e) {
@@ -167,7 +188,7 @@ async function bootChecks() {
     const gamePath = managed ? steam : game.defaultInstallDir();
     saveSettings({ gamePath });
   }
-  try { sync.recover(settings.gamePath); } catch (e) { log("recover", { error: e.message }); }
+  try { await folder.run(() => sync.recover(settings.gamePath)); } catch (e) { log("recover", { error: e.message }); }
   noteInstalled();
   progress(0.25, "Contacting xplab.shop");
   try {
@@ -333,7 +354,7 @@ function registerIpc() {
   handle("splash-done", () => win.loadFile(PAGES.main));
 
   handle("choose-game-folder", async () => {
-    if (busy) throw new Error("Wait for Game Sync to finish");
+    if (busy || action.current) throw new Error("Wait for Game Sync to finish");
     const r = await dialog.showOpenDialog(win, {
       title: "Choose where to install The Culling Remaster (or an existing install)",
       properties: ["openDirectory", "createDirectory"],
@@ -389,7 +410,7 @@ function registerIpc() {
     return state();
   });
 
-  handle("check-updates", async () => {
+  handle("check-updates", () => action.run("check", async () => {
     if (busy) throw new Error("Game Sync is running");
     await latestManifest();
     // A newer launcher installs right away (the launcher restarts).
@@ -398,17 +419,19 @@ function registerIpc() {
     }
     await refreshPlan((done, total) => send("sync-progress", { phase: "verify", done, total }));
     return state();
-  });
+  }));
 
   // Restores the version before the last update (its files are kept until the next one).
-  handle("rollback", async () => {
+  handle("rollback", () => action.run("rollback", async () => {
     if (busy) throw new Error("Wait for Game Sync to finish");
     if (await game.isRunning()) throw new Error("Close The Culling first");
-    const v = sync.rollback(settings.gamePath);
-    log("rollback", { to: v });
-    await refreshPlan();
-    return Object.assign(state(), { restored: v });
-  });
+    return folder.run(async () => {
+      const v = sync.rollback(settings.gamePath);
+      log("rollback", { to: v });
+      await planNow();
+      return Object.assign(state(), { restored: v });
+    });
+  }));
 
   // Support information, copied for pasting into a message.
   handle("diagnostics", async () => {
@@ -438,7 +461,7 @@ function registerIpc() {
   });
 
   // Install / update / resume, or with { repair: true } rehash every file first.
-  handle("sync", async (opts = {}) => {
+  handle("sync", (opts = {}) => action.run("sync", async () => {
     if (busy) throw new Error("Game Sync is already running");
     const check = checkGame();
     if (!(check.ok || check.installable)) throw new Error(check.missing ? check.reason : check.reason + ": choose another folder in Settings");
@@ -447,11 +470,23 @@ function registerIpc() {
     syncAbort = new AbortController();
     const repair = !!(opts && opts.repair);
     log("sync", { repair, release: manifest && manifest.version });
+    // After any plan or restore already queued (refreshPlan from the
+    // reconnect, PLAY or the start-up checks): none runs alongside it.
+    try {
+      return await folder.run(() => runSync(repair));
+    } finally {
+      busy = false;
+      syncAbort = null;
+    }
+  }));
+
+  // The sync itself, inside its folder job (planNow, never refreshPlan).
+  async function runSync(repair) {
     try {
       // Always the latest release: one published while the launcher was open
       // replaces the old plan instead of failing against it.
       try { await latestManifest(); } catch (e) { if (!manifest || /older than/.test(e.message)) throw e; }
-      await refreshPlan((done, total) => send("sync-progress", { phase: "verify", done, total }), { full: repair, signal: syncAbort.signal });
+      await planNow((done, total) => send("sync-progress", { phase: "verify", done, total }), { full: repair, signal: syncAbort.signal });
       if (repair) log("repair", todo.report);
       // About ten progress updates a second, not one per network chunk.
       let lastSent = 0;
@@ -476,19 +511,16 @@ function registerIpc() {
       if (!(e instanceof sync.SyncPaused)) {
         log("sync-error", { kind: e.kind, error: e.message });
         busy = false;
-        try { await refreshPlan(); } catch { /* keep the error below */ }
+        try { await planNow(); } catch { /* keep the error below */ }
         throw e;
       }
       log("paused", { lost: !!e.lost });
       busy = false;
-      await refreshPlan();
+      await planNow();
       // A lost connection pauses too, and says so.
       return Object.assign(state(), { paused: true, lost: !!e.lost, message: e.lost ? e.message : null });
-    } finally {
-      busy = false;
-      syncAbort = null;
     }
-  });
+  }
 
   handle("ping-servers", async () => Promise.all(state().servers.map(ping)));
 
@@ -503,13 +535,20 @@ function registerIpc() {
     // seconds at most; offline or slow, PLAY goes ahead with what is installed).
     if (!busy) {
       const before = manifest && manifest.version;
+      // The look goes on after the wait: a release that arrives later is
+      // planned when it does (latestManifest() had already replaced the
+      // manifest, leaving the old release's plan beside the new release, so
+      // the window showed no update for it).
+      const look = latestManifest().then(async () => {
+        if (!manifest || manifest.version === before) return false;
+        await refreshPlan();
+        send("state-changed");
+        return true;
+      });
+      look.catch((e) => log("play-check", { error: e.message }));
       try {
-        await Promise.race([latestManifest(), new Promise((_, no) => setTimeout(() => no(new Error("slow")), 4000))]);
-        if (manifest && manifest.version !== before) {
-          await refreshPlan();
-          send("state-changed");
-          if (todo && todo.length && !sync.isHeld(settings.gamePath)) throw new Error("A new release is out: press Update to get it");
-        }
+        const changed = await Promise.race([look, new Promise((_, no) => setTimeout(() => no(new Error("slow")), 4000))]);
+        if (changed && todo && todo.length && !sync.isHeld(settings.gamePath)) throw new Error("A new release is out: press Update to get it");
       } catch (e) {
         if (/new release is out/.test(e.message)) throw e;
       }
@@ -621,6 +660,12 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
   });
   app.on("window-all-closed", () => app.quit());
+  // No page ever gets a <webview> or a window of its own (webviewTag is off;
+  // this holds for any web contents, not only the main window's).
+  app.on("web-contents-created", (_e, contents) => {
+    contents.on("will-attach-webview", (e) => e.preventDefault());
+    contents.setWindowOpenHandler(() => ({ action: "deny" }));
+  });
   // Quitting mid-download pauses first, so the progress file is written.
   let quitting = false;
   app.on("before-quit", (e) => {

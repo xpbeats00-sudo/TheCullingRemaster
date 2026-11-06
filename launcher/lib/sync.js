@@ -307,12 +307,27 @@ function move(from, to) {
 async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
   recover(gameRoot);
   const state = loadState(gameRoot);
+  // A plan only refreshes the verified records. If a commit or a restore
+  // changed the install while it was hashing (the launcher runs one folder
+  // job at a time, but nothing here relies on that), its old view of the
+  // install must not be written over theirs: that put a finished update back
+  // to the previous version, and then the next sync dropped the backup.
+  const seen = { version: state.version, previous: state.previous, held: !!state.held };
+  const keep = () => {
+    if (!fs.existsSync(gameRoot)) return;
+    const now = loadState(gameRoot);
+    if (now.version !== seen.version || now.previous !== seen.previous || !!now.held !== seen.held) {
+      Object.defineProperty(todo, "stale", { value: true, enumerable: false });
+      return;
+    }
+    saveState(gameRoot, state);
+  };
   const todo = [];
   const report = { ok: 0, missing: 0, changed: 0, staged: 0 };
   let n = 0;
   for (const f of manifest.files) {
     if (opts.signal && opts.signal.aborted) {
-      if (fs.existsSync(gameRoot)) saveState(gameRoot, state);
+      keep();
       throw new SyncPaused();
     }
     const target = targetPath(gameRoot, f.path);
@@ -355,7 +370,7 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
   pruneStaging(gameRoot, wanted);
   for (const p of Object.keys(state.staged)) if (!wanted.has(p)) delete state.staged[p];
   // A fresh install's folder isn't created just by looking at it.
-  if (fs.existsSync(gameRoot)) saveState(gameRoot, state);
+  keep();
   Object.defineProperty(todo, "report", { value: report, enumerable: false });
   return todo;
 }

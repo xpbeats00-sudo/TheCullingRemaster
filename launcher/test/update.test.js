@@ -524,6 +524,22 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(sync.compareVersions("1.0.9", "1.1.0"), -1);
     });
 
+    await test("a check that overlaps a restore (or an update's commit) doesn't write its old view over it", async () => {
+      const r2 = path.join(tmp, "overlap-game");
+      await install("v1", r2);
+      await install("v2", r2);
+      assert.strictEqual(sync.previousVersion(r2), "1.0.0");
+      // Check for updates / the reconnect's plan hashes every file (awaiting
+      // each); the restore runs while it does, as a second IPC call can.
+      let restored = null;
+      const look = await sync.plan(await get("v2"), r2, (done) => { if (done === 1) restored = sync.rollback(r2); }, { full: true });
+      assert.strictEqual(restored, "1.0.0");
+      assert.strictEqual(sync.installedVersion(r2), "1.0.0", "the restore stands (the plan wrote 1.1.0 back over it)");
+      assert.ok(sync.isHeld(r2), "still held: PLAY plays the restored version");
+      assert.ok(look.stale, "the overlapping plan says it is out of date");
+      assert.deepStrictEqual((await sync.plan(await get("v1"), r2)).length, 0, "the files are 1.0.0's");
+    });
+
     console.log("all %d update tests passed", passed);
   } finally {
     server.close();
