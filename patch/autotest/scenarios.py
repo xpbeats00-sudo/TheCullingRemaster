@@ -118,8 +118,31 @@ def pods_check(r, name, want):
                "pods closed: %s contestants, closest %s apart (%s team %s at %s, %s team %s at %s); 1 s after opening: closest %s (%s, %s)"
                % (pods.get("contestants"), pods.get("closest"), pods.get("a_name"), pods.get("a_team"), pods.get("a_at"),
                   pods.get("b_name"), pods.get("b_team"), pods.get("b_at"), ev.get("closest"), ev.get("a_name"), ev.get("b_name"))),
+            ok(name + ": the start chooser was given team 0 in a team mode (fix 12), the stock team otherwise",
+               spawn_ok(r), spawn_summary(r)),
             ok(name + ": no bot has a weapon besides its fists", ev["bots_armed"] == 0,
                "%d bots armed%s" % (ev["bots_armed"], (": " + ", ".join(ev["armed"])) if ev["armed"] else ""))]
+
+
+def spawn_summary(r):
+    sp = r.ev("spawn_team")
+    if not sp:
+        return "no spawn_team events"
+    f = sp[0]
+    teams = ",".join("%s:%d->%d" % (e["name"][:10], e["team"], e["given"]) for e in sp[:20])
+    return ("%d chooser calls; flags bPairTeams %s, bSpawnPairTogether %s, bSpawnPairBalanced %s; team map entries %s; "
+            "name:team at spawn->given %s" % (len(sp), f["pair_teams"], f["pair_together"], f["pair_balanced"],
+                                               sorted({e["team_starts"] for e in sp}), teams))
+
+
+def spawn_ok(r):
+    sp = r.ev("spawn_team")
+    start = first(r.ev("start"), {})
+    if not sp:
+        return False
+    if start.get("mode") == 2:
+        return all(e["given"] == 0 for e in sp) and all(e["team_starts"] == 0 for e in sp)
+    return all(e["given"] == e["team"] for e in sp)
 
 
 def board_check(r, name, want=16):
@@ -406,6 +429,8 @@ SCENARIOS = [
     ("pods_solo", "ffa_jungle", "pods", 240, lambda r: ran(r, "Solo pods") + pods_check(r, "Solo pods", 16)),
     ("pods_prison", "ffa_prison", "pods", 240, lambda r: ran(r, "Prison pods") + pods_check(r, "Prison pods", 16)),
     ("pods_duo", "coop2_jungle", "pods", 240, lambda r: ran(r, "Duo pods") + pods_check(r, "Duo pods", 16)),
+    ("pods_trio", "coop3_jungle", "pods", 240, lambda r: ran(r, "Trios pods") + pods_check(r, "Trios pods", 15)),
+    ("pods_quad", "coop4_jungle", "pods", 240, lambda r: ran(r, "Quads pods") + pods_check(r, "Quads pods", 16)),
     # Jungle and Prison have 16 starts (SpawnsDecentral): 16 contestants, 15 in Trios (5 whole trios).
     ("quads_win", "coop4_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Quads", 4, 4) + no_teamkill_check(r, "Quads")),
     ("trios_win", "coop3_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Trios", 3, 5) + no_teamkill_check(r, "Trios")),
