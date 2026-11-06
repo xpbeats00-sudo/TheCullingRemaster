@@ -161,7 +161,7 @@ def tests(a, stage):
         p("test_airdrop_prices.py", stage), p("test_weapon_balance.py", stage), p("test_bot_ai.py", stage),
         p("test_patch_assets.py", stage),
         p("test_weather.py", stage), p("test_tree_collision.py", stage), p("test_measure_loading.py"),
-        p("test_netplay_check.py", exe),
+        p("test_netplay_check.py", exe), p("test_netplay.py", exe),
         # The native module (fixes 5, 7-10 and the weather) compiled and run against fake game
         # objects: these need the Visual Studio C++ tools, as build_showdown_rounds.py does.
         p("build_showdown_rounds.py", "--check"), p("test_native_module.py"), p("test_weather_native.py", exe),
