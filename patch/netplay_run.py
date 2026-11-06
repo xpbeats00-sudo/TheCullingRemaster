@@ -43,6 +43,27 @@ LOCAL = os.environ["LOCALAPPDATA"]
 GAME = os.path.join(LOCAL, "TheCullingRemaster", "Game")
 WIN64 = os.path.join(GAME, "Victory", "Binaries", "Win64")
 LOGS = os.path.join(LOCAL, "TheCulling", "Saved", "Logs")
+SETTINGS = os.path.join(LOCAL, "TheCulling", "Saved", "Config", "WindowsClient", "GameUserSettings.ini")
+WINDOW = {"FullscreenMode": "2", "LastConfirmedFullscreenMode": "2", "PreferredFullscreenMode": "2",
+          "ResolutionSizeX": "960", "ResolutionSizeY": "540", "LastUserConfirmedResolutionSizeX": "960",
+          "LastUserConfirmedResolutionSizeY": "540", "MasterVolume": "0"}
+
+
+def set_window(original, x):
+    """GameUserSettings.ini: windowed 960x540 at (x, 40), from the original bytes (restored after)."""
+    if original is None:
+        return
+    want = dict(WINDOW, WindowPosX=str(x), WindowPosY="40")
+    lines = original.decode("utf-8", errors="replace").splitlines()
+    seen = set()
+    for i, ln in enumerate(lines):
+        k = ln.split("=", 1)[0]
+        if k in want and k not in seen:
+            lines[i] = "%s=%s" % (k, want[k])
+            seen.add(k)
+    open(SETTINGS, "w", encoding="utf-8", newline="\r\n").write("\n".join(lines) + "\n")
+
+
 STOCK_EXE = r"C:\Culling\TheCulling\Victory\Binaries\Win64\Victory.exe"
 PORT = 7777
 HOST_URL = ("Jungle_P?listen?bIsLanMatch?bEnableBots=true"
@@ -116,6 +137,7 @@ def main():
     ap.add_argument("--host-wait", type=int, default=120)
     ap.add_argument("--client-wait", type=int, default=90)
     ap.add_argument("--no-client", action="store_true")
+    ap.add_argument("--after-join", type=int, default=45)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     result = {"steps": {}, "evidence": {}}
@@ -137,6 +159,7 @@ def main():
     if not os.path.exists(keep):
         shutil.copy2(dst, keep)
     started = []
+    settings_bytes = open(SETTINGS, "rb").read() if os.path.exists(SETTINGS) else None
     log_mark = set(os.listdir(LOGS)) if os.path.isdir(LOGS) else set()
     try:
         shutil.copyfile(host_exe, dst)
@@ -147,6 +170,7 @@ def main():
             if os.path.exists(f):
                 os.remove(f)
 
+        set_window(settings_bytes, 0)
         host_l = launch(HOST_URL, host_trace, os.path.join(a.out, "host.func.log"))
         host = wait_game(host_l, 90)
         started += [p for p in (host,) if p]
@@ -172,6 +196,7 @@ def main():
         log(result["steps"])
 
         if host and host in pids and not a.no_client:
+            set_window(settings_bytes, 970)
             client_l = launch("127.0.0.1:%d" % PORT, client_trace, os.path.join(a.out, "client.func.log"))
             client = None
             t0 = time.time()
@@ -184,9 +209,11 @@ def main():
             while time.time() - t1 < a.client_wait:
                 time.sleep(3)
                 if "type=9" in read(host_trace):
-                    time.sleep(10)
+                    time.sleep(a.after_join)
                     break
             result["evidence"]["host_udp_at_end"] = udp_owners(PORT)[1]
+            alive = victories()
+            result["evidence"]["alive_at_end"] = {"host": host in alive, "client": client in alive}
             trace = read(host_trace)
             result["evidence"]["host_trace"] = trace.splitlines()[:200]
             result["evidence"]["client_trace"] = read(client_trace).splitlines()[:50]
@@ -209,7 +236,9 @@ def main():
             if p in started:
                 kill(p)
         shutil.copy2(keep, dst)
-        log("restored the test copy's Victory.exe")
+        if settings_bytes is not None:
+            open(SETTINGS, "wb").write(settings_bytes)
+        log("restored the test copy's Victory.exe and GameUserSettings.ini (byte for byte)")
         new_logs = sorted(set(os.listdir(LOGS)) - log_mark) if os.path.isdir(LOGS) else []
         for name in ["Victory.log", "Victory_2.log"] + new_logs:
             src = os.path.join(LOGS, name)

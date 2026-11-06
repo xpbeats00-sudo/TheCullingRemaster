@@ -26,7 +26,7 @@ OUT = os.path.join(HERE, "netplay_blob.py")
 # merged into one build later (see docs/NETPLAY_LISTEN_SERVER.md); the
 # standalone prototype puts .netp where the stock SizeOfImage is.
 SECTION_RVA = 0x35B4000
-ENTRIES = ("np_listen", "np_notify_accepting", "np_notify_accepted", "np_notify_control", "np_prelogin")
+ENTRIES = ("np_listen", "np_notify_accepting", "np_notify_accepted", "np_notify_control", "np_prelogin", "np_tick_flush")
 SELF = "np_self_rva"
 CL_FLAGS = ["/nologo", "/c", "/O1", "/GS-", "/Zl", "/Gy-", "/GR-", "/Oi", "/Gs1000000", "/W4", "/WX",
             "/wd4100", "/wd4127", "/volatileMetadata-"]

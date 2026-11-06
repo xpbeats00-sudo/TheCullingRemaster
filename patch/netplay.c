@@ -222,6 +222,9 @@ static void bind_world(void *world, void *driver)
     F(FN(R_FIND_ADD_COLL, find_add_coll_fn)(world, COLL_STATIC), O_COLL_NETDRIVER, void *) = driver;
 }
 
+/* The driver np_listen bound (compared, never freed here). */
+static void *listen_driver;
+
 /* Replaces LoadMap's call of UWorld::Listen(URL). */
 u8 np_listen(void *world, void *url)
 {
@@ -282,6 +285,7 @@ u8 np_listen(void *world, void *url)
         FN(R_SET_WORLD, set_world_fn)(driver, 0);
         return 0;
     }
+    listen_driver = driver;
     return 1;
 }
 
@@ -380,4 +384,281 @@ void np_notify_control(void *notify, void *conn, u8 type, void *bunch)
         kv(&l, "pc_vtable", conn ? vt_rva(F(conn, O_CONN_PC, void *)) : 0, 1);
         trace_end(&l);
     }
+}
+
+/* A signed value in a trace line. */
+static void kv_s(struct line *l, const char *k, i32 v)
+{
+    put_s(l, " ");
+    put_s(l, k);
+    put_s(l, "=");
+    if (v < 0) {
+        put_s(l, "-");
+        v = -v;
+    }
+    put_d(l, (u64)v);
+}
+
+/* ---- milestone 3: the host sends its world (ServerReplicateActors) ------ */
+
+/* This build has no UNetDriver::ServerReplicateActors (WITH_SERVER_CODE=0),
+ * but everything under it survives because the replay recorder uses it:
+ * UNetConnection::CreateChannel, UActorChannel::SetChannelActor and
+ * ReplicateActor, server NetGUID assignment inside the package map, and
+ * UNetDriver::NotifyActorDestroyed's channel close. np_tick_flush replaces the
+ * Steam driver's TickFlush slot and, on the host's listen driver, runs a
+ * minimal ServerReplicateActors first, modelled on
+ * UDemoNetDriver::ReplicateActor (VA 0x1412ee2e0), then the stock TickFlush.
+ * On a client it only traces what replication gave it. */
+#define R_STEAM_TICKFLUSH  0x2335370   /* USteamNetDriver::TickFlush(driver, float) (calls UNetDriver::TickFlush) */
+#define R_CREATE_CHANNEL   0x142d660   /* UNetConnection::CreateChannel(conn, type, bOpenedLocally, index) */
+#define R_SET_CH_ACTOR     0x12e0d70   /* UActorChannel::SetChannelActor(ch, actor) */
+#define R_REPLICATE_ACTOR  0x12dcf30   /* UActorChannel::ReplicateActor(ch) -> bool */
+#define R_PRE_REPLICATION  0x110bf50   /* AActor::CallPreReplication(actor, driver) */
+#define R_WEAK_SET         0x69c2a0    /* FWeakObjectPtr::operator=(weak, obj) */
+#define R_WEAK_GET         0x69c470    /* FWeakObjectPtr::Get(weak) -> obj */
+#define CHTYPE_ACTOR       2
+#define O_ND_CLIENTS       0x78        /* UNetDriver::ClientConnections (TArray<UNetConnection*>) */
+#define O_ND_WORLD         0xa0
+#define O_CONN_CHMAP       0x334b8     /* UNetConnection::ActorChannels (TMap<TWeakObjectPtr<AActor>, UActorChannel*>) */
+#define O_CH_FLAGS         0x30        /* UChannel: bit 1 Closing */
+#define VT_CONN_LEVEL_INIT 0x2c8       /* UNetConnection::ClientHasInitializedLevelFor(conn, actor) */
+#define VT_CONN_NET_READY  0x268       /* UNetConnection::IsNetReady(conn, bool Saturate) -> int (game code 0x140209ea5) */
+#define MAX_OPEN_PER_PASS  4           /* new actor channels per connection per pass (reliable buffer) */
+#define O_GS_PLAYERS       0x418       /* AGameState::PlayerArray */
+#define O_W_CONTROLLERS    0x178       /* UWorld controller list (weak pointers) */
+#define O_W_PAWNS          0x198       /* UWorld pawn list (weak pointers) */
+#define O_C_PAWN           0x408       /* AController::Pawn */
+#define O_A_FLAGS          0x84        /* AActor bits: 2 bNetTemporary, 4 bNetStartup, 8 bOnlyRelevantToOwner, 0x40 bTearOff */
+#define O_A_REMOTE_ROLE    0x90
+#define O_A_OWNER          0x98
+#define O_A_ROOT           0x1e0
+#define O_SC_LOCATION      0x1a0       /* USceneComponent: world location */
+#define MAX_REP            256
+#define REP_PERIOD_MS      50
+
+typedef void (*tick_flush_fn)(void *driver, float dt);
+typedef void *(*create_channel_fn)(void *conn, i32 type, u8 local, i32 index);
+typedef void (*set_ch_actor_fn)(void *ch, void *actor);
+typedef u8 (*replicate_fn)(void *ch);
+typedef void (*pre_rep_fn)(void *actor, void *driver);
+typedef void (*weak_set_fn)(void *weak, void *obj);
+typedef void *(*weak_get_fn)(void *weak);
+typedef u8 (*conn_actor_fn)(void *conn, void *actor);
+typedef i32 (*conn_ready_fn)(void *conn, u8 saturate);
+
+struct weak { i32 index, serial; };
+struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; };
+
+/* The channel already replicating actor on conn: UNetConnection::ActorChannels'
+ * hash lookup, as UDemoNetDriver::ReplicateActor does it (key = the actor's
+ * FWeakObjectPtr, hash = index ^ serial, 0x18-byte elements {key, channel,
+ * next}; map +0x08 count, +0x34 free count, +0x38 inline hash, +0x40 hash
+ * pointer, +0x48 hash size). */
+static void *find_channel(u8 *conn, void *actor)
+{
+    struct weak key;
+    u8 *map = conn + O_CONN_CHMAP;
+    i32 num = F(map, 0x08, i32) - F(map, 0x34, i32);
+    i32 *hash, i, size;
+    u8 *elems = F(map, 0x00, u8 *);
+    FN(R_WEAK_SET, weak_set_fn)(&key, actor);
+    if (num <= 0 || !elems)
+        return 0;
+    hash = F(map, 0x40, i32 *) ? F(map, 0x40, i32 *) : (i32 *)(map + 0x38);
+    size = F(map, 0x48, i32);
+    if (size <= 0)
+        return 0;
+    for (i = hash[(u32)(key.index ^ key.serial) & (u32)(size - 1)]; i != -1; i = F(elems + (u64)i * 0x18, 0x10, i32)) {
+        u8 *e = elems + (u64)i * 0x18;
+        if (F(e, 0, i32) == key.index && F(e, 4, i32) == key.serial)
+            return F(e, 8, void *);
+    }
+    return 0;
+}
+
+/* Is actor, or something that owns it, the connection's PlayerController? */
+static i32 owned_by(u8 *actor, void *pc)
+{
+    i32 depth;
+    for (depth = 0; actor && depth < 8; depth++, actor = F(actor, O_A_OWNER, u8 *))
+        if (actor == pc)
+            return 1;
+    return 0;
+}
+
+static void replicate_to(u8 *conn, u8 *actor, void *pc, struct rep_stats *st)
+{
+    u8 flags = F(actor, O_A_FLAGS, u8);
+    void *ch;
+    if (!F(actor, O_A_REMOTE_ROLE, u8) && !(flags & 0x40)) { st->skipped++; return; }
+    if ((flags & 0x08) && !owned_by(actor, pc)) { st->skipped++; return; }
+    if ((flags & 0x04) && !((conn_actor_fn)(*(void ***)conn)[VT_CONN_LEVEL_INIT / 8])(conn, actor)) { st->skipped++; return; }
+    ch = find_channel(conn, actor);
+    if (!ch) {
+        if (flags & 0x40) { st->skipped++; return; }        /* torn off: nothing new to open */
+        if (st->opened_now >= MAX_OPEN_PER_PASS) { st->deferred++; return; }
+        st->opened_now++;
+        ch = FN(R_CREATE_CHANNEL, create_channel_fn)(conn, CHTYPE_ACTOR, 1, -1);
+        if (!ch) { st->skipped++; return; }
+        FN(R_SET_CH_ACTOR, set_ch_actor_fn)(ch, actor);
+        st->opened++;
+    }
+    if (F(ch, O_CH_FLAGS, u8) & 2)
+        return;                                              /* closing */
+    FN(R_REPLICATE_ACTOR, replicate_fn)(ch);
+    st->replicated++;
+}
+
+/* The actors replicated: the game state, its player states, every
+ * controller and every pawn in the world (no relevancy culling yet). */
+static i32 collect(u8 *world, u8 **out)
+{
+    i32 n = 0, i, num, pass;
+    u8 *gm = F(world, O_WORLD_AUTH_GM, u8 *);
+    u8 *gs = gm ? F(gm, O_GM_GAMESTATE, u8 *) : 0;
+    if (gs) {
+        u8 **ps = F(gs, O_GS_PLAYERS, u8 **);
+        out[n++] = gs;
+        num = F(gs, O_GS_PLAYERS + 8, i32);
+        for (i = 0; ps && i < num && n < MAX_REP; i++)
+            if (ps[i])
+                out[n++] = ps[i];
+    }
+    for (pass = 0; pass < 2; pass++) {
+        u8 *list = world + (pass ? O_W_PAWNS : O_W_CONTROLLERS);
+        u8 *data = F(list, 0, u8 *);
+        num = F(list, 8, i32);
+        for (i = 0; data && i < num && n < MAX_REP; i++) {
+            u8 *a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
+            if (a)
+                out[n++] = a;
+        }
+    }
+    return n;
+}
+
+static u32 last_rep, last_trace, last_alive;
+static i32 prerep_state = 1;       /* 1 = not looked up yet, 2 = on, 3 = off */
+
+/* CULLING_NETPLAY_PREREP=1 turns on AActor::CallPreReplication before
+ * replicating (it updates replicated movement); off until it's proven safe
+ * in game. */
+static i32 prerep_on(void)
+{
+    static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','P','R','E','R','E','P',0 };
+    u16 v[8];
+    if (prerep_state == 1) {
+        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(var, v, 8);
+        prerep_state = (n == 1 && v[0] == '1') ? 2 : 3;
+    }
+    return prerep_state == 2;
+}
+
+static void server_replicate(u8 *driver)
+{
+    u8 *actors[MAX_REP];
+    u8 *world = F(driver, O_ND_WORLD, u8 *);
+    u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
+    i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), n, i, c, live = 0;
+    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0 };
+    struct line l;
+    u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+    if (now - last_alive >= 5000 && trace_begin(&l, "host-alive")) {
+        last_alive = now;
+        kv(&l, "clients", (u64)(nconn > 0 ? nconn : 0), 0);
+        kv(&l, "state0", nconn > 0 && conns && conns[0] ? (u64)F(conns[0], O_CONN_STATE, i32) : 0, 0);
+        kv(&l, "world", (u64)world, 1);
+        trace_end(&l);
+    }
+    if (!world || nconn <= 0 || now - last_rep < REP_PERIOD_MS)
+        return;
+    last_rep = now;
+    n = collect(world, actors);
+    if (prerep_on())
+        for (i = 0; i < n; i++)
+            FN(R_PRE_REPLICATION, pre_rep_fn)(actors[i], driver);
+    for (c = 0; c < nconn; c++) {
+        u8 *conn = conns[c];
+        void *pc = conn ? F(conn, O_CONN_PC, void *) : 0;
+        conn_ready_fn ready;
+        if (!conn || !pc || F(conn, O_CONN_STATE, i32) != 3)
+            continue;
+        live++;
+        ready = (conn_ready_fn)(*(void ***)conn)[VT_CONN_NET_READY / 8];
+        st.opened_now = 0;
+        if (!ready(conn, 0)) { st.saturated++; continue; }   /* as the engine does: wait for room */
+        replicate_to(conn, (u8 *)pc, pc, &st);               /* its own PlayerController first */
+        for (i = 0; i < n; i++) {
+            if (!ready(conn, 0)) { st.saturated++; break; }
+            if (actors[i] != pc)
+                replicate_to(conn, actors[i], pc, &st);
+        }
+    }
+    st.actors = (u64)n;
+    if (now - last_trace >= 2000 && trace_begin(&l, "rep")) {
+        last_trace = now;
+        kv(&l, "conns", (u64)live, 0);
+        kv(&l, "actors", st.actors, 0);
+        kv(&l, "opened", st.opened, 0);
+        kv(&l, "replicated", st.replicated, 0);
+        kv(&l, "skipped", st.skipped, 0);
+        kv(&l, "deferred", st.deferred, 0);
+        kv(&l, "saturated", st.saturated, 0);
+        trace_end(&l);
+    }
+}
+
+/* A client: every 2 s, what replication has given it. */
+static void client_trace(u8 *driver)
+{
+    struct line l;
+    u8 *conn = F(driver, O_ND_SERVERCONN, u8 *);
+    u8 *world = F(driver, O_ND_WORLD, u8 *);
+    u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+    u8 *pc, *mine, *data;
+    i32 i, num;
+    if (!conn || !world || now - last_trace < 2000 || !trace_begin(&l, "client"))
+        return;
+    last_trace = now;
+    pc = F(conn, O_CONN_PC, u8 *);
+    mine = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+    kv(&l, "state", (u64)F(conn, O_CONN_STATE, i32), 0);
+    kv(&l, "channels", (u64)(F(conn + O_CONN_CHMAP, 0x08, i32) - F(conn + O_CONN_CHMAP, 0x34, i32)), 0);
+    kv(&l, "pc", (u64)pc, 1);
+    kv(&l, "pawn", (u64)mine, 1);
+    trace_end(&l);
+    data = F(world + O_W_PAWNS, 0, u8 *);
+    num = F(world + O_W_PAWNS, 8, i32);
+    for (i = 0; data && i < num && i < 24; i++) {
+        u8 *p = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
+        u8 *root = p ? F(p, O_A_ROOT, u8 *) : 0;
+        if (!root || !trace_begin(&l, "client-pawn"))
+            continue;
+        kv(&l, "pawn", (u64)p, 1);
+        kv(&l, "mine", p == mine, 0);
+        kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
+        kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
+        kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
+        trace_end(&l);
+    }
+}
+
+/* Replaces the Steam driver's vtable slot +0x278 (TickFlush). */
+#define O_GM_NO_END        0x74d       /* AShooterGame_FreeForAll: while set, its end-of-match check never ends the match (showdown_rounds.c GM_NO_END) */
+
+void np_tick_flush(void *driver, float dt)
+{
+    if (driver && driver == listen_driver && !F(driver, O_ND_SERVERCONN, void *)) {
+        /* The host's match ended by itself ~35 s after listening, with or
+         * without a client (in game: the listen socket closed, the world
+         * left), so the test host holds it open. */
+        u8 *world = F(driver, O_ND_WORLD, u8 *);
+        u8 *gm = world ? F(world, O_WORLD_AUTH_GM, u8 *) : 0;
+        if (gm)
+            F(gm, O_GM_NO_END, u8) = 1;
+        server_replicate((u8 *)driver);
+    } else if (driver && F(driver, O_ND_SERVERCONN, void *))
+        client_trace((u8 *)driver);
+    FN(R_STEAM_TICKFLUSH, tick_flush_fn)(driver, dt);
 }

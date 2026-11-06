@@ -81,9 +81,9 @@ def _verify_patched(path):
     for slot, stock_fn, entry in PN.NOTIFY_SLOTS:
         got = struct.unpack_from("<Q", data, PN._off(PN.NOTIFY_VTABLE_VA + 8 * slot))[0]
         assert got == sect_va + getattr(NP, entry.upper()), (slot, hex(got))
-    slot_va, stock_fn, entry = PN.PRELOGIN_SLOT
-    got = struct.unpack_from("<Q", data, PN._off(slot_va))[0]
-    assert got == sect_va + getattr(NP, entry.upper()), ("prelogin", hex(got))
+    for slot_va, stock_fn, entry in (PN.PRELOGIN_SLOT, PN.TICKFLUSH_SLOT):
+        got = struct.unpack_from("<Q", data, PN._off(slot_va))[0]
+        assert got == sect_va + getattr(NP, entry.upper()), (entry, hex(got))
     # 3. InternalGetNetMode: driver ? jump to its "mov rcx, rax; jmp GetNetMode" : the stock demo path.
     nm = data[PN._off(PN.NETMODE_VA):PN._off(PN.NETMODE_VA) + len(PN.NETMODE_NEW)]
     assert nm == PN.NETMODE_NEW
@@ -263,6 +263,30 @@ def test_real_exe(path):
     assert IMAGE_BASE + base in calls, "AShooterGameMode::PreLogin doesn't call AGameModeBase::PreLogin %#x" % base
     msg = "Match is over!".encode("utf-16-le")
     assert data.find(msg) > 0, "no 'Match is over!' string"
+    # 2c. Milestone 3. The Steam driver's TickFlush slot (relocated) holds its TickFlush, which
+    # calls UNetDriver::TickFlush first; that reads ClientConnections (+0x78, Num +0x80). The
+    # replay recorder's ReplicateActor (the loop's template) calls CreateChannel(conn, 2, 1, -1),
+    # SetChannelActor(ch, actor) and ReplicateActor(ch), and reads the connection's ActorChannels
+    # map at the offsets find_channel uses.
+    slot_va, stock_fn, entry = PN.TICKFLUSH_SLOT
+    assert struct.unpack_from("<Q", data, PN._off(slot_va))[0] == stock_fn, "TickFlush slot"
+    assert slot_va - IMAGE_BASE in relocs, "TickFlush slot has no base relocation"
+    assert stock_fn - IMAGE_BASE == mac("R_STEAM_TICKFLUSH")
+    t = data[PN._off(stock_fn):PN._off(stock_fn) + 0x10]
+    assert t[9] == 0xE8 and stock_fn + 14 + struct.unpack_from("<i", t, 10)[0] == 0x14143F2B0, t.hex()
+    base_tf = data[PN._off(0x14143F2B0):PN._off(0x14143F2B0) + 0xd0]
+    assert bytes.fromhex("488b5778") in base_tf and bytes.fromhex("486387" + "80000000") in base_tf,         "UNetDriver::TickFlush doesn't read ClientConnections at +0x78/+0x80"
+    tmpl = 0x1412EE2E0
+    body = data[PN._off(tmpl):PN._off(tmpl) + 0x222]
+    calls = {tmpl + i + 5 + struct.unpack_from("<i", body, i + 1)[0] for i in range(len(body) - 5) if body[i] == 0xE8}
+    for name in ("R_CREATE_CHANNEL", "R_SET_CH_ACTOR", "R_REPLICATE_ACTOR", "R_WEAK_SET"):
+        assert IMAGE_BASE + mac(name) in calls, "the replay template doesn't call %s" % name
+    assert bytes.fromhex("83c9ff8d56024 1b001".replace(" ", "").replace("4 1", "41")) in body or         bytes.fromhex("4183c9ff") in body or bytes.fromhex("83c9ff") in body, "CreateChannel's index -1"
+    chmap = mac("O_CONN_CHMAP")
+    for off in (chmap, chmap + 0x08, chmap + 0x34, chmap + 0x38, chmap + 0x48):
+        assert struct.pack("<I", off) in body, "the template doesn't read the channel map at %#x" % off
+    pre = data[PN._off(IMAGE_BASE + mac("R_PRE_REPLICATION")):][:4]
+    assert pre[0] in (0x40, 0x48, 0x4c, 0x55, 0x53), "CallPreReplication start: %s" % pre.hex()
     # 3. InternalGetNetMode as the patch expects, and its demo path's GetNetMode call.
     o = PN._off(PN.NETMODE_VA)
     assert data[o:o + len(PN.NETMODE_STOCK)] == PN.NETMODE_STOCK
