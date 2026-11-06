@@ -88,6 +88,11 @@ Module._load = function (request) {
   if (request === "electron") return electron;
   return load.apply(this, arguments);
 };
+// The real game.isRunning asks tasklist for Victory.exe: with the game open on
+// this PC every sync would be refused ("Close The Culling first") and these
+// tests would fail for a reason that has nothing to do with them. The game is
+// never running here.
+require("../lib/game").isRunning = async () => false;
 
 let passed = 0;
 let current = null;
