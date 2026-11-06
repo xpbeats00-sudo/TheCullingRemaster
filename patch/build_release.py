@@ -155,6 +155,7 @@ def tests(a, stage):
         p("test_vfx_camos.py", stage),
         p("test_custom_match.py", stage), n("test_showdown_hud.js"), n("test_team_hud.js"), n("test_hud_layout.js"),
         n("test_ranked_hud.js"), n("test_ranked_menu.js"), n("test_showdown_menu.js"), n("test_remaster_panels.js"),
+        n("test_recent_menu.js"),
         # Coherent UI runs ES5 (and the stock scripts' const): one ES2015 line
         # stops a whole menu or HUD script, so every shipped UI script is linted.
         p("lint_es5.py", "--release"), p("test_lint_es5.py"), p("test_build_release.py"),

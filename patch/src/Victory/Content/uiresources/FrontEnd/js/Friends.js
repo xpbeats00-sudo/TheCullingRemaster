@@ -6,7 +6,16 @@
 //   which mode), invite them to your party, view their card. The party (up to
 //   4) shows at the top with Leave party; when its leader queues, everyone in
 //   it joins the same lobby.
-// - A party invite pops up over any menu screen with Accept / Decline.
+// - The panel's RECENT tab lists the players the server matched you with
+//   (server/recentplayers.js, docs/RECENT_PLAYERS_SYSTEM.md): how you met, the
+//   mode, map and when, their status, rank and friendship, and Add friend,
+//   Invite, Join (ask to join their party), and under More: Block, Report and
+//   Remove. Join requests to your party wait at the top, and the setting for
+//   who may invite you or ask to join (everyone, friends & recent, friends,
+//   nobody) and your blocked players are at the bottom. The server decides
+//   every action; the buttons only show what it allows.
+// - A party invite (or a join request) pops up over any menu screen with
+//   Accept / Decline.
 // - The player card: calling card, level, rank, record (wins, losses, kills,
 //   K/D, time played), the ranked season and Showdown. It opens from the
 //   friends and party lists, from a lobby row (MatchLobby.js) and from your own
@@ -237,8 +246,42 @@
     "not-party-leader": "Only the party leader can invite.",
     "party-in-queue": "That party is searching for a match: accept when its search is over.",
     "slow-down": "Slow down a moment.",
-    "no-account": "Sign in with your account to add friends."
+    "no-account": "Sign in with your account to add friends.",
+    // Recent players (and blocks, which the friends actions honour too).
+    "not-recent": "They're not on your recent players list.",
+    "unavailable": "That player isn't taking invites or requests from you.",
+    "blocked": "You blocked this player. Unblock them first.",
+    "in-match": "They're in a match. Ask again when it's over.",
+    "offline": "They're offline.",
+    "mode-full": "Their party's mode has no room for one more.",
+    "too-soon": "You just asked them. Give it a moment.",
+    "already-requested": "Your request is waiting for them.",
+    "no-request": "That request has expired.",
+    "requester-offline": "They went offline.",
+    "requester-busy": "They're in a match now.",
+    "already-reported": "You already reported this player today.",
+    "invalid-reason": "Pick a reason for the report.",
+    "invalid-setting": "That setting isn't available.",
+    "too-many-blocked": "Your blocked list is full.",
+    "not-blocked": "That player isn't blocked."
   };
+  // What a refused Recent action means, where it differs from the friends one.
+  var RECENT_ERRORS = {
+    "recent-join-request": { "not-party-leader": "Someone else leads their party: ask the leader.",
+      "party-in-queue": "Their party is searching for a match: ask when its search is over.",
+      "party-full": "Their party is full.", "already-in-party": "You're already in their party." },
+    "recent-join-accept": { "party-full": "Your party is full.", "party-in-queue": "Your party is searching: answer when the search is over.",
+      "not-party-leader": "Only the party leader can answer.", "mode-full": "Your party's mode has no room for one more." }
+  };
+  var RELATIONS = { party: "Party teammate", lobby: "Same lobby", team: "Teammate", opponent: "Opponent", match: "Same match" };
+  var PRIVACY = { everyone: "Everyone", recent: "Friends & recent", friends: "Friends", nobody: "Nobody" };
+  var PRIVACY_ORDER = ["everyone", "recent", "friends", "nobody"];
+  var REASONS = { cheating: "Cheating", abuse: "Abusive", name: "Bad name", griefing: "Griefing", other: "Other" };
+  var REASON_ORDER = ["cheating", "abuse", "name", "griefing", "other"];
+  // Why an action is off, shown under an opened row.
+  var WHY = { "unavailable": "Their settings don't allow it.", "not-party-leader": "Only a party leader can.",
+    "already-in-party": "Already in the same party.", "party-full": "That party is full.", "offline": "They're offline.",
+    "in-match": "They're in a match.", "party-in-queue": "Searching for a match.", "mode-full": "No room in their party's mode." };
   var CSS = [
     "#remaster-friends, #remaster-card { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
     // z-index 100 (RemasterOverlay sets it when shown): over the stock player card.
@@ -285,6 +328,22 @@
     ".rf-row .rf-btn { margin-left: 0.35vw; padding: 0.6vh 0.75vw; font-size: 0.64vw; }",
     ".rf-footer { display: flex; align-items: center; justify-content: space-between; }",
     ".rf-footer .rf-hint { flex: 1 1 auto; }",
+    // FRIENDS / RECENT tabs, and the RECENT tab's rows.
+    ".rf-tabs { display: flex; margin-top: 1.4vh; }",
+    ".rf-tab { flex: 0 0 auto; margin-right: 0.5vw; padding: 0.7vh 1.2vw; border-radius: 3vh; font: 0.8vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.12vw; text-transform: uppercase; background: rgba(255, 255, 255, 0.08); cursor: pointer; }",
+    ".rf-tab:hover { background: rgba(255, 255, 255, 0.18); }",
+    ".rf-tab.on { background: rgba(204, 0, 0, 1); }",
+    ".rf-tab span { margin-left: 0.4vw; padding: 0 0.35vw; border-radius: 1vh; background: rgba(255, 255, 255, 0.85); color: rgba(150, 0, 0, 1); }",
+    ".rf-add.hidden { display: none; }",
+    ".rf-row.tall { height: 7vh; }",
+    ".rp-detail { margin-top: 0.25vh; font-size: 0.64vw; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+    ".rp-more { display: flex; flex-wrap: wrap; align-items: center; margin: 0.4vh 0 0.2vh 2.8vw; }",
+    ".rp-more .rf-btn { margin: 0.3vh 0.35vw 0.3vh 0; padding: 0.55vh 0.75vw; font-size: 0.62vw; }",
+    ".rp-more .rp-why { flex: 1 1 100%; margin-bottom: 0.3vh; font-size: 0.66vw; opacity: 0.6; }",
+    ".rf-btn.danger { background: rgba(120, 0, 0, 1); }",
+    ".rp-choices { display: flex; flex-wrap: wrap; margin-top: 0.6vh; }",
+    ".rp-choices .rf-btn { margin: 0.3vh 0.4vw 0.3vh 0; }",
+    ".rp-choices .rf-btn.on { box-shadow: 0 0 0 0.12vw rgba(255, 255, 255, 0.85); }",
     // The player card.
     ".rc-panel { position: relative; width: 44vw; max-height: 86vh; overflow-y: auto; padding: 0 0 2.2vh; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     ".rc-banner { position: relative; display: flex; align-items: center; height: 13vh; padding: 0 5vw 0 1.6vw; background-color: rgba(30, 20, 24, 1); background-size: cover; background-position: center; border-radius: 1.8vh 1.8vh 0 0; overflow: hidden; }",
@@ -334,6 +393,12 @@
   var removing = null;        // a friend whose Remove was clicked once
   var unavailable = null;     // why there is no friends list (no account)
   var noAccount = false;      // the server said this player has no account
+  var tab = "friends";        // the panel's tab: friends or recent
+  var recentData = null;      // the last remaster-recent push
+  var recentUnavailable = null;
+  var expanded = null;        // the recent player whose row shows Block / Report / Remove
+  var reporting = null;       // ... and whose row shows the report reasons
+  var blocking = null;        // a Block clicked once
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -482,6 +547,13 @@
     var top = box.scrollTop;
     box.textContent = "";
     panel.querySelector(".rf-you").textContent = "Signed in as " + myName();
+    renderTabs();
+    if (tab === "recent") {
+      renderRecent(box);
+      box.scrollTop = top;
+      if (window.RemasterOverlay) RemasterOverlay.refresh(panel);
+      return;
+    }
     if (!data || offline()) {
       box.appendChild(el("div", "rf-hint", offline() ? "Offline — reconnect to see friends." : unavailable || "Connecting..."));
       if (window.RemasterOverlay) RemasterOverlay.refresh(panel);
@@ -552,15 +624,226 @@
     if (window.RemasterOverlay) RemasterOverlay.refresh(panel);
   }
 
+  // ------------------------------------------------------------ the RECENT tab
+
+  function joinRequestCount() { return recentData ? recentData.joinRequests.length : 0; }
+
+  function renderTabs() {
+    var tabs = panel.querySelectorAll(".rf-tab");
+    for (var i = 0; i < tabs.length; i++) {
+      var t = tabs[i], on = t.getAttribute("data-tab") === tab;
+      t.className = "rf-tab" + (on ? " on" : "");
+      var n = t.getAttribute("data-tab") === "recent" ? joinRequestCount() : (data ? data.incoming.length + data.invites.length : 0);
+      t.textContent = t.getAttribute("data-tab") === "recent" ? "Recent" : "Friends";
+      if (n) t.appendChild(el("span", null, String(n)));
+    }
+    var add = panel.querySelector(".rf-add");
+    if (add) add.className = "rf-add" + (tab === "recent" ? " hidden" : "");
+  }
+
+  function setTab(name) {
+    if (tab === name) return;
+    tab = name;
+    expanded = reporting = blocking = null;
+    removing = null;
+    say("");
+    var box = panel && panel.querySelector(".rf-scroll");
+    if (box) box.scrollTop = 0;
+    if (tab === "recent") emit("recent-get");
+    renderPanel();
+  }
+
+  function ago(t) {
+    if (!t) return "";
+    var m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (m < 2) return "just now";
+    if (m < 60) return m + " min ago";
+    var h = Math.round(m / 60);
+    if (h < 48) return h + " h ago";
+    return Math.round(h / 24) + " days ago";
+  }
+
+  function mapName(m) {
+    if (!m || typeof m != "string") return "";
+    var night = /-night$/.test(m);
+    m = m.replace(/-night$/, "");
+    return m.charAt(0).toUpperCase() + m.slice(1) + (night ? " at night" : "");
+  }
+
+  // "Party teammate · Duo · Jungle · 12 min ago"
+  function playedLine(p) {
+    var parts = [RELATIONS[p.relation] || "Same lobby"];
+    if (p.mode) parts.push(p.mode);
+    if (p.map) parts.push(mapName(p.map));
+    if (p.playedAt) parts.push(ago(p.playedAt));
+    return parts.join(" · ");
+  }
+
+  function recentRow(p) {
+    var friend = p.friend === "friend";
+    var yours = p.party && p.party.yours;
+    var r = personRow(p, { tag: yours ? "Your party" : (friend ? "Friend" : null), tagQuiet: !yours });
+    r.className += " tall";
+    var who = r.querySelector(".rf-who");
+    if (who) who.appendChild(el("div", "rp-detail", playedLine(p)));
+    if (p.friend === "none") button(r, "Add friend", null, function () { emit("friend-request", { username: p.username }); });
+    else if (p.friend === "asked-you") button(r, "Accept", null, function () { emit("friend-accept", { username: p.username }); });
+    else if (p.friend === "requested") r.appendChild(el("span", "rf-tag quiet", "Requested"));
+    if (p.invite.sent) r.appendChild(el("span", "rf-tag quiet", "Invited"));
+    else if (p.invite.can) button(r, "Invite", null, function () { emit("recent-invite", { username: p.username }); });
+    if (p.join.sent) r.appendChild(el("span", "rf-tag quiet", "Asked"));
+    else if (p.join.can) button(r, "Join", null, function () { emit("recent-join-request", { username: p.username }); });
+    button(r, expanded === p.username ? "Less" : "More", "quiet", function () {
+      expanded = expanded === p.username ? null : p.username;
+      reporting = blocking = null;
+      renderPanel();
+    });
+    return r;
+  }
+
+  // Block / Report / Remove, and why Invite or Join is off.
+  function moreRow(p) {
+    var m = el("div", "rp-more");
+    var why = [];
+    if (!p.invite.can && !p.invite.sent && WHY[p.invite.reason]) why.push("Invite: " + WHY[p.invite.reason]);
+    if (!p.join.can && !p.join.sent && WHY[p.join.reason]) why.push("Join: " + WHY[p.join.reason]);
+    if (p.party && !p.party.yours) why.push("Their party: " + p.party.size + "/" + p.party.max + (p.party.leads ? ", they lead" : ""));
+    if (p.nameThen && p.nameThen !== p.username) why.push("Played as " + p.nameThen);
+    if (why.length) m.appendChild(el("div", "rp-why", why.join(" · ")));
+    if (reporting === p.username) {
+      m.appendChild(el("div", "rp-why", "Report " + p.username + " for:"));
+      REASON_ORDER.forEach(function (reason) {
+        if (recentData.reportReasons.indexOf(reason) < 0) return;
+        button(m, REASONS[reason], "quiet", function () {
+          reporting = null;
+          expanded = null;
+          emit("recent-report", { username: p.username, reason: reason });
+          renderPanel();
+        });
+      });
+      button(m, "Cancel", "quiet", function () { reporting = null; renderPanel(); });
+      return m;
+    }
+    button(m, blocking === p.username ? "Sure? Block" : "Block", "danger", function () {
+      if (blocking === p.username) { blocking = null; expanded = null; emit("recent-block", { username: p.username }); renderPanel(); }
+      else { blocking = p.username; renderPanel(); }
+    });
+    button(m, "Report", "quiet", function () { reporting = p.username; blocking = null; renderPanel(); });
+    button(m, "Remove from list", "quiet", function () { expanded = null; emit("recent-remove", { username: p.username }); renderPanel(); });
+    return m;
+  }
+
+  function renderRecent(box) {
+    if (!recentData || offline()) {
+      box.appendChild(el("div", "rf-hint", offline() ? "Offline — reconnect to see recent players."
+        : recentUnavailable || "Connecting..."));
+      return;
+    }
+    var d = recentData;
+    if (d.joinRequests.length) {
+      var jr = section(box, "Join requests", String(d.joinRequests.length));
+      d.joinRequests.forEach(function (q) {
+        var r = personRow(q.from, { line: "Wants to join your party" });
+        button(r, "Accept", null, function () { emit("recent-join-accept", { requestId: q.requestId }); });
+        button(r, "Decline", "quiet", function () { emit("recent-join-decline", { requestId: q.requestId }); });
+        jr.appendChild(r);
+      });
+    }
+    var list = section(box, "Recent players", d.players.length ? d.players.length + " · last " + (d.limit || 50) : null);
+    if (!d.players.length) list.appendChild(el("div", "rf-hint", "Players you queue into a match with show up here, newest first."));
+    d.players.forEach(function (p) {
+      list.appendChild(recentRow(p));
+      if (expanded === p.username) list.appendChild(moreRow(p));
+    });
+    var set = section(box, "Who can invite you or ask to join");
+    var choices = el("div", "rp-choices");
+    PRIVACY_ORDER.forEach(function (v) {
+      if (d.privacyOptions.indexOf(v) < 0) return;
+      var on = d.settings.join === v;
+      button(choices, PRIVACY[v], "quiet" + (on ? " on" : ""), function () { if (!on) emit("recent-settings", { join: v }); });
+    });
+    set.appendChild(choices);
+    set.appendChild(el("div", "rf-hint", d.settings.join === "nobody" ? "Nobody can invite you or ask to join, friends included."
+      : d.settings.join === "friends" ? "Only your friends can invite you or ask to join."
+      : d.settings.join === "everyone" ? "Anyone you've played with or befriended can invite you or ask to join."
+      : "Your friends and your recent players can invite you or ask to join."));
+    if (d.blocked.length) {
+      var bl = section(box, "Blocked", String(d.blocked.length));
+      d.blocked.forEach(function (b) {
+        var r = el("div", "rf-row");
+        r.appendChild(el("span", "rf-level", ""));
+        var who = el("div", "rf-who");
+        who.appendChild(el("div", "rf-name", b.username));
+        who.appendChild(el("div", "rf-status none", "Can't invite you, join you or see you here"));
+        r.appendChild(who);
+        button(r, "Unblock", "quiet", function () { emit("recent-unblock", { username: b.username }); });
+        bl.appendChild(r);
+      });
+    }
+  }
+
+  // The server's Recent tab as it draws it (lists and fields may be missing).
+  function recentPayload(m) {
+    if (!m || typeof m != "object") return recentData;
+    m.players = rows(m.players);
+    m.players.forEach(function (p) {
+      if (!p.invite || typeof p.invite != "object") p.invite = { can: false };
+      if (!p.join || typeof p.join != "object") p.join = { can: false };
+      if (p.party && typeof p.party != "object") p.party = null;
+      if (typeof p.username != "string") p.username = "Player";
+    });
+    m.joinRequests = rows(m.joinRequests).filter(function (q) { return q.from && typeof q.from == "object" && q.requestId; });
+    m.blocked = rows(m.blocked);
+    if (!m.settings || typeof m.settings != "object") m.settings = { join: "recent" };
+    if (!m.privacyOptions || typeof m.privacyOptions.indexOf != "function") m.privacyOptions = PRIVACY_ORDER.slice();
+    if (!m.reportReasons || typeof m.reportReasons.indexOf != "function") m.reportReasons = REASON_ORDER.slice();
+    return m;
+  }
+
+  function onRecentResult(r) {
+    if (r.action === "recent-get") {
+      if (r.error) {
+        recentUnavailable = r.error === "slow-down" ? null : r.error === "no-account" ? "Sign in with your account to see recent players."
+          : ERRORS[r.error] || "Recent players are unavailable right now.";
+        renderPanel();
+      }
+      return;
+    }
+    var who = r.username || "";
+    if (r.error) {
+      var special = RECENT_ERRORS[r.action] && RECENT_ERRORS[r.action][r.error];
+      return say(special || ERRORS[r.error] || "That didn't work.");
+    }
+    if (r.action === "recent-invite") say("Party invite sent to " + who + ".", true);
+    else if (r.action === "recent-join-request") say("Asked to join " + who + "'s party.", true);
+    else if (r.action === "recent-join-accept") say(who + " joined your party.", true);
+    else if (r.action === "recent-join-accepted") say("You joined " + who + "'s party.", true);
+    else if (r.action === "recent-join-decline") say("Request declined.", true);
+    else if (r.action === "recent-block") say(who + " is blocked.", true);
+    else if (r.action === "recent-unblock") say(who + " is unblocked.", true);
+    else if (r.action === "recent-report") say("Report sent. Thanks: every report is read by the team.", true);
+    else if (r.action === "recent-remove") say(who + " was removed from your recent players.", true);
+    else if (r.action === "recent-settings") say("Saved: " + (PRIVACY[r.join] || r.join) + " can invite you or ask to join.", true);
+    else say("");
+  }
+
   function buildPanel() {
     if (panel) return panel;
     style();
     panel = overlay("remaster-friends");
     var p = el("div", "rf-panel");
     p.innerHTML = '<div class="rf-close">X</div><div class="rf-title">Friends</div><div class="rf-you"></div>' +
+      '<div class="rf-tabs"></div>' +
       '<div class="rf-add"><input type="text" maxlength="20" placeholder="Add a friend by username"></div>' +
       '<div class="rf-msg"></div><div class="rf-scroll"></div>';
     panel.appendChild(p);
+    // FRIENDS and RECENT (players you were matched with).
+    ["friends", "recent"].forEach(function (name) {
+      var t = el("span", "rf-tab", name === "recent" ? "Recent" : "Friends");
+      t.setAttribute("data-tab", name);
+      t.addEventListener("click", function (e) { e.stopPropagation(); setTab(name); });
+      p.querySelector(".rf-tabs").appendChild(t);
+    });
     var input = p.querySelector("input");
     function add() {
       var name = input.value.replace(/^\s+|\s+$/g, "");
@@ -582,7 +865,9 @@
   // and their buttons, in order), then the close button.
   function panelItems() {
     var out = [], parts = [".rf-add input", ".rf-add .rf-btn"], i, n;
-    for (i = 0; i < parts.length; i++) { n = panel.querySelector(parts[i]); if (n) out.push(n); }
+    n = panel.querySelectorAll(".rf-tabs .rf-tab");
+    for (i = 0; i < n.length; i++) out.push(n[i]);
+    for (i = 0; i < parts.length; i++) { n = panel.querySelector(parts[i]); if (n && tab === "friends") out.push(n); }
     n = panel.querySelectorAll(".rf-scroll .rf-row.clickable, .rf-scroll .rf-btn");
     for (i = 0; i < n.length; i++) out.push(n[i]);
     out.push(panel.querySelector(".rf-close"));
@@ -595,12 +880,17 @@
     hideInvite();                   // the panel lists the invite too
     say(message.text, message.ok);
     renderPanel();
-    // With a gamepad, start on a waiting party invite's Join, else the add field.
-    var start = 0;
-    if (data && data.invites && data.invites.length) {
-      var items = panelItems(), join = panel.querySelector(".rf-scroll .rf-btn");
-      for (var i = 0; i < items.length; i++) if (items[i] === join) start = i;
+    // With a gamepad, start on a waiting party invite's Join (or a join
+    // request's Accept on RECENT), else the add field (RECENT: its tab).
+    var start = 0, items = panelItems(), i;
+    var first = tab === "friends" ? panel.querySelector(".rf-add input") : panel.querySelectorAll(".rf-tabs .rf-tab")[1];
+    for (i = 0; i < items.length; i++) if (items[i] === first) start = i;
+    var waiting = tab === "recent" ? joinRequestCount() : data && data.invites && data.invites.length;
+    if (waiting) {
+      var join = panel.querySelector(".rf-scroll .rf-btn");
+      for (i = 0; i < items.length; i++) if (items[i] === join) start = i;
     }
+    if (tab === "recent") emit("recent-get");
     if (window.RemasterOverlay) RemasterOverlay.open(panel, { close: close, items: panelItems, initial: start,
       submit: function () { panel.addFriend(); } });
     // Offline (ClientWeb.js doesn't reconnect by itself: RECONNECT_AUTOMATICALLY
@@ -611,7 +901,13 @@
     }
     emit("friends-get");
     var gamepad = typeof FooterData != "undefined" && FooterData.bHasGamepad;
-    if (!gamepad || !start) { try { panel.querySelector("input").focus(); } catch (e) { /* no focus */ } }
+    if (tab === "friends" && (!gamepad || !waiting)) { try { panel.querySelector("input").focus(); } catch (e) { /* no focus */ } }
+  }
+
+  // Opens the panel on RECENT.
+  function openRecent() {
+    if (tab !== "recent") { tab = "recent"; expanded = reporting = blocking = null; say(""); }
+    open();
   }
 
   function close() {
@@ -625,30 +921,44 @@
     // the page every 40 ms, hidden or not (they are drawn again on open).
     if (panel) panel.querySelector(".rf-scroll").textContent = "";
     removing = null;
+    expanded = reporting = blocking = null;
     if (window.RemasterOverlay) RemasterOverlay.close(panel);
   }
 
-  // The main menu's FRIENDS item: how many requests and invites wait.
+  // The main menu's FRIENDS item: how many requests, invites and join requests wait.
   function badge() {
     var item = document.getElementById("remaster-friends-item");
     var label = item && item.querySelector(".vertical-list-menu-item");
     if (!label) return;
-    var n = data ? data.incoming.length + (data.invites ? data.invites.length : 0) : 0;
+    var n = (data ? data.incoming.length + (data.invites ? data.invites.length : 0) : 0) + joinRequestCount();
     label.textContent = n ? "FRIENDS (" + n + ")" : "FRIENDS";
   }
 
   // ------------------------------------------------------------ party invite toast
 
   function showInvite(msg) {
+    showToast(msg.from.username, " invited you to their party", "Join",
+      function () { emit("party-accept", { partyId: msg.partyId }); },
+      function () { emit("party-decline", { partyId: msg.partyId }); });
+  }
+
+  // A recent player asks to join your party (you lead it, or will).
+  function showJoinRequest(msg) {
+    showToast(msg.from.username, " asks to join your party", "Accept",
+      function () { emit("recent-join-accept", { requestId: msg.requestId }); },
+      function () { emit("recent-join-decline", { requestId: msg.requestId }); });
+  }
+
+  function showToast(name, text, yes, onYes, onNo) {
     style();
     if (!toast) { toast = overlay("remaster-party-toast"); }
     toast.textContent = "";
     var t = el("span", "rt-text");
-    t.appendChild(el("b", null, msg.from.username));
-    t.appendChild(document.createTextNode(" invited you to their party"));
+    t.appendChild(el("b", null, name));
+    t.appendChild(document.createTextNode(text));
     toast.appendChild(t);
-    button(toast, "Join", null, function () { emit("party-accept", { partyId: msg.partyId }); hideInvite(); });
-    button(toast, "Decline", "quiet", function () { emit("party-decline", { partyId: msg.partyId }); hideInvite(); });
+    button(toast, yes, null, function () { onYes(); hideInvite(); });
+    button(toast, "Decline", "quiet", function () { onNo(); hideInvite(); });
     toast.className = "";
     clearTimeout(toast.timer);
     toast.timer = setTimeout(hideInvite, 30000);
@@ -857,10 +1167,19 @@
       if (msg && typeof msg == "object" && msg.found) renderCard(cardData(msg), true);
       else if (pendingCard) renderCard(pendingCard, false);
     }
+    // Recent players (the RECENT tab).
+    else if (name === "remaster-recent") { recentData = recentPayload(msg); recentUnavailable = null; renderPanel(); badge(); }
+    else if (name === "remaster-recent-result") onRecentResult(msg && typeof msg == "object" ? msg : {});
+    else if (name === "remaster-join-request") {
+      if (msg && msg.from && msg.from.username && msg.requestId) {
+        showJoinRequest(msg);
+        emit("recent-get");             // the tab and the badge list it too
+      }
+    }
   }
 
-  window.RemasterFriends = { open: open, close: close, showCard: showCard, on: on,
-    connected: function () { emit("friends-get"); },
+  window.RemasterFriends = { open: open, openRecent: openRecent, close: close, showCard: showCard, on: on,
+    connected: function () { emit("friends-get"); if (tab === "recent" && panel && panel.className !== "hidden") emit("recent-get"); },
     disconnected: function () { renderPanel(); renderParty(); },
     // Your account username from the server; false: no account; null: not known yet.
     account: function () { return data ? data.you || false : (noAccount ? false : null); } };
