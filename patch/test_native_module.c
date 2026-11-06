@@ -1,6 +1,6 @@
 /* Runs the native module (showdown_rounds.c, compiled with the blob's own
  * flags) against fake game objects - Duo, team sizes, the teammates' HUD
- * report, Showdown (1v1 and team) and the Chokening: a fake image holds a jump at every game
+ * report, Showdown (1v1 and team, and the arena's sides) and the Chokening: a fake image holds a jump at every game
  * function the tested paths call, to the stand-ins below, and sd_self_rva is
  * set so the module's image base is the fake image.
  *
@@ -22,6 +22,7 @@ char sd_should_end(u8 *gm);
 void sd_rating(u8 *ps, void *activity, void *player, i32 value);
 u8 *sd_gas_instigator(u8 *wound);
 char sd_teams(u8 *gs);
+void sd_sides_probe(i32 *out);
 void sd_spawn_bots(u8 *gm);
 
 #define F(p, off, type) (*(type *)((u8 *)(p) + (off)))
@@ -424,7 +425,7 @@ static void test_team_sizes(void)
     CHECK(set_team_calls == NP - 1 && F(tps[3], 0x490, i32) == 2 && F(tps[5], 0x490, i32) == 2);
     sort_calls = 0;
     CHECK(sd_teams(0) == 7 && sort_calls == 1);       /* no game state: just the sort */
-    printf("ok    team sizes: Showdown only with ?TeamSize= 2-8; Solo and others never; holes, no game mode\n");
+    printf("ok    team sizes: Showdown only with ?TeamSize= 2-8 (past 4: 4); Solo and others never; holes, no game mode\n");
 
     /* Duo regression (in game, a build whose sd_teams did Duo's pairing on the
        refresh's own call left Duo with no teammate): Duo is paired by fix 4's
@@ -521,6 +522,24 @@ static u8 *new_pawn(u8 *c)
     return p;
 }
 static void restart_player(u8 *g, u8 *c) { (void)g; restarts++; new_pawn(c); }
+
+/* AActor::K2_TeleportTo: the pawn's new place (+0xf00), facing (+0xf0c) and
+   how often it was moved (+0xf18); refused while +0xf1c is set. */
+#define P_AT 0xf00
+#define P_ROT 0xf0c
+#define P_MOVES 0xf18
+#define P_REFUSE 0xf1c
+static int teleports;
+static char teleport(u8 *pawn, const float *at, const float *rot)
+{
+    CHECK(pawn && at && rot);
+    if (F(pawn, P_REFUSE, u8)) return 0;
+    memcpy(pawn + P_AT, at, 12);
+    memcpy(pawn + P_ROT, rot, 12);
+    F(pawn, P_MOVES, i32)++;
+    teleports++;
+    return 1;
+}
 static void unpossess(u8 *c) { F(c, 0x408, u8 *) = 0; }
 static void destroy(u8 *a) { kill_obj(a); }
 
@@ -652,6 +671,126 @@ static void test_showdown(void)
         }
     }
     printf("ok    team Showdown 2v2, 3v3, 4v4: a round ends when one team is down, first to 4\n");
+}
+
+/* Fighter i's pawn is at (x, y, 200) facing yaw, its controller too. */
+static int at_spot(int i, float x, float y, float yaw)
+{
+    u8 *p = F(fc[i], 0x408, u8 *);
+    float *a, *r, *cr;
+    if (!p || !F(p, P_MOVES, i32)) return 0;
+    a = (float *)(p + P_AT); r = (float *)(p + P_ROT); cr = (float *)(fc[i] + 0x430);
+    return a[0] == x && a[1] == y && a[2] == 200.0f && r[0] == 0.0f && r[1] == yaw && r[2] == 0.0f
+        && cr[0] == 0.0f && cr[1] == yaw && cr[2] == 0.0f;
+}
+
+static int sdr_size(char n)
+{
+    const char *m = last_message("SDR|");
+    size_t len = strlen(m);
+    return len > 2 && m[len - 2] == '|' && m[len - 1] == n;
+}
+
+static void test_sides(void)
+{
+    int i, k, size, moves;
+    i32 probe[2];
+    /* 1v1: you west, facing east; the rival east, facing west - the two
+       arena starts of version 1 - at the series' start, once a round. */
+    showdown_setup(2, 3, "?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C");
+    nmessages = 0;
+    teleports = 0;
+    F(fhud, 0x654, u8) = 1;
+    CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|S|1|0|0|") && sdr_size('1'));
+    CHECK(at_spot(0, -1800.0f, 0.0f, 0.0f) && at_spot(1, 1800.0f, 0.0f, 180.0f) && teleports == 2);
+    sd_sides_probe(probe);
+    CHECK(probe[0] == 2 && probe[1] == 0);
+    CHECK(sd_should_end(sgm) == 0 && teleports == 2);                   /* on their spots: left alone */
+    fdie(1);
+    CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|1|1|0|W") && sdr_size('1'));
+    next_round(2);
+    CHECK(at_spot(0, -1800.0f, 0.0f, 0.0f) && at_spot(1, 1800.0f, 0.0f, 180.0f) && teleports == 4);
+    CHECK(F(fhud, 0x654, u8) == 1);                                      /* 1v1: the HUD's panel untouched */
+    CHECK(sd_should_end(sgm) == 0 && sd_should_end(sgm) == 0 && teleports == 4);
+    printf("ok    sides 1v1: you at (-1800, 0) facing east, the rival at (1800, 0) facing west, each round\n");
+
+    /* Team Showdown: team 1 west, team 2 east, side by side 160 apart. */
+    for (size = 2; size <= 4; size++) {
+        char url[48];
+        sprintf(url, "?bEnableBots=true?TeamSize=%d", size);
+        showdown_setup(2 * size, 3, url);
+        nmessages = 0;
+        teleports = 0;
+        CHECK(sd_should_end(sgm) == 0 && teleports == 0);                /* no teams yet: nobody moves */
+        refresh(sgs);
+        F(fhud, 0x654, u8) = 1;
+        CHECK(sd_should_end(sgm) == 0 && sdr_size((char)('0' + size)) && teleports == 2 * size);
+        for (k = 0; k < 2 * size; k++) {
+            float y = ((float)(k % size) - 0.5f * (float)(size - 1)) * 160.0f;
+            CHECK(k < size ? at_spot(k, -1800.0f, y, 0.0f) : at_spot(k, 1800.0f, y, 180.0f));
+        }
+        CHECK(F(fhud, 0x654, u8) == 1);                                  /* round 1: the panel looks once anyway */
+        for (k = size; k < 2 * size; k++) fdie(k);
+        CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|1|1|0|W") && sdr_size((char)('0' + size)));
+        next_round(2);
+        CHECK(teleports == 4 * size && F(fhud, 0x654, u8) == 0);         /* new pawns placed; the panel looks again */
+        for (k = 0; k < 2 * size; k++) {
+            float y = ((float)(k % size) - 0.5f * (float)(size - 1)) * 160.0f;
+            CHECK(k < size ? at_spot(k, -1800.0f, y, 0.0f) : at_spot(k, 1800.0f, y, 180.0f));
+        }
+    }
+    printf("ok    sides 2v2, 3v3, 4v4: team 1 west, team 2 east, 160 apart, facing in; again after every reset\n");
+
+    /* Sides by team number, not by the order of the controllers. */
+    showdown_setup(4, 3, "?TeamSize=2");
+    refresh(sgs);
+    F(fps[0], 0x490, i32) = 1; F(fps[1], 0x490, i32) = 2; F(fps[2], 0x490, i32) = 1; F(fps[3], 0x490, i32) = 2;
+    nmessages = 0;
+    CHECK(sd_should_end(sgm) == 0);
+    CHECK(at_spot(0, -1800.0f, -80.0f, 0.0f) && at_spot(2, -1800.0f, 80.0f, 0.0f)
+          && at_spot(1, 1800.0f, -80.0f, 180.0f) && at_spot(3, 1800.0f, 80.0f, 180.0f));
+    printf("ok    sides follow the team numbers (1 west, 2 east)\n");
+
+    /* A refused teleport and a fighter with no pawn yet: tried again on the
+       next ticks (3 in all), never again once on the spot. */
+    showdown_setup(4, 3, "?TeamSize=2");
+    refresh(sgs);
+    nmessages = 0;
+    teleports = 0;
+    F(F(fc[1], 0x408, u8 *), P_REFUSE, u8) = 1;
+    unpossess(fc[3]);
+    CHECK(sd_should_end(sgm) == 0 && teleports == 2);
+    sd_sides_probe(probe);
+    CHECK(probe[0] == 2 && probe[1] == 2);
+    F(F(fc[1], 0x408, u8 *), P_REFUSE, u8) = 0;
+    CHECK(sd_should_end(sgm) == 0 && teleports == 3 && at_spot(1, -1800.0f, 80.0f, 0.0f));
+    new_pawn(fc[3]);
+    CHECK(sd_should_end(sgm) == 0 && teleports == 4 && at_spot(3, 1800.0f, 80.0f, 180.0f));
+    moves = teleports;
+    for (i = 0; i < 4; i++) CHECK(sd_should_end(sgm) == 0);
+    CHECK(teleports == moves);
+    showdown_setup(4, 3, "?TeamSize=2");                                 /* refused every time: 3 tries, then left be */
+    refresh(sgs);
+    nmessages = 0;
+    teleports = 0;
+    F(F(fc[2], 0x408, u8 *), P_REFUSE, u8) = 1;
+    for (i = 0; i < 6; i++) CHECK(sd_should_end(sgm) == 0);
+    CHECK(teleports == 3 && F(F(fc[2], 0x408, u8 *), P_MOVES, i32) == 0);
+    sd_sides_probe(probe);
+    CHECK(probe[1] == 0);
+    printf("ok    sides: a refused teleport or a late pawn is tried again (3 ticks), a placed one never moved again\n");
+
+    /* ?TeamSize= past 4: the arena's sides hold 4 - a 4v4 with 7 bots. */
+    teams_setup(3, "?TeamSize=8");
+    CHECK(teams_are(4));
+    F(tgm, 0x518, i32) = 1;
+    sd_spawn_bots(tgm);
+    CHECK(F(tgm, 0x518, i32) == 7);
+    teams_setup(3, "?TeamSize=5");
+    CHECK(teams_are(4));
+    teams_setup(2, "?TeamSize=8");                                        /* ClassicTeams keeps 8 */
+    CHECK(teams_are(8));
+    printf("ok    team Showdown is at most 4v4 (?TeamSize=5-8 plays 4v4, 7 bots); ClassicTeams unchanged\n");
 }
 
 static void test_team_hud(void)
@@ -918,12 +1057,14 @@ int main(void)
     hook(0x267090, (void *)start_inventory);
     hook(0x268fa0, (void *)clear_inventory);
     hook(0x27a810, (void *)spawn_weapon);
+    hook(0x111fae0, (void *)teleport);
     VirtualAlloc(image + 0x2567000, 0x1000, MEM_COMMIT, PAGE_READWRITE);   /* L"/Script/Victory" */
     sd_self_rva = (u64)&sd_self_rva - (u64)image;
     test_duo();
     test_chokening();
     test_team_sizes();
     test_showdown();
+    test_sides();
     test_team_hud();
     printf("all native module tests passed\n");
     return 0;

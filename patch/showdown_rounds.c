@@ -26,6 +26,13 @@
  *              unpossessed and destroyed (corpses too), both alive records
  *              are restored, and RestartPlayer respawns both fighters at the
  *              arena starts with a fresh kit; the HUD is told ("SDR|S|...").
+ *     SIDES    at the series' start and after every reset each fighter is
+ *              teleported (AActor::K2_TeleportTo) to its side of the arena:
+ *              you (1v1) or team 1 to the west, the rival or team 2 to the
+ *              east, a team side by side (place(), below). The arena's eight
+ *              PlayerStarts (make_showdown.py) are north and south, away from
+ *              both sides, so a fighter the game spawned at any of them never
+ *              stands on another's spot.
  *     DONE     a fighter has 4 rounds: the stock end of match (VICTORY or
  *              DEFEAT, then the menu).
  *
@@ -45,7 +52,8 @@
  * sd_spawn_bots(gm) replaces the GameMode's call of its bot spawner at match
  *   start (VA 0x14023330d, call 0x1402320f0). In a team Showdown match it
  *   first sets BotsToSpawn (+0x518) to 2N - 1 (your N - 1 teammates and N
- *   rivals); every other match spawns the mode's own count.
+ *   rivals; N at most 4, the arena's sides); every other match spawns the
+ *   mode's own count.
  *
  * sd_rand_exec(ctx, stack, result) replaces the native of
  *   KismetMathLibrary.RandomIntegerInRange. PlayerPawn.GetSpawnWithWeaponClasses
@@ -99,9 +107,10 @@
  * HUD messages go through AVictoryPlayerHUD::ShowGameMessage, which the HUD
  * page receives as the ShowGameMessage event (ShowdownHud.js takes the "SDR|"
  * ones, hud.js the "TMS|" ones; neither is shown):
- *   SDR|S|<round>|<you>|<rival>|<kit>   round starts (kit 0-6)
- *   SDR|E|<round>|<you>|<rival>|<W/L/D> round over, the series goes on
- *   SDR|O|<round>|<you>|<rival>|<W/L/D> last round, the series is over
+ *   SDR|S|<round>|<you>|<rival>|<kit>|<N>   round starts (kit 0-6)
+ *   SDR|E|<round>|<you>|<rival>|<W/L/D>|<N> round over, the series goes on
+ *   SDR|O|<round>|<you>|<rival>|<W/L/D>|<N> last round, the series is over
+ *       N is the team size (1: 1v1); "you" and "rival" are the teams' scores.
  *   TMS|<k>{|<health %>|<stamina %>|<alive 0/1>|<name>}*k
  *       once a second in a team match of 3 or more: the teammates the game's
  *       own teammate panel doesn't show (it shows one, the first it finds:
@@ -204,6 +213,8 @@ unsigned __int64 __rdtsc(void);
 #define PS_NAME        0x408       /* APlayerState::PlayerName */
 #define CH_HEALTH      0x830       /* AShooterCharacter health component */
 #define CH_STAMINA     0x828       /* AShooterCharacter stamina component */
+#define C_CONTROL_ROT  0x430       /* AController::ControlRotation (FRotator) */
+#define HUD_MATE_FOUND 0x654       /* AVictoryPlayerHUD: its teammate panel has found its pawn (set once) */
 
 #define CLASSIC_TEAMS  2           /* EVictoryGameMode::ClassicTeams: Duo/Trios/Quads (CoopRanked) */
 #define LIGHTNING      3           /* EVictoryGameMode::Lightning: Showdown */
@@ -219,6 +230,7 @@ unsigned __int64 __rdtsc(void);
 #define DUO            2           /* ClassicTeams without ?TeamSize= */
 #define MAX_TEAM       8           /* ?TeamSize= is 2-8 */
 #define NAME_CHARS     20          /* a teammate's name in a TMS message */
+#define SD_MAX_SIDE    4           /* team Showdown: up to 4v4 (the arena's 8 starts, 4 spots a side) */
 
 /* The builder writes the RVA of this variable into it. */
 volatile u64 sd_self_rva = 0x5344524f554e4453ULL;
@@ -262,6 +274,8 @@ static struct {
     i32 offset, kit;
     i32 announced;
     i32 kitted;                    /* the round the rival has its kit for */
+    i32 size;                      /* the team size (1: 1v1), for the HUD */
+    i32 placing;                   /* ticks left to put the fighters on their sides */
     u8 *kit_target, *kit_source;   /* sd_spawn_with: the rival's pawn asks the player's */
 } S;
 
@@ -308,6 +322,7 @@ static void ensure(u8 *gm)
         S.kit = kit_for(1);
         S.announced = 0;
         S.kitted = 0;
+        S.placing = 0;
     }
     S.last_elapsed = elapsed;
 }
@@ -386,7 +401,7 @@ static void send(u8 *pc, i32 n)
     ((fn_message)AT(R_HUD_MESSAGE))(hud, &s, 0.0f);   /* takes the string */
 }
 
-/* "SDR|<ev>|<round>|<you>|<rival>|<x>" to the player's HUD. */
+/* "SDR|<ev>|<round>|<you>|<rival>|<x>|<N>" to the player's HUD. */
 static void tell(u8 *pc, u16 ev, i32 round, i32 wins, i32 losses, u16 x)
 {
     i32 n = 0;
@@ -397,6 +412,8 @@ static void tell(u8 *pc, u16 ev, i32 round, i32 wins, i32 losses, u16 x)
     put(&n, (u16)('0' + wins % 10)); put(&n, '|');
     put(&n, (u16)('0' + losses % 10)); put(&n, '|');
     put(&n, x);
+    put(&n, '|');
+    put(&n, (u16)('0' + (S.size > 0 && S.size < 10 ? S.size : 1)));
     put(&n, 0);
     send(pc, n);
 }
@@ -571,14 +588,22 @@ static int url_flag(u8 *gm, const char *opt)
     return 0;
 }
 
+/* Team Showdown's size: ?TeamSize= 2-8, at most SD_MAX_SIDE (the arena's
+   sides hold 4 each); 0 without it (1v1). */
+static i32 showdown_size(u8 *gm)
+{
+    i32 n = url_team_size(gm);
+    return n > SD_MAX_SIDE ? SD_MAX_SIDE : n;
+}
+
 /* The team size of a match (gm, its game state's mode type): ClassicTeams
    2-8 (?TeamSize=, else Duo's 2), Lightning only with ?TeamSize= (team
-   Showdown), 0 = no teams (Solo, 1v1 Showdown and the rest). */
+   Showdown, 2-4), 0 = no teams (Solo, 1v1 Showdown and the rest). */
 static i32 team_size(u8 *gm, u8 type)
 {
     i32 n = url_team_size(gm);
     if (type == CLASSIC_TEAMS) return n ? n : DUO;
-    if (type == LIGHTNING) return n;
+    if (type == LIGHTNING) return showdown_size(gm);
     return 0;
 }
 
@@ -591,7 +616,7 @@ char sd_teams(u8 *gs)
     if (type == CLASSIC_TEAMS || type == LIGHTNING) {
         world = world_of(gs);
         gm = world ? FIELD(world, W_AUTH_GM, u8 *) : 0;
-        size = url_team_size(gm);
+        size = type == LIGHTNING ? showdown_size(gm) : url_team_size(gm);
         /* Duo: fix 4's stub has paired them; only Trios/Quads and team Showdown are ours. */
         if (size > (type == CLASSIC_TEAMS ? DUO : 1)) {
             players = FIELD(gs, GS_PLAYERS, u8 **);
@@ -607,7 +632,7 @@ void sd_spawn_bots(u8 *gm)
 {
     i32 size;
     B = base();
-    if (gm && FIELD(gm, GM_TYPE, u8) == LIGHTNING && (size = url_team_size(gm)) >= 2)
+    if (gm && FIELD(gm, GM_TYPE, u8) == LIGHTNING && (size = showdown_size(gm)) >= 2)
         FIELD(gm, GM_BOTS, i32) = 2 * size - 1;
     ((fn_void)AT(R_SPAWN_BOTS))(gm);
 }
@@ -893,6 +918,110 @@ u8 *sd_gas_instigator(u8 *wound)
 #include "weather.c"            /* weather over a match (weather_tick) */
 #include "unstick.c"            /* the stuck-player safety net (unstick_tick) */
 
+/* ---------------------------------------------------------------- the arena's sides */
+
+/* Each side's spots: a line across the arena's west (side 0: you in 1v1,
+   team 1) or east (side 1) approach, SD_SIDE_X out from the centre, facing
+   in. A side of n fighters stands SD_SPACING apart, centred on the approach:
+   1v1's spots are exactly the two arena starts version 1 used ((-1800, 0, 200)
+   facing east, (1800, 0, 200) facing west). Every spot of a side of up to 4
+   is on the arena floor's navmesh (make_showdown.py checks it against the
+   stock Navigation level), 160 apart (a pawn's capsule is 100 across). */
+#define SD_SIDE_X      1800.0f
+#define SD_SPACING     160.0f
+#define SD_SLOT_Z      200.0f      /* a little above the floor (navmesh z 16-20 there), as the starts were */
+#define SD_PLACE_TICKS 3           /* a refused teleport (or a fighter without a pawn yet) is tried again */
+#define SD_MAX_FIGHTERS 16
+
+static struct { Weak done[SD_MAX_FIGHTERS]; i32 n; } P;   /* the pawns on their spots this round */
+
+static int sd_placed(u8 *pawn)
+{
+    i32 i;
+    for (i = 0; i < P.n && i < SD_MAX_FIGHTERS; i++)
+        if (weak(&P.done[i]) == pawn) return 1;
+    return 0;
+}
+
+/* A side's k-th spot of n, and its facing (pitch, yaw, roll). */
+static void sd_spot(i32 side, i32 k, i32 n, float *at, float *rot)
+{
+    at[0] = side ? SD_SIDE_X : -SD_SIDE_X;
+    at[1] = ((float)k - 0.5f * (float)(n - 1)) * SD_SPACING;
+    at[2] = SD_SLOT_Z;
+    rot[0] = 0.0f;
+    rot[1] = side ? 180.0f : 0.0f;
+    rot[2] = 0.0f;
+}
+
+/* Every fighter not on its spot yet this round goes there: its side is its
+   team (team 1 west, any other east; 1v1: the player west, the rival east),
+   its place on the side its order among that side's fighters in the world's
+   controller list (stable through the match). The controller's rotation is
+   set too, so the player looks into the arena. Returns how many fighters are
+   still not on their spots. */
+static i32 place(u8 *world, i32 teams)
+{
+    u8 *list = world + W_CONTROLLERS;
+    i32 i, pass, side, k, left = 0, num = FIELD(list, 8, i32);
+    i32 n[2], at[2];
+    float to[3], rot[3];
+    n[0] = n[1] = at[0] = at[1] = 0;
+    for (pass = 0; pass < 2; pass++) {
+        for (i = 0; i < num; i++) {
+            u8 *c = weak_get(list, i), *ps, *pawn;
+            if (!c || !is_fighter(c)) continue;
+            ps = FIELD(c, C_PLAYERSTATE, u8 *);
+            if (!is_a(ps, R_CLS_PS) || (FIELD(ps, PS_FLAGS, u32) & 2)) continue;
+            side = teams ? FIELD(ps, PS_TEAM, i32) != 1 : !is_a(c, R_CLS_PC);
+            if (!pass) { n[side]++; continue; }
+            k = at[side]++;
+            pawn = wx_live(FIELD(c, C_PAWN, u8 *));
+            if (!pawn || !is_a(pawn, R_CLS_CHARACTER)) { left++; continue; }
+            if (sd_placed(pawn)) continue;
+            sd_spot(side, k, n[side], to, rot);
+            if (!((us_teleport_t)AT(US_TELEPORT))(pawn, to, rot)) { left++; continue; }
+            FIELD(c, C_CONTROL_ROT, float) = rot[0];
+            FIELD(c, C_CONTROL_ROT + 4, float) = rot[1];
+            FIELD(c, C_CONTROL_ROT + 8, float) = rot[2];
+            if (P.n < SD_MAX_FIGHTERS) weak_set(&P.done[P.n++], pawn);
+        }
+    }
+    return left;
+}
+
+/* A new round: nobody is on a spot yet. In team Showdown the player's HUD
+   looks for its teammate's (new) pawn again: its panel finds one once
+   (AVictoryPlayerHUD +0x654, VA 0x1401fbec7) and that pawn is gone. */
+static void new_round_sides(u8 *world, i32 teams)
+{
+    u8 *list = world + W_CONTROLLERS;
+    i32 i, num = FIELD(list, 8, i32);
+    P.n = 0;
+    S.placing = SD_PLACE_TICKS;
+    if (!teams) return;
+    for (i = 0; i < num; i++) {
+        u8 *c = weak_get(list, i), *hud;
+        if (!c || !is_a(c, R_CLS_PC)) continue;
+        hud = FIELD(c, PC_HUD, u8 *);
+        if (is_a(hud, R_CLS_HUD)) FIELD(hud, HUD_MATE_FOUND, u8) = 0;
+    }
+}
+
+static void sides_tick(u8 *world, i32 teams)
+{
+    if (S.placing <= 0) return;
+    S.placing--;
+    if (!place(world, teams)) S.placing = 0;
+}
+
+/* For the tests: the sides' state. */
+void sd_sides_probe(i32 *out)
+{
+    out[0] = P.n;
+    out[1] = S.placing;
+}
+
 char sd_should_end(u8 *gm)
 {
     u8 *world;
@@ -917,12 +1046,17 @@ char sd_should_end(u8 *gm)
     teams = team_size(gm, LIGHTNING);
     if (teams > DUO) report_mates(gm, world);
     ensure(gm);
+    S.size = teams ? teams : 1;
     count(world, &n, teams);
     if (!n.mine || !n.theirs) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     if (!S.announced) {
         S.announced = 1;
+        new_round_sides(world, 0);
+        sides_tick(world, teams);
         if (kit_rival(world)) S.kitted = S.round;
         tell(n.pc, 'S', S.round, S.wins, S.losses, (u16)('0' + S.kit));
+    } else if (S.phase == FIGHT) {
+        sides_tick(world, teams);
     }
     if (S.phase == DONE) return 1;
     if (S.phase == BETWEEN) {
@@ -930,6 +1064,8 @@ char sd_should_end(u8 *gm)
         S.round++;
         S.kit = kit_for(S.round);
         reset(gm, world);
+        new_round_sides(world, teams);
+        sides_tick(world, teams);
         S.kitted = kit_rival(world) ? S.round : 0;
         S.phase = FIGHT;
         S.grace = GRACE_TICKS;
