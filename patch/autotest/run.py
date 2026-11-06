@@ -123,6 +123,8 @@ def build(out, port):
     html = open(html_path, "rb").read()
     probe = os.path.join(HUD, "js", "AutoTestHud.js")
     pak = os.path.join(out, PAK)
+    configs = {f: open(f, "rb").read() for f in (os.path.join(SRC, "Victory", "Content", "uiresources", d, "js", "RemasterServer.js")
+                                               for d in ("FrontEnd", "hud"))}
     try:
         make_server_config.main("http://127.0.0.1:%d" % port)
         shutil.copyfile(os.path.join(HERE, "AutoTestHud.js"), probe)
@@ -135,7 +137,8 @@ def build(out, port):
         if os.path.exists(probe):
             os.remove(probe)
         open(html_path, "wb").write(html)
-        make_server_config.main("http://127.0.0.1:8000")
+        for f, data in configs.items():           # byte for byte as they were
+            open(f, "wb").write(data)
     log("built", PAK, os.path.getsize(pak) // (1 << 20), "MB (server port %d, HUD probe)" % port)
     return exe, pak
 
