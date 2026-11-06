@@ -2,6 +2,8 @@
 
 Players add each other by account username, see what their friends are doing, form a party of up to 4 that queues together, and open anyone's player card. Code: `server/friends.js` (friends and parties), the friends section and socket events in `server/server.js`, `MatchLobbies.joinGroup` in `server/matchlobby.js`, and the menu in `patch/src/Victory/Content/uiresources/FrontEnd/js/Friends.js` (wired up in `ClientWeb.js` and `MatchLobby.js`; `patch/make_branding.py` adds the menu item and the script tag). Tests: `server/test/friends.test.js`.
 
+The panel's RECENT tab (players you were matched with, join requests, blocks, the invite and join setting, reports) is in [RECENT_PLAYERS_SYSTEM.md](RECENT_PLAYERS_SYSTEM.md). Invites, join requests and join-in-progress are in [JOIN_FRIENDS_AND_PARTY_DESIGN.md](JOIN_FRIENDS_AND_PARTY_DESIGN.md). Blocks and the setting also apply to the friends actions below.
+
 ## Friends
 
 - **Requests.** You send a request to a username. The name is matched the same way sign-in matches it: case and extra spaces don't matter. The other player accepts or declines it, and you can cancel your own request.

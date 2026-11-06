@@ -2,6 +2,11 @@
 
 ## Game (next release)
 
+**Recent players**
+- The Friends panel has a RECENT tab: the players the server matched you with (your party, and the account players who went into the same match from your lobby), newest first, with how you met, the mode, map and when, their status and rank. From each row: Add friend, Invite to your party, ask to Join theirs, and under More: Block, Report and Remove. Join requests to your party wait at the top and pop up like party invites.
+- A new setting says who may invite you or ask to join your party: everyone, friends and recent players (the default), friends, or nobody. Blocks work both ways, also for friend requests and party invites.
+- Needs the server update. Details: [RECENT_PLAYERS_SYSTEM.md](RECENT_PLAYERS_SYSTEM.md). Not yet checked in the game's own menu (checked in node tests and a browser preview).
+
 **Pods: one contestant each, and nobody starts armed**
 - Fixed: when the pods opened, other contestants could be standing in your pod, already holding weapons. Since 1.3.x's 24-contestant matches, Solo, Duo, Trios and Quads put 24 contestants on maps with 16 pods (Jungle and Prison). The game gives each contestant a free pod first, then puts the rest in pods that are already taken, so 8 contestants shared someone's pod. Matches now have one contestant per pod: 16 in Solo, Duo and Quads, 15 in Trios (5 full teams), and Showdown is unchanged. Needs the patched exe (the native module caps the bots at the mode's start points).
 - Opponents now start like you, with only their fists, and loot their gear. Before, every match opponent spawned with a random melee weapon, a bow or gun, and a utility item. The Survival, Tutorial and Showdown opponents are unchanged (`patch/patch_assets.py`).
