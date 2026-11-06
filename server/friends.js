@@ -4,8 +4,9 @@
 // the other player (a request to someone who already asked you is accepted at
 // once). Kept by userID in friends.json, with when each player was last seen
 // online. Parties live in memory: a leader invites friends (up to `maxParty`
-// players), the invited accept or decline, anyone can leave; when the leader
-// leaves, the next member leads; a party of one is dropped.
+// players; only the leader invites), the invited accept or decline, anyone
+// can leave; when the leader leaves, the next member leads; a party of one is
+// dropped. A party keeps its id for as long as it exists.
 "use strict";
 
 const fs = require("fs");
@@ -140,6 +141,8 @@ class Friends {
     if (from === to) return { error: "self" };
     if (!this.areFriends(from, to)) return { error: "not-friends" };
     let p = this.party(from);
+    // One leader per party: only they invite (a member asking is refused).
+    if (p && p.leader !== from) return { error: "not-party-leader" };
     if (p && p.members.includes(to)) return { error: "already-in-party" };
     if (p && p.members.length >= this.limits.maxParty) return { error: "party-full" };
     if (!p) {
@@ -163,6 +166,7 @@ class Friends {
       if (m) m.delete(partyId);
       return { error: "no-invite" };
     }
+    if (p.members.includes(id)) { m.delete(partyId); return { error: "already-in-party" }; }
     if (p.members.length >= this.limits.maxParty) return { error: "party-full" };
     m.delete(partyId);
     const left = this.leave(id);

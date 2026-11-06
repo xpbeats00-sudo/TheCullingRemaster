@@ -119,8 +119,9 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #play-menu .play-ranked-bg { background-image: url("../images/RankedPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
 .play-tiled-menu-options-container ul li.play-ranked-bg:focus,
 .play-tiled-menu-options-container ul li.play-ranked-bg:hover { background-image: url("../images/RankedPlay_sel.png") !important; }
-/* Ranked screen (RankedUI.js): mode tabs, the play tile on the left, one
-   season panel on the right. Duo, Trio and Quads show as coming. */
+/* Ranked screen (RankedUI.js): mode tabs (Solo, Duo, Trio, Quads), the play
+   tile on the left (it queues the selected mode), one season panel on the
+   right for the selected mode. */
 #ranked-menu-options { position: absolute; left: 6vw; top: 26vh; width: 16vw; height: 21vw; }
 #ranked-menu-options ul { justify-content: flex-start; }
 #ranked-menu-options ul li { width: 16vw; height: 21vw; margin: 0; border-radius: 1.2vw; }
@@ -134,6 +135,8 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #ranked-modes .rm-tab { display: flex; align-items: center; margin-right: 0.6vw; padding: 0.9vh 1.3vw; border-radius: 3vh;
   font: 0.95vw Sucrose-Bold; letter-spacing: 0.12vw; text-transform: uppercase; color: rgba(235, 235, 235, 0.5);
   background: rgba(12, 8, 10, 0.8); box-shadow: 0 0 0 0.1vw rgba(255, 255, 255, 0.12); }
+#ranked-modes .rm-tab { cursor: pointer; }
+#ranked-modes .rm-tab:hover { color: white; }
 #ranked-modes .rm-tab.active { color: white; background: rgba(204, 0, 0, 1); box-shadow: none; }
 #ranked-modes .rm-tab small { margin-left: 0.5vw; font: 0.6vw Sucrose-Bold; letter-spacing: 0.08vw; opacity: 0.8; }
 #ranked-panel { position: absolute; left: 25vw; right: 6vw; top: 26vh; max-height: 63vh; display: flex; flex-direction: column;
@@ -168,6 +171,7 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
 #ranked-panel .rp-row span.r { text-align: right; }
 #ranked-panel .rp-row .up { color: rgba(95, 224, 95, 1); }
 #ranked-panel .rp-row .down { color: rgba(255, 85, 75, 1); }
+#ranked-panel .rp-row small { font-size: 0.65vw; opacity: 0.55; }
 #ranked-panel .rp-empty { padding: 1.4vh 0.6vw; font-size: 0.85vw; opacity: 0.6; }
 #ranked-panel .rp-tierrow { display: flex; align-items: center; height: 3.3vh; padding: 0 0.8vw 0 0.5vw; margin-top: 0.35vh;
   border-radius: 0.9vh; background: rgba(255, 255, 255, 0.04); opacity: 0.45; font-size: 0.8vw; }
@@ -208,12 +212,13 @@ REMASTER_CSS = """/* The Culling Remaster: horror display font for menu items an
   line-height: 1;
   color: rgba(240, 240, 240, 1);
 }
-/* Play screen: five tiles (Solo, Ranked, Duo, Showdown, Custom) in the stock
-   19:25 shape, titles in the Remaster face; Showdown art from
+/* Play screen: seven tiles (Solo, Ranked, Duo, Trio, Quad, Showdown, Custom)
+   in the stock 19:25 shape, within the stock row (90% of the width), titles
+   in the Remaster face; Trio and Quad use Duo's art, Showdown's is from
    make_showdown_tile.py. */
-.play-tiled-menu-options-container ul li { width: 16vw; height: 21vw; }
+.play-tiled-menu-options-container ul li { width: 11.4vw; height: 15vw; }
 .play-tiled-menu-options-container ul:first-child li { margin-left: 0.6vw; margin-right: 0.6vw; }
-#play-menu .play-title h1 { font: 2.3vw Creepster; letter-spacing: 0.15vw; color: rgba(240, 240, 240, 1); }
+#play-menu .play-title h1 { font: 1.8vw Creepster; letter-spacing: 0.1vw; color: rgba(240, 240, 240, 1); white-space: nowrap; }
 #play-menu li:focus .play-title h1, #play-menu li:hover .play-title h1 { color: rgba(255, 70, 60, 1); }
 #play-menu .play-showdown-bg { background-image: url("../images/ShowdownPlay.png"); background-repeat: no-repeat; background-size: 100% 100%; }
 .play-tiled-menu-options-container ul li.play-showdown-bg:focus,
@@ -257,7 +262,15 @@ def make_logos():
 
 
 def rebrand_html(src_html):
-    html = open(src_html, "rb").read().decode("utf-8")
+    html = branded_html(open(src_html, "rb").read().decode("utf-8"))
+    open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
+    print("FrontEnd.html rebranded")
+
+
+def branded_html(html):
+    """The stock FrontEnd.html as the Remaster ships it (before
+    make_server_config.py adds its script). test_release_consistency.py
+    compares the generated page with this."""
     link = '<link rel="stylesheet" type="text/css" href="css/Remaster.css">'
     if link not in html:
         assert "</head>" in html
@@ -284,12 +297,13 @@ def rebrand_html(src_html):
         html = html.replace(old, new)
     html = add_ranked(html)
     html = add_play_screen(html)
+    html = add_team_tiles(html)
     html = add_airdrop_unlocks(html)
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)
-    open(os.path.join(UI, "FrontEnd.html"), "wb").write(html.encode("utf-8"))
-    print("FrontEnd.html rebranded")
+    html = fix_custom_screen(html)
+    return html
 
 
 def install_font():
@@ -319,8 +333,9 @@ RANKED_TILE = """          <li tabindex="0" class="play-ranked-bg" id="ranked_pl
 
 
 def add_ranked(html):
-    """Ranked Solo: a RANKED tile on the Play screen, the Ranked screen's
-    free-for-all tile renamed (Teams is hidden by CSS: a future playlist),
+    """Ranked: a RANKED tile on the Play screen, the Ranked screen's
+    free-for-all tile renamed (RankedUI.js retitles it for the selected mode
+    tab and queues that mode; the stock Teams tile is hidden by CSS),
     and the ranked UI script after the Ranked screen's."""
     duo = '<li tabindex="0" class="play-duo-bg" id="duo_play" data-push-screen="ffa_jungle_coop2">'
     assert html.count(duo) == 1
@@ -343,7 +358,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
               <div class="tiledhighlighttop"></div>
             </div>
             <div class="tiled-menu-rollover">
-              <p>1v1 in the centre arena. Fight before the gas closes in.</p>
+              <p>1v1 to 4v4 in the centre arena. First to 4 rounds.</p>
             </div>
             <div class="play-title">
               <h1>SHOWDOWN</h1>
@@ -356,7 +371,7 @@ SHOWDOWN_TILE = """          <li tabindex="0" class="play-showdown-bg" id="showd
 PLAY_TEXT = {
     "solo_play": "Free-for-all. Vote for Jungle or Prison in the lobby.",
     "duo_play": "Fight in pairs with a teammate. Vote for Jungle or Prison in the lobby.",
-    "showdown_play": "1v1 in the centre arena. Fight before the gas closes in.",
+    "showdown_play": "1v1 to 4v4 in the centre arena. First to 4 rounds.",
 }
 # Queues the SHOWDOWN tile (the stock Play screen only queues Solo and Duo).
 SHOWDOWN_SCRIPT = '<script src="js/Showdown.js"></script>'
@@ -380,6 +395,48 @@ def add_play_screen(html):
         block = html[start:end]
         old = block[block.index("<p>"):block.index("</p>") + 4]
         html = html[:start] + block.replace(old, "<p>%s</p>" % text) + html[end:]
+    return html
+
+
+TEAM_TILE = """          <li tabindex="0" class="play-duo-bg" id="{id}">
+            <div class="tiledhighlighttopcontainer">
+              <div class="tiledhighlighttop"></div>
+            </div>
+            <div class="tiled-menu-rollover">
+              <p>{text}</p>
+            </div>
+            <div class="play-title">
+              <h1>{title}</h1>
+            </div>
+            <div class="tiledhighlightbottomcontainer">
+              <div class="tiledhighlightbottom"></div>
+            </div>
+          </li>
+"""
+# Trios and Quads (make_duo.TEAM_URLS): (tile id, title, description), after Duo.
+TEAM_TILES = [
+    ("trio_play", "TRIO PLAY", "Fight in threes with two teammates. Vote for Jungle or Prison in the lobby."),
+    ("quad_play", "QUAD PLAY", "Fight in fours with three teammates. Vote for Jungle or Prison in the lobby."),
+]
+# Queues the TRIO and QUAD tiles (the stock Play screen queues only Solo and Duo).
+TEAMS_SCRIPT = '<script src="js/Teams.js"></script>'
+
+
+def add_team_tiles(html):
+    """The Play screen's TRIO and QUAD tiles, right after DUO, queued by
+    js/Teams.js (loaded after the Play screen's script). In the page's own
+    line endings; safe to run on a page that already has them."""
+    nl = "\r\n" if "\r\n" in html else "\n"
+    if 'id="trio_play"' not in html:
+        start = html.index('id="duo_play"')
+        end = html.index("</li>", start) + len("</li>")
+        end = html.index("\n", end) + 1
+        tiles = "".join(TEAM_TILE.format(id=i, title=t, text=x) for i, t, x in TEAM_TILES).replace("\n", nl)
+        html = html[:end] + tiles + html[end:]
+    if TEAMS_SCRIPT not in html:
+        play = '<script src="js/Screens/Play.js"></script>'
+        assert html.count(play) == 1, play
+        html = html.replace(play, play + nl + "  " + TEAMS_SCRIPT)
     return html
 
 
@@ -483,15 +540,48 @@ def add_leaderboard(html):
     return html
 
 
+CUSTOM_TILE_TEXT = "Your own match: pick the map, the loot, health stations and recyclers."
+CUSTOM_TILE_STOCK = "<p>Create or join a Custom Match.</p>"
+LOBBY_CODE_ITEM = '<li tabindex="0" rv-if="LobbyData.Code" class="custom-game-code-container"'
+SETTINGS_BUTTON = '<div id="match_settings" class="start-disabled" data-list="options">SETTINGS</div>'
+
+
+def fix_custom_screen(html):
+    """The CUSTOM screen (patch/custom_match.py): a custom match is played on
+    your PC, so its lobby code (for others to join) is removed; the SETTINGS
+    button looks enabled (stock: always drawn disabled; START is still
+    enabled by ClientWeb.js); the Play screen's CUSTOM tile says what it is.
+    Every stock setting works, so none are hidden. Safe to run again."""
+    nl = "\r\n" if "\r\n" in html else "\n"
+    html = html.replace(CUSTOM_TILE_STOCK, "<p>%s</p>" % CUSTOM_TILE_TEXT)
+    if LOBBY_CODE_ITEM in html:
+        assert html.count(LOBBY_CODE_ITEM) == 1, "lobby code item"
+        start = html.rindex(nl, 0, html.index(LOBBY_CODE_ITEM)) + len(nl)
+        end = html.index("</li>", start) + len("</li>")
+        end = html.index(nl, end) + len(nl)
+        html = html[:start] + html[end:]
+    html = html.replace(SETTINGS_BUTTON, SETTINGS_BUTTON.replace('class="start-disabled"', 'class="start"'))
+    assert "<p>%s</p>" % CUSTOM_TILE_TEXT in html, "CUSTOM tile"
+    return html
+
+
 def apply_menu_changes(path):
-    """--menu-only: the friends menu, the leaderboard and the SURVIVAL item
-    applied to an already generated FrontEnd.html in place (no logos, fonts or
-    movies). Safe to repeat."""
+    """--menu-only: the Play screen's SHOWDOWN tile and tile texts, the friends
+    menu, the leaderboard, the SURVIVAL item, the CUSTOM screen and the TRIO
+    and QUAD tiles applied to an already generated FrontEnd.html in place,
+    and css/Remaster.css beside it rewritten (no logos, fonts or movies).
+    Safe to repeat."""
     html = open(path, "rb").read().decode("utf-8")
+    html = add_play_screen(html)
     html = show_survival(html)
     html = add_friends(html)
     html = add_leaderboard(html)
+    html = fix_custom_screen(html)
+    html = add_team_tiles(html)
     open(path, "wb").write(html.encode("utf-8"))
+    css = os.path.join(os.path.dirname(os.path.abspath(path)), "css")
+    if os.path.isdir(css):
+        open(os.path.join(css, "Remaster.css"), "w").write(REMASTER_CSS)
     print(path, "updated")
 
 

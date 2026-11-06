@@ -19,8 +19,21 @@
 // Self-contained: builds its own markup and styles (only .js files are kept
 // in the patch tree), so it can also be previewed outside the game.
 (function () {
-  var MODES = { ffa: "Solo Play", coop2: "Duo Play", lightning: "Lightning", ranked_ffa: "Ranked Solo", showdown: "Showdown" };
-  var MAPS = { jungle: { name: "Jungle", image: "images/Jungle_Map.png" }, prison: { name: "Prison", image: "images/Prison_Map.png" } };
+  var MODES = { ffa: "Solo Play", coop2: "Duo Play", coop3: "Trio Play", coop4: "Quad Play", lightning: "Lightning",
+    ranked_ffa: "Ranked Solo", ranked_coop2: "Ranked Duo", ranked_coop3: "Ranked Trio", ranked_coop4: "Ranked Quads",
+    showdown: "Showdown", showdown_duo: "Showdown 2v2", showdown_trio: "Showdown 3v3", showdown_quad: "Showdown 4v4" };
+  // The team modes (server/server.js TEAM_MODES, casual and ranked; team Showdown: playlists.js).
+  var TEAM_SIZES = { coop2: 2, coop3: 3, coop4: 4, ranked_coop2: 2, ranked_coop3: 3, ranked_coop4: 4,
+    showdown_duo: 2, showdown_trio: 3, showdown_quad: 4 };
+  // The night maps (patch/make_weather.py) show only when the server offers
+  // them (CULLING_NIGHT_MAPS=1): the vote lists the maps the server counts votes for.
+  var MAPS = {
+    jungle: { name: "Jungle", image: "images/Jungle_Map.png" },
+    prison: { name: "Prison", image: "images/Prison_Map.png" },
+    "jungle-night": { name: "Jungle Night", image: "images/Jungle_Map.png", night: true },
+    "prison-night": { name: "Prison Night", image: "images/Prison_Map.png", night: true }
+  };
+  var NIGHT_TINT = "linear-gradient(rgba(6, 12, 40, 0.62), rgba(6, 12, 40, 0.62)), ";
   var ROWS = 10;                    // player rows that fit at any resolution
   // The bots' names: the same list the game draws from in the match
   // (patch_assets.py BOT_NAMES, VictoryGameMode's BotNames).
@@ -140,9 +153,15 @@
   function modeName(q) {
     q = String(q || "");
     if (MODES[q]) return MODES[q];
-    if (q.indexOf("showdown") >= 0) return MODES.showdown;
-    if (q.indexOf("ranked") >= 0) return MODES.ranked_ffa;
+    if (q.indexOf("showdown") >= 0) return MODES[/quad|4v4/.test(q) ? "showdown_quad" : /trio|3v3/.test(q) ? "showdown_trio"
+      : /duo|2v2/.test(q) ? "showdown_duo" : "showdown"];
+    if (q.indexOf("ranked") >= 0) {
+      return q.indexOf("coop4") >= 0 ? MODES.ranked_coop4 : q.indexOf("coop3") >= 0 ? MODES.ranked_coop3
+        : q.indexOf("coop2") >= 0 ? MODES.ranked_coop2 : MODES.ranked_ffa;
+    }
     if (q.indexOf("coop2") >= 0) return MODES.coop2;
+    if (q.indexOf("coop3") >= 0) return MODES.coop3;
+    if (q.indexOf("coop4") >= 0) return MODES.coop4;
     if (q.indexOf("ffa") >= 0) return MODES.ffa;
     return "";
   }
@@ -275,7 +294,7 @@
     Object.keys(MAPS).forEach(function (id) {
       if (!(id in votes)) return;
       var card = el("div", "rl-map" + (locked ? " locked" + (last.map === id ? " won" : " lost") : (mine === id ? " mine" : "")));
-      card.style.backgroundImage = 'url("' + MAPS[id].image + '")';
+      card.style.backgroundImage = (MAPS[id].night ? NIGHT_TINT : "") + 'url("' + MAPS[id].image + '")';
       card.appendChild(el("span", "rl-map-tag", locked ? (last.map === id ? "Selected" : "") : (mine === id ? "Your vote" : "")));
       card.appendChild(el("span", "rl-map-name", MAPS[id].name));
       card.appendChild(el("span", "rl-map-votes", votes[id] + (votes[id] === 1 ? " vote" : " votes")));
@@ -314,11 +333,12 @@
     return byMap && lobby.map && typeof byMap[lobby.map] == "number" ? byMap[lobby.map] : lobby.matchBots;
   }
 
-  // The pregame roster: you, then the contestants of your match. In Duo: your
-  // team first (you and your teammate), then the other teams.
+  // The pregame roster: you, then the contestants of your match. In Duo, Trios
+  // and Quads: your team first (you and your 1-3 teammates), then the others.
   function renderRoster(lobby, list, names) {
     var count = matchBots(lobby);
-    var duo = lobby.queue === "coop2";
+    var size = TEAM_SIZES[lobby.queue] || 0;
+    var duo = size > 0;
     var me = myName(), you = null;
     for (var i = 0; i < lobby.players.length; i++) if (lobby.players[i].name === me) you = lobby.players[i];
     if (!you) you = lobby.players[0];
@@ -330,12 +350,12 @@
     var shown = count > rows ? rows - 1 : count;
     for (var b = 0; b < shown; b++) {
       var r = botRow(bots[b], cards[b], lobby.id * 31 + b + 1);
-      if (duo && b === 0) {
+      if (duo && b < size - 1) {
         r.insertBefore(el("span", "rl-tag", "TEAMMATE"), r.lastChild && r.lastChild.className == "rl-rank" ? r.lastChild : null);
       }
       list.appendChild(r);
       names["bot " + bots[b]] = true;
-      if (duo && b === 0) list.appendChild(divider("OPPONENTS"));
+      if (duo && b === size - 2) list.appendChild(divider("OPPONENTS"));
     }
     if (shown < count) {
       var more = emptyRow("+" + (count - shown) + " more contestants");
@@ -343,7 +363,7 @@
       list.appendChild(more);
     }
     build().querySelector(".rl-players-title").firstChild.textContent = "Your match";
-    build().querySelector(".rl-count").textContent = duo ? Math.ceil((count + 1) / 2) + " teams" : (count + 1) + " contestants";
+    build().querySelector(".rl-count").textContent = duo ? Math.ceil((count + 1) / size) + " teams" : (count + 1) + " contestants";
     build().querySelector(".rl-note").textContent = lobby.note || "";
   }
 

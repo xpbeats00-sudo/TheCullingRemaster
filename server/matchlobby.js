@@ -37,6 +37,13 @@ class MatchLobbies {
     this.nextId = 1;
   }
 
+  // Per-queue view overrides (options.queues[queue]): maps: false (no map
+  // vote: team Showdown is always the arena), matchBots (its own count).
+  queueOptions(queue) {
+    const q = this.options.queues;
+    return (q && q[queue]) || {};
+  }
+
   maxFor(queue) {
     const m = this.options.maxPlayers;
     return typeof m === "object" ? (m[queue] || m.default || DEFAULTS.maxPlayers) : m;
@@ -47,13 +54,8 @@ class MatchLobbies {
   join(queue, member, prefer) {
     this.leave(member.id);
     member.vote = this.validMap(prefer) ? prefer : null;
-    let lobby = this.open.get(queue);
-    if (!lobby) {
-      lobby = { id: this.nextId++, queue, state: "searching", members: new Map(), createdAt: this.now(),
-        startAt: null, timer: null, maxPlayers: this.maxFor(queue), map: null };
-      this.open.set(queue, lobby);
-      lobby.timer = this.setTimer(() => this.countdown(lobby), this.options.gatherMs);
-    }
+    member.party = member.party || null;
+    const lobby = this.open.get(queue) || this.openLobby(queue);
     lobby.members.set(member.id, member);
     this.byMember.set(member.id, lobby);
     if (lobby.members.size >= lobby.maxPlayers) this.countdown(lobby);
@@ -61,15 +63,44 @@ class MatchLobbies {
     return lobby;
   }
 
-  // A party joins together: everyone into one lobby, the open one if it has
-  // room for them all (it starts counting down otherwise and they open the
-  // next). `prefer` is everyone's first map vote.
-  joinGroup(queue, members, prefer) {
+  // A party joins together: everyone into one lobby at once, the open one if
+  // it has room for them all (it starts counting down otherwise and they open
+  // the next). Each member is marked with `party` (the party's id), so the
+  // party can be found, cancelled and started as one. `prefer` is everyone's
+  // first map vote.
+  joinGroup(queue, members, prefer, party = null) {
     for (const m of members) this.leave(m.id);
-    const open = this.open.get(queue);
-    if (open && open.members.size + members.length > open.maxPlayers) this.countdown(open);
-    let lobby = null;
-    for (const m of members) lobby = this.join(queue, m, prefer);
+    let lobby = this.open.get(queue);
+    if (lobby && lobby.members.size + members.length > lobby.maxPlayers) { this.countdown(lobby); lobby = null; }
+    if (!lobby) lobby = this.openLobby(queue);
+    const vote = this.validMap(prefer) ? prefer : null;
+    for (const m of members) {
+      m.vote = vote;
+      m.party = party;
+      lobby.members.set(m.id, m);
+      this.byMember.set(m.id, lobby);
+    }
+    if (lobby.members.size >= lobby.maxPlayers) this.countdown(lobby);
+    else this.broadcast(lobby);
+    return lobby;
+  }
+
+  // The lobby a player is waiting in (searching or counting down), or null.
+  lobbyOf(id) { return this.byMember.get(id) || null; }
+
+  // The members of `party` waiting in a lobby (ids), [] when it isn't queued.
+  partyMembers(party) {
+    const out = [];
+    if (!party) return out;
+    for (const [id, lobby] of this.byMember) if (lobby.members.get(id).party === party) out.push(id);
+    return out;
+  }
+
+  openLobby(queue) {
+    const lobby = { id: this.nextId++, queue, state: "searching", members: new Map(), createdAt: this.now(),
+      startAt: null, timer: null, maxPlayers: this.maxFor(queue), map: null };
+    this.open.set(queue, lobby);
+    lobby.timer = this.setTimer(() => this.countdown(lobby), this.options.gatherMs);
     return lobby;
   }
 
@@ -88,12 +119,15 @@ class MatchLobbies {
     return true;
   }
 
-  validMap(map) { return !!this.options.maps && this.options.maps.includes(map); }
+  validMap(map, queue) {
+    if (queue !== undefined && this.queueOptions(queue).maps === false) return false;
+    return !!this.options.maps && this.options.maps.includes(map);
+  }
 
   // A player's map vote, while their lobby is still searching.
   vote(id, map) {
     const lobby = this.byMember.get(id);
-    if (!lobby || lobby.state !== "searching" || !this.validMap(map)) return false;
+    if (!lobby || lobby.state !== "searching" || !this.validMap(map, lobby.queue)) return false;
     const m = lobby.members.get(id);
     if (m.vote === map) return true;
     m.vote = map;
@@ -110,7 +144,7 @@ class MatchLobbies {
 
   // The map with the most votes; a tie (or no votes) is drawn among the leaders.
   decideMap(lobby) {
-    if (!this.options.maps) return null;
+    if (!this.options.maps || this.queueOptions(lobby.queue).maps === false) return null;
     const votes = this.tally(lobby);
     const top = Math.max(...Object.values(votes));
     const leaders = Object.keys(votes).filter((m) => votes[m] === top);
@@ -139,20 +173,27 @@ class MatchLobbies {
   // What a member's menu shows.
   view(lobby) {
     const now = this.now();
+    // Party members are numbered by party (1, 2, ...) so menus can group
+    // them; no party ids or player ids go out.
+    const groups = new Map();
+    for (const m of lobby.members.values()) if (m.party && !groups.has(m.party)) groups.set(m.party, groups.size + 1);
+    const q = this.queueOptions(lobby.queue);
+    const maps = this.options.maps && q.maps !== false;
     return {
       id: lobby.id,
       queue: lobby.queue,
       state: lobby.state,
-      players: [...lobby.members.values()].map((m) => Object.assign(this.describe(m), this.options.maps ? { vote: m.vote } : {})),
+      players: [...lobby.members.values()].map((m) => Object.assign(this.describe(m), maps ? { vote: m.vote } : {},
+        { party: m.party ? groups.get(m.party) : null })),
       maxPlayers: lobby.maxPlayers,
       searchingMs: now - lobby.createdAt,
       startsInMs: lobby.state === "starting" ? Math.max(0, lobby.startAt - now) : null,
       gatherEndsInMs: lobby.state === "searching" ? Math.max(0, lobby.createdAt + this.options.gatherMs - now) : null,
-      maps: this.options.maps ? this.tally(lobby) : null,
+      maps: maps ? this.tally(lobby) : null,
       // Bots in each player's own match (for the pregame roster).
-      matchBots: this.options.matchBots || 0,
+      matchBots: Number.isInteger(q.matchBots) ? q.matchBots : this.options.matchBots || 0,
       // Per map, for menus that know the game places more on some maps.
-      matchBotsByMap: this.options.matchBotsByMap || null,
+      matchBotsByMap: Number.isInteger(q.matchBots) ? null : this.options.matchBotsByMap || null,
       map: lobby.map,
       note: this.options.note || null
     };

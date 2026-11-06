@@ -124,6 +124,25 @@ try {
     assert.match(game.STEAM_FOLDER, /Steam's copy/);
   });
 
+  test("network test URL: none by default, -FuncJoin when set, nothing else can slip in", () => {
+    assert.deepStrictEqual(game.netTestArgs(undefined), []);
+    assert.deepStrictEqual(game.netTestArgs(""), []);
+    assert.deepStrictEqual(game.netTestArgs("217.60.97.88:7777"), ["-FuncJoin=217.60.97.88:7777"]);
+    const host = "Jungle_P?listen?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C";
+    assert.deepStrictEqual(game.netTestArgs(host), ["-FuncJoin=" + host]);
+    for (const bad of ["1.2.3.4:7777 -log", "\"x\"", "a	b", "x".repeat(513), "-FuncExtraArgs=x y"]) {
+      assert.throws(() => game.netTestArgs(bad), /CULLING_NET_URL/, bad);
+    }
+  });
+
+  test("a bad network test URL stops PLAY before anything starts", async () => {
+    const root = path.join(tmp, "NetTest");
+    const w = fakeGame(root);
+    fs.writeFileSync(path.join(w, "Func.Launcher.exe"), "");
+    fs.writeFileSync(path.join(w, "Func.Client.Local.dll"), "");
+    await assert.rejects(game.launch(root, null, { CULLING_NET_URL: "1.2.3.4 -x" }), (e) => e.op === "launch" && /CULLING_NET_URL/.test(e.message));
+  });
+
   console.log("all %d game tests passed", passed);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -1,8 +1,7 @@
-"""Gameplay tuning for local matches: more bots, shorter matches, bots that
-head for the middle. Extracts the original assets from the game's paks,
-patches fixed-size values in place (and lists that grow, with
-ue_package.py), and writes them under src/ so make_pak.py ships them in the
-patch pak.
+"""Gameplay tuning for local matches: more bots, shorter matches. Extracts
+the original assets from the game's paks, patches fixed-size values in place
+(and lists that grow, with ue_package.py), and writes them under src/ so
+make_pak.py ships them in the patch pak. The match AI is make_bot_ai.py's.
 
 usage: python patch_assets.py <Paks dir>
 """
@@ -11,7 +10,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from build_catalog import pak_entries, read_entry  # noqa: E402
+from build_catalog import pak_entries, read_entry, stock_paks  # noqa: E402
 from uasset import Package, Reader  # noqa: E402
 from ue_package import UPackage  # noqa: E402
 
@@ -25,19 +24,8 @@ TUNING = {
         # so solo gets 23 bots whatever this asks for; 50 means "as many as allowed".
         "Default__VictoryGameMode_C": {"BotsToSpawn": 50},
     },
-    # Faster bot reactions (UNTESTED IN GAME: playtest before releasing).
-    # Behavior-tree service intervals in seconds (stock in brackets).
-    "Victory/Content/Blueprints/AI/Trees/MatchBot.uasset": {
-        "Listen_C_0": {"Interval": 1.5, "RandomDeviation": 0.5},     # hearing check (4.0 +- 1.0)
-        "FindBestTarget_C_1": {"Interval": 0.5},                      # target choice (1.0)
-        "SelectAction_C_24": {"Interval": 0.3},                       # next action (0.6)
-    },
-    # Bot sight (UNTESTED IN GAME). Pairs with the AISense_Sight trace budget
-    # in DefaultGame.ini, so the wider cone doesn't make spotting slower.
-    "Victory/Content/Blueprints/AI/Base/BasicController.uasset": {
-        "AISenseConfig_Sight_1": {"SightRadius": 5000.0, "LoseSightRadius": 6500.0,    # (3500, 5000)
-                                  "PeripheralVisionAngleDegrees": 90.0},                # (75)
-    },
+    # The match AI (MatchBot, BasicController and the AI's behaviours) is
+    # make_bot_ai.py's: it builds one difficulty tier from the stock assets.
     "Victory/Content/Blueprints/Environment/MatchPhaseManager_BP.uasset": {
         # Gas timeline (stock: iris at 15:00, then +5:00 map shutdown,
         # +9:00 standing room only). Now the iris starts at 5:00 and the
@@ -75,20 +63,19 @@ STR_ARRAYS = {
     ("Victory/Content/Blueprints/GameMode/VictoryGameMode.uasset", "Default__VictoryGameMode_C", "BotNames"): BOT_NAMES,
 }
 
-# Behaviour tree EQS parameters: (asset, task node, param) -> value.
-EQS_TUNING = {
-    # "Find Wander Position": pull wandering bots toward the middle, using the
-    # same weight the "Move To Center" query uses when the gas hits them.
-    ("Victory/Content/Blueprints/AI/Trees/MatchBot.uasset", "BTTask_RunEQSQuery_1", "DirectnessToCenterWeight"): 1.5,
-}
+# Behaviour tree EQS parameters: (asset, task node, param) -> value. Empty:
+# the one entry it had (DirectnessToCenterWeight on "Find Wander Position")
+# changed only the legacy QueryConfig copy, and the Scavenge query has no test
+# bound to that name, so it did nothing (docs/BOT_AI_AUDIT.md, finding 9).
+EQS_TUNING = {}
 
 
-def find_in_paks(paks_dir, wanted):
+def find_in_paks(paks_dir, wanted, patches=False):
+    """{relative path: bytes} for each wanted file, from the stock pakchunk paks
+    only (build_catalog.stock_paks; patches=True reads *_P.pak too)."""
     found = {}
-    for pak in sorted(os.listdir(paks_dir)):
-        if not pak.endswith(".pak"):
-            continue
-        for f, name, off, usize, method, blocks in pak_entries(os.path.join(paks_dir, pak)):
+    for pak in stock_paks(paks_dir, patches):
+        for f, name, off, usize, method, blocks in pak_entries(pak):
             rel = name.replace("../../../", "")
             if rel in wanted:
                 found[rel] = read_entry(f, off, usize, method, blocks)

@@ -37,7 +37,7 @@ sys.path.insert(0, HERE)
 import asset_registry  # noqa: E402
 import cooked_texture  # noqa: E402
 import iwi  # noqa: E402
-from build_catalog import pak_entries  # noqa: E402
+from build_catalog import pak_entries, stock_paks  # noqa: E402
 from build_menu_arenas import encode_tag  # noqa: E402
 from patch_assets import find_in_paks  # noqa: E402
 from ue_names import name_hashes  # noqa: E402
@@ -348,12 +348,11 @@ def weapon_templates(paks_dir):
     """{weapon prefix: (_01 template rel, _00 default rel)} for the
     camo-capable weapons (their _01 skin uses digicamo_A_GP)."""
     names = set()
-    for pk in sorted(os.listdir(paks_dir)):
-        if pk.endswith(".pak") and not pk.startswith("LocalServer"):
-            for e in pak_entries(os.path.join(paks_dir, pk)):
-                n = e[1].replace("../../../", "")
-                if n.startswith(SKINS) and n.endswith(".uasset") and n.count("/") == 4:
-                    names.add(n)
+    for pk in stock_paks(paks_dir):
+        for e in pak_entries(pk):
+            n = e[1].replace("../../../", "")
+            if n.startswith(SKINS) and n.endswith(".uasset") and n.count("/") == 4:
+                names.add(n)
     out = {}
     for n in sorted(names):
         m = re.match(re.escape(SKINS) + r"(.+)_01\.uasset$", n)
@@ -410,8 +409,8 @@ def main(paks_dir, camos_dir=CAMOS_DIR):
 
     asset_registry.save("camos", records)
     asset_registry.build(paks_dir)
-    with open(CATALOG, "w") as f:
-        json.dump(catalog, f, indent=1)
+    from build_catalog import write_catalog       # refuses an item ID used twice
+    write_catalog(CATALOG, catalog)
 
     sheet = Image.new("RGB", (6 * 270, ((len(previews) + 5) // 6) * 150), (25, 25, 25))
     dr = ImageDraw.Draw(sheet)

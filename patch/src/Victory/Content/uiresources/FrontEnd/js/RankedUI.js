@@ -1,6 +1,12 @@
 // The Culling Remaster: Ranked UI.
-// A rank badge under the player card on every menu screen, and the ranked
-// overview on the Ranked screen, from the Remaster server's /api/ranked.
+// A rank badge under the player card on every menu screen (Ranked Solo's), and
+// the Ranked screen, from the Remaster server's /api/ranked: the mode tabs
+// (Solo, Duo, Trio, Quads), each showing that mode's tier, ELO, placements and
+// recent matches, and the Play tile, which queues the selected mode.
+// Ranked Duos, Trios and Quads (docs/RANKED_TEAMS.md) are the casual team
+// matches (you and AI teammates, or your party) rated on your team's
+// placement, each with a rating of its own.
+// ES5 only (Coherent UI): patch/lint_es5.py.
 (function () {
   var URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api") + "/ranked";
   var REWARDS = {
@@ -9,11 +15,34 @@
     Reaper: "Reaper card + Lava Storm Fireman's Axe", Warlord: "Warlord card + Abyss Lightning camo (all weapons)",
     Apex: "Apex card + animated card", Legend: "Legend card and title"
   };
+  // The modes along the top of the Ranked screen (server/ranked.js MODES): the
+  // queue the Play tile asks for (server/playlists.js) and the tile's words.
+  var MODES = [
+    { id: "solo", label: "Solo", queue: "ranked_ffa", team: 1, title: "RANKED SOLO",
+      text: "Solo free-for-all. Rating moves on placement, never kills." },
+    { id: "duo", label: "Duo", queue: "ranked_coop2", team: 2, title: "RANKED DUO",
+      text: "Teams of two: an AI teammate, or queue with a friend. Rated on your team's placement." },
+    { id: "trio", label: "Trio", queue: "ranked_coop3", team: 3, title: "RANKED TRIO",
+      text: "Teams of three: AI teammates, or your party. Rated on your team's placement." },
+    { id: "quad", label: "Quads", queue: "ranked_coop4", team: 4, title: "RANKED QUADS",
+      text: "Teams of four: AI teammates, or your party. Rated on your team's placement." }
+  ];
+  var STORE = "remaster-ranked-mode";
   var last = null;
+  var selected = "solo";
+  try {
+    var saved = window.localStorage ? window.localStorage.getItem(STORE) : null;
+    if (saved && mode(saved)) selected = saved;
+  } catch (e) { /* no storage: Solo */ }
+
+  function mode(id) {
+    for (var i = 0; i < MODES.length; i++) if (MODES[i].id === id) return MODES[i];
+    return null;
+  }
 
   function emblem(tier) { return "/images/ranked/" + tier.toLowerCase() + ".png"; }
 
-  // The player card reads: level, rank emblem, name.
+  // The player card reads: level, rank emblem, name (Ranked Solo's rank).
   function badge(s) {
     var card = $("#player-card .culling-card");
     if (!card.length) return;
@@ -32,42 +61,90 @@
       " - " + s.rating + " ELO");
   }
 
-  // The modes along the top of the Ranked screen. Only Solo is played today;
-  // the others show what's coming (casual and ranked will share this list).
-  var MODES = [
-    { id: "solo", label: "Solo" },
-    { id: "duo", label: "Duo", soon: true },
-    { id: "trio", label: "Trio", soon: true },
-    { id: "quads", label: "Quads", soon: true }
-  ];
-
   function esc(t) { return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
+  // The selected mode's summary: the server's modes (every mode), or, from a
+  // server older than the team modes, its one summary (Solo's).
+  function summaryFor(s, id) {
+    if (!s) return null;
+    if (s.modes) return s.modes[id] || null;
+    return id === "solo" ? s : null;
+  }
+
+  // The tabs: the selected one active, a click selects (the Play tile and the
+  // panel follow). A tab the server doesn't offer says Soon.
   function modes() {
-    if (document.getElementById("ranked-modes")) return;
-    var html = MODES.map(function (m) {
-      return '<div class="rm-tab' + (m.soon ? "" : " active") + '">' + m.label + (m.soon ? "<small>Soon</small>" : "") + "</div>";
-    }).join("");
-    $("#ranked-menu").append('<section id="ranked-modes">' + html + "</section>");
+    var menu = document.getElementById("ranked-menu");
+    if (!menu) return;
+    var bar = document.getElementById("ranked-modes");
+    if (!bar) {
+      bar = document.createElement("section");
+      bar.id = "ranked-modes";
+      bar.addEventListener("click", function (ev) {
+        var t = ev.target;
+        while (t && t !== bar && !(t.getAttribute && t.getAttribute("data-mode"))) t = t.parentNode;
+        if (t && t !== bar) select(t.getAttribute("data-mode"));
+      });
+      menu.appendChild(bar);
+    }
+    var html = "";
+    for (var i = 0; i < MODES.length; i++) {
+      var m = MODES[i];
+      var soon = last && !summaryFor(last, m.id);
+      html += '<div class="rm-tab' + (m.id === selected ? " active" : "") + '" data-mode="' + m.id + '">' + m.label +
+        (soon ? "<small>Soon</small>" : "") + "</div>";
+    }
+    bar.innerHTML = html;
+  }
+
+  // The Ranked screen's Play tile (the stock free-for-all tile, make_branding.py
+  // add_ranked) says which mode it queues.
+  function tile() {
+    var li = document.querySelector ? document.querySelector("#ranked-menu-options li.ranked-ffa-bg") : null;
+    if (!li) return;
+    var m = mode(selected);
+    var h1 = li.querySelector("h1");
+    if (h1) h1.textContent = m.title;
+    var p = li.querySelector(".tiled-menu-rollover p");
+    if (p) p.textContent = m.text;
   }
 
   function chip(value, label) { return '<div class="rp-chip"><b>' + esc(value) + "</b><span>" + label + "</span></div>"; }
 
-  function panel(s) {
+  function panel() {
     modes();
-    if (!document.getElementById("ranked-panel")) {
-      $("#ranked-menu").append('<section id="ranked-panel"></section>');
+    tile();
+    var menu = document.getElementById("ranked-menu");
+    if (!menu) return;
+    var box = document.getElementById("ranked-panel");
+    if (!box) {
+      box = document.createElement("section");
+      box.id = "ranked-panel";
+      menu.appendChild(box);
     }
+    var m = mode(selected);
+    var s = summaryFor(last, selected);
+    if (!last) {
+      box.innerHTML = '<div class="rp-empty">Loading your ranked season...</div>';
+      return;
+    }
+    if (!s) {
+      box.innerHTML = '<div class="rp-empty">' + esc("Ranked " + m.label) + " isn't on this server yet.</div>";
+      return;
+    }
+    var team = m.team > 1;
     var next = s.tier.next != null ? (s.tier.next - s.rating) + " to next tier" : "Top tier";
     var title = s.placement ? "Placements " + s.placement.played + "/" + s.placement.total : s.tier.name;
     var recent = s.recent.slice(0, 8).map(function (e) {
       var up = e.delta >= 0;
-      return '<div class="rp-row"><span>#' + e.placement + (e.abandoned ? " (left)" : "") + '</span>' +
+      return '<div class="rp-row"><span>#' + e.placement + (e.field ? '<small> of ' + e.field + "</small>" : "") +
+        (e.abandoned ? " (left)" : "") + '</span>' +
         '<span class="r ' + (up ? "up" : "down") + '">' + (up ? "+" : "") + e.delta + '</span>' +
         '<span class="r">' + e.ratingAfter + "</span></div>";
     }).join("");
-    recent = recent ? '<div class="rp-row th"><span>Place</span><span class="r">Change</span><span class="r">Rating</span></div>' + recent
-      : '<div class="rp-empty">No ranked matches yet this season.</div>';
+    recent = recent ? '<div class="rp-row th"><span>' + (team ? "Team place" : "Place") + '</span><span class="r">Change</span>' +
+      '<span class="r">Rating</span></div>' + recent
+      : '<div class="rp-empty">No Ranked ' + esc(m.label) + " matches yet this season.</div>";
     var ladder = s.tiers.map(function (t) {
       var current = t.name === s.tier.name;
       var cls = "rp-tierrow" + (t.reached ? " reached" : "") + (current ? " current" : "");
@@ -75,9 +152,14 @@
       return '<div class="' + cls + '"><img src="' + emblem(t.name) + '"><span class="t-name">' + esc(t.name) + "</span>" +
         '<span class="t-min">' + t.min + "+</span>" + '<span class="t-reward">' + esc(REWARDS[t.name] || "") + "</span>" + tag + "</div>";
     }).join("");
-    $("#ranked-panel").html(
+    var note = team
+      ? "Rated on your team's placement among the teams, never kills. A team win counts for the whole team, even if you fell early. " +
+        "Each mode has its own rating. Leaving a ranked match counts as last place."
+      : "Rating moves on placement, never kills. Leaving a ranked match counts as last place.";
+    box.innerHTML =
       '<div class="rp-head"><img src="' + emblem(s.tier.name) + '"><div class="rp-main">' +
-        '<div class="rp-season">' + esc(s.season.name).toUpperCase() + " · " + s.season.daysLeft + " DAYS LEFT</div>" +
+        '<div class="rp-season">' + esc("Ranked " + m.label).toUpperCase() + " · " + esc(s.season.name).toUpperCase() + " · " +
+          s.season.daysLeft + " DAYS LEFT</div>" +
         '<div class="rp-tier">' + esc(title).toUpperCase() + "</div>" +
         '<div class="rp-elo">' + s.rating + " ELO<small>" + next + "</small></div>" +
         '<div class="rp-bar"><div style="width:' + Math.round(s.tier.progress * 100) + '%"></div></div>' +
@@ -87,7 +169,15 @@
         '<div class="rp-col recent"><div class="rp-h">Recent</div>' + recent + "</div>" +
         '<div class="rp-col ladder"><div class="rp-h">Rank ladder<span>Rewards</span></div>' + ladder + "</div>" +
       "</div>" +
-      '<div class="rp-note">Rating moves on placement, never kills. Leaving a ranked match counts as last place.</div>');
+      '<div class="rp-note">' + note + "</div>";
+  }
+
+  // A tab: the panel and the Play tile show that mode.
+  function select(id) {
+    if (!mode(id)) return;
+    selected = id;
+    try { if (window.localStorage) window.localStorage.setItem(STORE, id); } catch (e) { /* not kept */ }
+    if (document.getElementById("ranked-menu")) panel();
   }
 
   var asked = 0;
@@ -102,7 +192,7 @@
     $.ajax({ url: URL, dataType: "json", headers: { Authorization: "Bearer " + token } }).done(function (s) {
       last = s;
       badge(s);
-      if (document.getElementById("ranked-menu")) panel(s);
+      if (document.getElementById("ranked-menu")) panel();
     });
   }
 
@@ -113,9 +203,30 @@
   var stockOnShow = RankedScreen.prototype.OnShow;
   RankedScreen.prototype.OnShow = function () {
     if (stockOnShow) stockOnShow.apply(this, arguments);
+    if (document.getElementById("ranked-menu")) panel();
     refresh();
   };
 
-  window.RemasterRanked = { refresh: refresh };
+  // The Play tile queues the selected mode. Solo is the stock path (Ranked.js
+  // queues "ranked_ffa"); a team mode queues its playlist the same way (the
+  // server sends a party's members along with its leader, or refuses with why).
+  var stockSelected = RankedScreen.prototype.OnOptionElemSelected;
+  RankedScreen.prototype.OnOptionElemSelected = function (elem) {
+    var m = mode(selected);
+    var queue = elem && elem.dataset ? elem.dataset.queue : null;
+    if (queue !== "ffa" || m.id === "solo" || Matchmaking.IsMatchmaking) {
+      return stockSelected.apply(this, arguments);
+    }
+    $.when(QueueMatchmaking(m.queue)).then(function (result) {
+      if (result) {
+        PopScreen();
+        PopScreen();
+      } else {
+        ShowError("Failed to join the queue. Please try again.");
+      }
+    });
+  };
+
+  window.RemasterRanked = { refresh: refresh, select: select, selected: function () { return selected; }, modes: MODES };
   $(refresh);
 })();

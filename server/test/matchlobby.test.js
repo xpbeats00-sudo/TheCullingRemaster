@@ -45,6 +45,24 @@ function setup(options = {}) {
 }
 
 (async () => {
+  await test("per-queue options: team Showdown lobbies hold one team, have no map vote and their own bots", () => {
+    const { lobbies, last, started, time } = setup({ maps: ["jungle", "prison"], matchBots: 23, matchBotsByMap: { jungle: 23 },
+      maxPlayers: { default: 16, showdown_duo: 2 }, queues: { showdown_duo: { maps: false, matchBots: 3 } } });
+    lobbies.join("showdown_duo", { id: "a" }, "prison");
+    let v = last("a");
+    assert.deepStrictEqual([v.maps, v.matchBots, v.matchBotsByMap, v.maxPlayers, "vote" in v.players[0]], [null, 3, null, 2, false]);
+    assert.strictEqual(lobbies.vote("a", "jungle"), false, "no vote in team Showdown");
+    lobbies.join("showdown_duo", { id: "b" });
+    v = last("b");
+    assert.strictEqual(v.state, "starting", "a full team counts down");
+    assert.strictEqual(v.map, null);
+    time.advance(5000);
+    assert.deepStrictEqual(started.pop(), { queue: "showdown_duo", players: ["a", "b"] });
+    lobbies.join("ffa", { id: "c" }, "prison");
+    v = last("c");
+    assert.deepStrictEqual([v.maps.prison, v.matchBots, v.maxPlayers], [1, 23, 16], "other queues keep the defaults");
+  });
+
   await test("players searching one playlist share a lobby and see each other", () => {
     const { lobbies, last } = setup();
     lobbies.join("ffa", { id: "a" });
@@ -150,7 +168,27 @@ function setup(options = {}) {
   });
 
   // On the real server (gather 300 ms, countdown 100 ms in tests).
-  const srv = startServer(8141);
+  await test("a party joins in one step, marked as a party: one broadcast each, grouped without ids", () => {
+    const { lobbies, sent, started, time } = setup({ maxPlayers: 4, maps: ["jungle", "prison"] });
+    lobbies.join("coop2", { id: "solo" });
+    sent.length = 0;
+    const lobby = lobbies.joinGroup("coop2", [{ id: "lead" }, { id: "mate" }], "prison", "party-1");
+    assert.strictEqual(lobbies.lobbyOf("lead"), lobby);
+    assert.strictEqual(lobbies.lobbyOf("mate"), lobby);
+    assert.strictEqual(lobbies.lobbyOf("solo"), lobby, "with the player already searching");
+    assert.deepStrictEqual(lobbies.partyMembers("party-1").sort(), ["lead", "mate"]);
+    assert.deepStrictEqual(lobbies.partyMembers("nope"), []);
+    assert.deepStrictEqual(sent.map((x) => x.to).sort(), ["lead", "mate", "solo"], "one update each, not one per member joining");
+    const view = sent[0].payload;
+    assert.deepStrictEqual(view.players.map((p) => [p.name, p.party]), [["solo", null], ["lead", 1], ["mate", 1]]);
+    assert.ok(!JSON.stringify(view).includes("party-1"), "no party id goes out");
+    assert.strictEqual(view.players[1].vote, "prison");
+    time.advance(20000);
+    assert.deepStrictEqual(started[0].players, ["solo", "lead", "mate"]);
+    assert.strictEqual(lobbies.lobbyOf("lead"), null, "out of the lobby once started");
+  });
+
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

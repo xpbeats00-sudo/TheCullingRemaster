@@ -2,6 +2,24 @@
 
 ## Game (next release)
 
+**Ranked Duos, Trios and Quads**
+- The Ranked screen's Duo, Trio and Quads tabs are open: each shows its own tier, ELO, placements and recent matches, and the RANKED tile plays the selected mode. A team mode is the Duo/Trio/Quad match (AI teammates, or your party - the leader queues, up to the team size) rated on your team's placement among the teams (12 duos, 8 trios or 6 quads on Jungle). Your team's win counts as 1st for everyone on it, even if you fell early. Each mode has its own rating (same tiers, seasons and rewards); Ranked Solo is unchanged. The leaderboard has a board per ranked mode. Server and menus: [RANKED_TEAMS.md](RANKED_TEAMS.md). Not yet checked in a match.
+
+**Team Showdown: Showdown 2v2, 3v3 and 4v4**
+- The SHOWDOWN tile asks for the size: 1V1 as before, or 2V2, 3V3 and 4V4, where you and AI teammates take on a team of AI rivals in the centre arena. It is the same series as 1v1: first to 4 rounds, all in one match, with the kit changing every 2 rounds and the same kit for everyone. A round ends when a whole team is down.
+- Each team starts on its own side of the arena, side by side, at the start and after every round. In 1v1 the two fighters start where they always did.
+- A party of up to the team size queues together into one lobby. Each member plays their own match with AI teammates.
+- Your death doesn't end the match while a teammate stands: "YOU ARE DOWN" until the round ends. Your teammate's panel follows them from round to round.
+- The pay for a series is unchanged. Team series are recorded per size.
+- Needs the patched exe (native module) and the server update. Not yet checked in a match.
+
+**No more getting stuck in trees**
+- American Elm and European Linden (the trees on both Jungle and Prison) had trunk collision that stopped about 2 m up, where the trunk forks, and marked unwalkable: a player who ran or jumped into one could land on top of it inside the crown and not get out. Their trunk collision now goes on up into the crown (same footprint, so bots and the navmesh are unchanged): the tree is a solid trunk you bump into (`patch/make_tree_collision.py`).
+- A safety net for anything else like it: if you are stuck for 2 seconds while pushing a direction - hanging on something you can't stand on, or inside the world's geometry - you are put back where you last walked (or the nearest free spot) and told "You were stuck: moved to a free spot". Never in the pods, while dead or spectating, using or crafting, on a ladder or swimming; at most once every 20 s. Needs the patched exe (patch_exe.py fix 10, in the native module). Not yet checked in a match.
+
+**Airdrops cost 25% less FUNC**
+- Every airdrop's FUNC price is its stock price x 0.75, rounded to the nearest whole FUNC (halves up): Archer 85 -> 64, Sapper 205 -> 154, Bait Crate 70 -> 53. The full before/after table is in `docs/AIRDROP_PRICES.md`. The price is the airdrop package's `ActivityResourceCost` (patched by `patch/make_airdrop_prices.py`); the HUD meter and the menu's Airdrop screen show what the game sends, so they follow it. Surprise Me! has no price of its own (it costs what the kit it rolls costs). Not yet checked in a match.
+
 **Duo: your team wins when it's the last one standing**
 - A Duo match now ends with a team victory as soon as every living contestant is on one team: you and your teammate last alive is a win for both (a teammate who died earlier gets the victory too). Before, the match went on until your teammate died. Solo, Showdown and Survival are unchanged. Needs the patched exe (patch_exe.py fix 7, in the native module).
 
@@ -18,6 +36,10 @@
 - The menu no longer starts the next round by itself; it shows the final score once (or the forfeit of a series quit before its end). Right-clicks on its card no longer reach the screen underneath; PLAY AGAIN says why when matchmaking can't start.
 - Jungle's "Grab your Airdrop." toast is stock again in every mode (it was changed for all modes).
 - Server: the HUD reports each round (`POST /api/showdown/round`, by round number, counted once); the match result pays the series once with its own economy (250 XP + 250 per round won + 750 for the series; 40 credits + 20 per round won + 120 for the series; one game on the career, a win only for the series, at most a kill per round won, damage capped at 200 a round), instead of a full 16-player match per round. Queuing Showdown leaves any lobby still searching. Series are kept in `data/showdown-series.json` across restarts.
+
+**CUSTOM matches work**
+- PLAY > CUSTOM > Create: pick the map (Island or Prison) and the stock CUSTOM MATCH SETTINGS (crate, barrel, pylon and building loot counts, extra crate and open locker chances, health stations, recycler time), then START, alone. The match is played on your PC like Solo, with those settings applied by the game itself (`?mods=`; all 17 work, see docs/GAME_MODE_LOOT_CONFIGURATION.md). Results count as Custom.
+- Join explains that custom matches are played on your PC and to invite friends to a party instead. The lobby code is gone from the CUSTOM screen, and leaving the screen leaves the lobby. Needs the server update (`lobby-set-mods`, `custom:<map>:<mods>`) and the menu rebuilt (`make_branding.py --menu-only` for the CUSTOM screen).
 
 **Leaderboard**
 - A LEADERBOARD item on the main menu opens the global leaderboard: the top 50 players on Ranked (this season's rating and tier), Wins, Kills, K/D (10 matches or more), Showdown series won and Time played, by account username. Your own row is highlighted, with your position even outside the top 50; a row opens that player's card. Needs the server update (`remaster-leaderboard-get`). See docs/LEADERBOARD.md.
@@ -114,9 +136,10 @@
 - About 60 times lower p95 latency at 1,000 clients in a local test (733 ms to 11.5 ms).
 - Dependencies (branch `server-deps`): Express 4.22.3 and socket.io 2.5.1 fix 3 high-severity denial-of-service issues.
 
-## Bot AI (draft PR #10, not released)
+## Bot AI (branch `bot-ai`, not released)
 
-- Faster bot reactions and wider sight, from game-config and asset values. Untested in a real match.
+- Five difficulty tiers (Beginner, Casual, Experienced, Advanced, Elite), one built into the patch pak by `patch/make_bot_ai.py` (default Experienced). Each sets how often the AI decides in a fight (stock re-rolled block/shove every frame), how far it sees, how long it remembers a contestant it lost, how it weighs threats, its charged-attack, block and bow timing, and (Casual and up) loots healing and armour instead of guns and traps it can't use. Every tier: archers hold position while drawing (they walked toward the map's origin). Scripted values, not machine learning; no health or damage changes. Untested in a real match (docs/BOT_AI_FULL_OVERHAUL.md).
+- Replaces draft PR #10's AI values in `patch_assets.py`, and drops its no-op wander tweak.
 
 ## Launcher 1.1.0 (published 2026-11-04)
 

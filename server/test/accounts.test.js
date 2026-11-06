@@ -10,7 +10,7 @@ const os = require("os");
 const path = require("path");
 const http = require("http");
 const { spawn, execFileSync } = require("child_process");
-const { startServer } = require("./helpers");
+const { startServer, freePort } = require("./helpers");
 
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
@@ -22,7 +22,7 @@ let nameCounter = 0;
 const uniqueName = (prefix = "Player") => prefix + "_" + (++nameCounter) + "_" + process.pid % 1000;
 
 async function main() {
-  const srv = startServer(8129, { vars: { CULLING_REQUIRE_ACCOUNT: "1" } });
+  const srv = startServer({ vars: { CULLING_REQUIRE_ACCOUNT: "1" } });
   const req = srv.request;
   const register = (body, ip) => req("POST", "/api/account/register", body, from(ip));
   const login = (username, password, ip) => req("POST", "/api/account/login", { username, password }, from(ip));
@@ -273,7 +273,7 @@ async function main() {
     await test("operator CLI: import from a local profiles.json, reset-password", async () => {
       const cli = path.join(__dirname, "..", "tools", "account_admin.js");
       const run = (...args) => new Promise((resolve) => {
-        const p = spawn(process.execPath, [cli, "--port", "8129", ...args]);
+        const p = spawn(process.execPath, [cli, "--port", String(srv.port), ...args]);
         let out = "";
         p.stdout.on("data", (c) => (out += c));
         p.stderr.on("data", (c) => (out += c));
@@ -301,7 +301,7 @@ async function main() {
   }
 
   // ---- claiming an existing profile (players from before accounts existed)
-  const old = startServer(8131, { vars: { CULLING_REQUIRE_ACCOUNT: "0" } });
+  const old = startServer({ vars: { CULLING_REQUIRE_ACCOUNT: "0" } });
   try {
     await old.ready();
     await test("a profile is claimed only from its last login address, and only once", async () => {
@@ -338,7 +338,7 @@ async function main() {
     old.stop();
   }
 
-  await test("accounts, tokens and play grants survive a graceful restart", () => restartKeepsAccounts(8130));
+  await test("accounts, tokens and play grants survive a graceful restart", async () => restartKeepsAccounts(await freePort()));
 }
 
 // ---- graceful stop and restart (the way the service is stopped; see shutdown.test.js)

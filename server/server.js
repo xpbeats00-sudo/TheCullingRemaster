@@ -26,7 +26,9 @@ const HOST = process.env.CULLING_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.CULLING_PORT || '8000', 10);
 // The address clients are told to use (behind HTTPS on the VPS, e.g.
 // https://xplab.shop:8443); defaults to the listen address for local play.
-const BASE = (process.env.CULLING_PUBLIC_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
+// CULLING_PORT=0 listens on a free port the system picks (the tests: suites
+// never collide); the port is then written to CULLING_PORT_FILE, if set.
+let BASE = (process.env.CULLING_PUBLIC_URL || `http://${HOST}:${PORT}`).replace(/\/+$/, '');
 const DATA_DIR = process.env.CULLING_DATA_DIR || path.join(__dirname, 'data');
 const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 
@@ -34,13 +36,23 @@ const PROFILE_FILE = path.join(DATA_DIR, 'profiles.json');
 // (0 = Jungle / "The Island", 1 = Prison).
 // The two offline matches the game can start (DefaultGame.ini OfflineMap /
 // OfflineMap2): the lobby's map vote picks one.
-const MAPS = { jungle: 0, prison: 1 };
+// With CULLING_NIGHT_MAPS=1 the vote also offers the night maps (2 Jungle
+// Night, 3 Prison Night; patch/make_weather.py), which open by URL with their
+// weather (server/weather.js).
+const weather = require('./weather');
+const WEATHER = weather.settings();
+const MAPS = weather.maps(WEATHER);
 // Contestants the game places on each map with patch_exe.py's 24 cap: Jungle
 // has 24 player starts. Prison has 16, and whether more than 16 spawn there
-// hasn't been measured, so it is scored as 16 (never more than it has).
-const FIELD_BY_MAP = { jungle: 24, prison: 16 };
+// hasn't been measured, so it is scored as 16 (never more than it has). The
+// night maps are copies of the day ones.
+const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // Showdown (patch/make_showdown.py): you against one rival in the Jungle centre
 // arena. No lobby or map vote; the menu starts it from "showdown:<format>".
+// Team Showdown (showdown_duo/trio/quad, playlists.js): your team of N (you
+// and AI teammates) against N AI rivals. A party of up to N shares a lobby
+// (one team, no map vote) and match record; the menu starts it from
+// "showdown:<N>" (the arena URL with ?TeamSize=N).
 // Rounds: first to 4 (ShowdownSeries), all in one match with the patched exe
 // (patch/showdown_rounds.c): the HUD reports each round (/api/showdown/round)
 // and the match result that ends the series pays for the series once
@@ -56,16 +68,19 @@ try {
   showdownKit = data.kit || null;
   showdownKits = Array.isArray(data.kits) && data.kits.length ? data.kits : null;
 } catch (e) { showdownKit = null; showdownKits = null; }
-const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, kits: showdownKits, format: SHOWDOWN.format });
+const showdownState = (phase, series) => ({ phase, series, kit: showdownKit, kits: showdownKits,
+  format: series && series.format ? series.format : SHOWDOWN.format });
 const ranked = require('./ranked');
 const { Sessions, MatchTickets, rateLimiter, clientIp } = require('./session');
 const { CoalescedJsonFile, writeAtomicSync } = require('./store');
 const { createMetrics, metricsAllowed } = require('./metrics');
 const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
+const playlists = require('./playlists');
 const { Friends } = require('./friends');
 const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
+const custom = require('./custommatch');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -136,8 +151,10 @@ function inventoryTypes() {
 
 // Custom camos are a one-time purchase: owning a camo's skin on one weapon
 // owns that camo on every weapon. The camo is the part of the asset name after
-// "_XP_" (".../IceAxe_XP_Lava_Storm" -> "Lava_Storm").
-const camoKey = (i) => (i.source === 'xp-camos' ? String(i.asset).split('_XP_')[1] || null : null);
+// "_XP_" (".../IceAxe_XP_Lava_Storm" -> "Lava_Storm"). The VFX camos
+// (patch/make_vfx_camos.py, ".../Katana_XP_VFX_Dark_Matter") work the same way.
+const CAMO_SOURCES = new Set(['xp-camos', 'xp-vfx-camos']);
+const camoKey = (i) => (CAMO_SOURCES.has(i.source) ? String(i.asset).split('_XP_')[1] || null : null);
 
 function ownedCamos(p) {
   const out = new Set();
@@ -471,6 +488,9 @@ app.post('/api/login', (req, res) => {
   res.json({ token, redirect: `${BASE}/api`, userID, build: body.build || '0' });
 });
 
+// Every playlist, what it takes and whether it can be played (playlists.js).
+app.get('/api/playlists', (req, res) => res.json({ playlists: playlists.list() }));
+
 app.post('/api/matchqueue', (req, res) => {
   const body = bodyObject(req);
   // The game posts this itself; trust the body's userid only when that
@@ -528,10 +548,15 @@ app.post('/api/matchresult', (req, res) => {
   // Too short to be a real match: no win, and ranked counts it as last place.
   const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const field = matchField(claim.ticket.map, body.cap);
+  // A ranked team match (the ticket says which mode it scores): you can kill
+  // every contestant but your own team.
+  const rankedMode = claim.ticket.ranked ? ranked.modeId(claim.ticket.rankedMode) : null;
+  const teamSize = rankedMode ? ranked.MODES[rankedMode].teamSize : 1;
+  const maxKills = teamSize > 1 ? teamContestants(claim.ticket.map) - teamSize : field - 1;
   const r = {
     victory: !tooShort && (body.victory === true || body.victory === 'true'),
     // Every other contestant at most; damage within what 15 can take.
-    kills: bounded(parseInt(body.kills, 10), field - 1),
+    kills: bounded(parseInt(body.kills, 10), maxKills),
     damage: bounded(Number(body.damage), 5000),
     // No longer than the match has actually run.
     timeAlive: bounded(Number(body.timeAlive), Math.min(4 * 3600, claim.elapsed + 30)),
@@ -543,21 +568,48 @@ app.post('/api/matchresult', (req, res) => {
   p.cullCredits += credits;
   let rankedResult = null;
   // Only the result of the ranked match itself scores it: a Solo, Duo or
-  // Showdown result never finishes a ranked match left pending.
-  if (p.ranked && p.ranked.pending && claim.ticket.ranked && p.ranked.pending.id === claim.ticket.ranked) {
+  // Showdown result never finishes a ranked match left pending, and a ranked
+  // ticket scores only the pending match of its own mode (Ranked Duos can't
+  // finish a Ranked Solo match, or the other way round).
+  const pendingRanked = rankedMode ? ranked.record(p, rankedMode) : null;
+  if (pendingRanked && pendingRanked.pending && pendingRanked.pending.id === claim.ticket.ranked) {
     const reported = parseInt(body.placement, 10);
-    // Within the field: a map whose contestants outnumber its field (or a
-    // malformed rank) still scores, as last place at worst.
-    const placement = tooShort ? field : r.victory ? 1 : Math.min(field, Math.max(1, Number.isFinite(reported) ? reported : field));
+    let placement, rankedField;
+    if (teamSize > 1) {
+      // The team's placement among the match's teams (ranked.teamPlacement):
+      // first for the team's win (posted after your own death too, by the
+      // HUD's team result), otherwise the team slice of your position; last
+      // when the match was too short to be real or the position is malformed.
+      rankedField = pendingRanked.pending.field;
+      placement = tooShort ? rankedField : ranked.teamPlacement(rankedMode, reported, r.victory, rankedField);
+    } else {
+      // Within the field: a map whose contestants outnumber its field still
+      // scores, as last place at worst; a malformed rank (missing, 0, negative)
+      // is last place, never first. First place is the win, which needs a
+      // victory on a match long enough to be real (tooShort); without one the
+      // best a report can claim is second.
+      rankedField = field;
+      placement = tooShort ? field : r.victory ? 1
+        : Number.isInteger(reported) && reported >= 1 ? Math.min(field, Math.max(2, reported)) : field;
+    }
     if (tooShort) log('ranked result too short', Math.round(claim.elapsed) + ' s', 'counted as last place');
-    const out = ranked.finishMatch(p, { matchId: body.matchId, placement, field, kills: r.kills, damage: r.damage, timeAlive: r.timeAlive },
-      Date.now(), rankedGrant(p));
+    // The ranked match is the one the server's ticket names (a client-sent
+    // matchId is ignored).
+    const out = ranked.finishMatch(p, { matchId: claim.ticket.ranked, placement, field: rankedField, kills: r.kills, damage: r.damage,
+      timeAlive: r.timeAlive }, Date.now(), rankedGrant(p), rankedMode);
     if (out.error) log('ranked result rejected', out.error, JSON.stringify(body).slice(0, 200));
     else {
-      rankedResult = { entry: out.entry, summary: ranked.summary(p) };
-      log('ranked result', out.entry.matchId, 'place', out.entry.placement, out.entry.ratingBefore, '->', out.entry.ratingAfter,
-        out.entry.tierAfter);
+      // How the HUD decided the team's result (hud.js teamOutcome): logged and
+      // kept on the entry, never scored.
+      if (teamSize > 1 && typeof body.teamOutcome === 'string' && /^(won|out|left|waited)$/.test(body.teamOutcome)) {
+        out.entry.teamOutcome = body.teamOutcome;
+      }
+      rankedResult = { entry: out.entry, summary: ranked.summary(p, Date.now(), rankedMode) };
+      log('ranked result', rankedMode, out.entry.matchId, 'place', out.entry.placement + '/' + out.entry.field,
+        out.entry.ratingBefore, '->', out.entry.ratingAfter, out.entry.tierAfter, out.entry.teamOutcome || '');
     }
+  } else if (claim.ticket.ranked) {
+    log('ranked result not scored: the ticket\'s', rankedMode, 'match', claim.ticket.ranked, 'is not pending');
   }
   const s = p.stats;
   s.xp = Math.min(seasonXPCap(), s.xp + earned);
@@ -635,7 +687,7 @@ function showdownMatchResult(res, claim, body, userID) {
     st.minutesAlive += Math.round(r.timeAlive / 60);
     p.lastMatch = { at: Date.now(), xpEarned: earned, victory: r.victory, kills: r.kills, damage: r.damage,
       timeAlive: r.timeAlive, func: 0, showdown: { wins: paid.wins, losses: paid.losses } };
-    if (showdowns.markRecorded(userID)) recordShowdown(userID, paid.won);
+    if (showdowns.markRecorded(userID)) recordShowdown(userID, paid.won, paid.mode);
     saveProfiles();
     log('showdown series paid', userID, paid.wins + '-' + paid.losses, paid.won ? 'VICTORY' : 'defeat',
       '+' + earned + ' XP, +' + credits + ' credits');
@@ -662,8 +714,8 @@ app.post('/api/showdown/round', (req, res) => {
   const view = showdowns.recordInMatch(userID, round, result);
   if (view) {
     log('showdown round', userID, round, result, view.wins + '-' + view.losses, view.over ? (view.won ? 'VICTORY' : 'defeat') : '');
-    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won);
-    setPresence(userID, 'match', { mode: SHOWDOWN.queue, round: view.round });
+    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won, view.mode);
+    setPresence(userID, 'match', { mode: view.mode, round: view.round });
   }
   const s = showdowns.last(userID);
   res.json({ counted: Boolean(view), series: s ? showdowns.view(s) : null });
@@ -904,15 +956,24 @@ function sanitizeProfile(raw, userID) {
   for (const k of STAT_KEYS) p.stats[k] = nonNegative(stats[k], p.stats[k]);
   const level = levelForXP(p.stats.xp);
   if (level) p.stats.level = level;
-  if (isPlainObject(raw.ranked)) {
+  // Ranked records: Solo (ranked) and the team modes (rankedTeams.duo/trio/quad).
+  const rankedRecord = (src) => {
     // Rating changes in the history can be negative; everything else not.
-    const r = cleanValue(raw.ranked, false);
-    r.history = Array.isArray(raw.ranked.history) ? raw.ranked.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
+    const r = cleanValue(src, false);
+    r.history = Array.isArray(src.history) ? src.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
     if (!isPlainObject(r.processed)) r.processed = {};
     if (!isPlainObject(r.tiersReached)) r.tiersReached = {};
     // A match left running on another server can't be finished here.
     r.pending = null;
-    p.ranked = r;
+    return r;
+  };
+  if (isPlainObject(raw.ranked)) p.ranked = rankedRecord(raw.ranked);
+  if (isPlainObject(raw.rankedTeams)) {
+    for (const mode of ranked.TEAM_MODE_IDS) {
+      if (!isPlainObject(raw.rankedTeams[mode])) continue;
+      if (!p.rankedTeams) p.rankedTeams = {};
+      p.rankedTeams[mode] = rankedRecord(raw.rankedTeams[mode]);
+    }
   }
   if (isPlainObject(raw.lastMatch)) p.lastMatch = cleanValue(raw.lastMatch, false);
   return p;
@@ -972,7 +1033,13 @@ app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: t
 app.get('/api/ranked', (req, res) => {
   const userID = userFromRequest(req);
   if (!userID) return res.status(401).json({ error: 'not-logged-in' });
-  res.json(ranked.summary(getProfile(userID)));
+  // The asked mode (?mode=solo|duo|trio|quad; Solo by default, as older menus
+  // and HUDs read it) at the top, and every mode's summary under `modes` (the
+  // Ranked screen's tabs). Reading a team mode never played writes nothing.
+  const p = getProfile(userID);
+  const mode = ranked.modeId(req.query && req.query.mode);
+  const modes = ranked.summaries(p);
+  res.json(Object.assign({}, modes[mode], { modes }));
 });
 
 // Breadcrumbs from the menus (UiTrace.js): the last one before a UI freeze
@@ -1101,10 +1168,8 @@ function rankedGrant(p) {
   };
 }
 
-// Queue names are short identifiers; anything else is treated as "ffa".
-function queueName(raw) {
-  return typeof raw === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(raw) ? raw : 'ffa';
-}
+// Queue names and playlists (playlists.js): a malformed name is Solo.
+const queueName = playlists.queueName;
 
 // Matchmaking: players searching the same playlist wait in one lobby and see
 // each other (matchlobby.js), then each starts the match. Gather and countdown
@@ -1114,8 +1179,12 @@ const lobbies = new MatchLobbies({
     gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
     // The pregame lobby: long enough to see the match's roster and the map.
     countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '10000', 10),
-    maxPlayers: 16,
+    // Team Showdown: a lobby is one team (your party, up to its size).
+    maxPlayers: { default: 16, showdown_duo: 2, showdown_trio: 3, showdown_quad: 4 },
     maps: Object.keys(MAPS),
+    // Team Showdown is always the arena: no map vote, its own bots (2N - 1).
+    queues: { showdown_duo: { maps: false, matchBots: 3 }, showdown_trio: { maps: false, matchBots: 5 },
+      showdown_quad: { maps: false, matchBots: 7 } },
     // Who else is in each player's match: the game fills it with bots up to
     // 16 contestants (Victory.exe caps players plus bots at 16), or up to
     // FIELD_BY_MAP with patch_exe.py (menus from those builds read the map's).
@@ -1124,25 +1193,28 @@ const lobbies = new MatchLobbies({
     // No lobby note: menus never say the other contestants are bots.
     note: null
   },
-  describe: (m) => lobbyCard(m.id),
+  // In a ranked team lobby, each player's rank is their rank in that mode.
+  describe: (m) => { const l = lobbies.lobbyOf(m.id); return lobbyCard(m.id, l ? l.queue : null); },
   send: (m, payload) => {
-    setPresence(m.id, payload.state === 'searching' ? 'searching' : 'lobby', { mode: lobbyQueue(payload.queue).mode });
-    if (!m.socket.connected) return;
-    m.socket.emit('remaster-lobby', payload);
-    m.socket.emit('players-in-queue', { count: payload.players.length });
+    setPresence(m.id, payload.state === 'searching' ? 'searching' : 'lobby', { mode: payload.queue });
+    const s = memberSocket(m);
+    if (!s) return;
+    s.emit('remaster-lobby', payload);
+    s.emit('players-in-queue', { count: payload.players.length });
   },
-  start: (lobby) => {
-    log('lobby', lobby.id, lobby.queue, 'starting with', lobby.members.size, 'player(s)');
-    for (const m of lobby.members.values()) if (m.socket.connected) launchMatch(m.socket, lobby.queue, lobby.map);
-  }
+  start: (lobby) => allocateMatch(lobby)
 });
 
 // What other players see of someone in a lobby: no IDs, nothing private.
-function lobbyCard(userID) {
+// `playlist`: the lobby's; a ranked team playlist shows that mode's rank (none
+// before the player's first match in it), anything else the Solo rank.
+function lobbyCard(userID, playlist) {
   const p = peekProfile(userID);
   const key = accounts.keyForUserID(userID);
   const a = key ? accounts.get(key) : null;
-  const rating = p && p.ranked && Number.isFinite(p.ranked.rating) ? Math.min(ranked.CONFIG.maxRating, p.ranked.rating) : null;
+  const teamMode = ranked.modeForPlaylist(playlist);
+  const rec = teamMode && teamMode !== 'solo' ? ranked.record(p, teamMode) : p && p.ranked;
+  const rating = rec && Number.isFinite(rec.rating) ? Math.min(ranked.CONFIG.maxRating, rec.rating) : null;
   return {
     name: a ? a.username : 'Player',
     level: p && p.stats ? Math.min(SEASON.maxLevel, p.stats.level || 1) : 1,
@@ -1151,94 +1223,313 @@ function lobbyCard(userID) {
   };
 }
 
-// The menu's queue names carry a mode and sometimes a map ("ffa_jungle",
-// "ffa_prison_coop2", "ranked_ffa"): one lobby per mode, the map as the
-// player's first vote.
+// The playlist a queue name asks for, as { mode, map }: one lobby per
+// playlist, the map as the player's first vote.
 function lobbyQueue(raw) {
-  const q = queueName(raw);
-  const map = /prison/.test(q) ? 'prison' : /jungle/.test(q) ? 'jungle' : null;
-  const mode = q.startsWith('ranked') ? 'ranked_ffa' : /coop2/.test(q) ? 'coop2' : q.startsWith('lightning') ? 'lightning'
-    : /^(ffa|quick_play)/.test(q) ? 'ffa' : q;
-  return { mode, map };
+  const r = playlists.resolve(raw);
+  let map = r.map;
+  // A night map (CULLING_NIGHT_MAPS=1, server/weather.js) is asked for by name.
+  if (map && /night/i.test(r.queue) && MAPS[map + '-night'] !== undefined) map += '-night';
+  return { mode: r.playlist.id, map };
 }
 
-function startLocalMatch(socket, queue) {
-  const { mode, map } = lobbyQueue(queue);
-  const q = queueName(queue);           // cleaned: a malformed name is 'ffa'
-  if (/^ranked/.test(q) && /coop2/.test(q)) {
-    // Ranked Duo isn't a mode (yet): say so rather than start Ranked Solo.
-    socket.emit('join-mm-fail', { reason: 'queue-unavailable' });
-    return;
+// The team modes: the team size, and the prefix of the match the menu opens
+// ("duo:<map>", "trio:<map>", "quad:<map>"; patch/make_duo.py's URLs). A party
+// never holds more than its team (playlists.js maxParty = teamSize).
+const TEAM_MODES = { coop2: { size: 2, start: 'duo:' }, coop3: { size: 3, start: 'trio:' }, coop4: { size: 4, start: 'quad:' } };
+// Ranked Duos, Trios and Quads launch exactly as the casual team matches (the
+// same URLs: Ranked Solo is Solo's offline:<map> too); only the ticket's
+// ranked match makes them ranked.
+TEAM_MODES.ranked_coop2 = TEAM_MODES.coop2;
+TEAM_MODES.ranked_coop3 = TEAM_MODES.coop3;
+TEAM_MODES.ranked_coop4 = TEAM_MODES.coop4;
+
+// Contestants a team match on `map` has (every team mode needs the patched
+// exe, which places the map's full field: 24 on Jungle, 16 on Prison).
+function teamContestants(map) {
+  return FIELD_BY_MAP[map] || ranked.CONFIG.maxField;
+}
+
+// A socket that is logged in and connected now, for a player.
+function liveSocket(userID) {
+  const s = socketsByUser.get(userID);
+  return s && s.connected ? s : null;
+}
+
+// The socket a lobby member is reached on: the one they queued from while it
+// is connected, else the one they are logged in on now (after a reconnect).
+function memberSocket(m) {
+  return m.socket && m.socket.connected ? m.socket : liveSocket(m.id);
+}
+
+// Refuses a queue request, saying why (the menu shows `message`).
+function refuseQueue(socket, reason, message, extra = {}) {
+  log('queue refused', socket.userID, reason);
+  socket.emit('join-mm-fail', Object.assign({ reason, message }, extra));
+}
+
+// Takes a whole party out of matchmaking: everyone in its lobby leaves, and
+// each member's menu is told why (`reason`, `message`). `except` (the player
+// who asked, answered with leave-mm-ack instead) isn't told again. Returns
+// whether the party was queued.
+function cancelPartyQueue(party, reason, message, except = null) {
+  const queued = lobbies.partyMembers(party.id);
+  if (!queued.length) return false;
+  log('party', party.id, 'queue cancelled:', reason);
+  for (const id of queued) {
+    lobbies.leave(id);
+    setPresence(id, 'menu');
+    const s = id === except ? null : liveSocket(id);
+    if (s) s.emit('leave-mm-group', { reason, message });
   }
-  socket.emit('join-mm-ack');
-  if (mode === SHOWDOWN.queue) {
-    // Out of any lobby still searching: its match-ready would land mid-series.
-    lobbies.leave(socket.userID);
-    // The whole series is this match. One left unfinished is forfeited first.
-    const before = showdowns.current(socket.userID);
-    const { series, left } = showdowns.startSeries(socket.userID);
-    if (left && before && before.recorded === false) { before.recorded = true; recordShowdown(socket.userID, false); }
-    socket.emit('remaster-showdown', showdownState('round', series));
-    setPresence(socket.userID, 'match', { mode: SHOWDOWN.queue, round: series.round });
-    return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map);
-  }
-  // A party leader queues the party: everyone online and in the menu joins
-  // the same lobby, and their menus show the queue (join-mm-group).
-  const p = friends.party(socket.userID);
-  if (p && p.leader === socket.userID && p.members.length > 1) {
-    const group = [{ id: socket.userID, socket }];
-    for (const id of p.members) {
-      const s = socketsByUser.get(id);
-      if (id === socket.userID || !s || !s.connected || presenceState(id) === 'match') continue;
-      // Duo is played in pairs: the leader and one party member.
-      if (mode === 'coop2' && group.length >= 2) break;
-      group.push({ id, socket: s });
-      s.emit('join-mm-group');
+  return true;
+}
+
+// Whether `userID` is waiting in a lobby as part of `party`.
+function partyQueued(party, userID) {
+  const lobby = lobbies.lobbyOf(userID);
+  return !!lobby && lobby.members.get(userID).party === party.id;
+}
+
+// A party member offline for longer than this (and not in a match) leaves the
+// party, and the others are told: a party never waits on someone who has
+// gone, and is never led by someone who isn't there. Coming back in time
+// (the menu logs in again, e.g. after every match) keeps their place.
+const PARTY_OFFLINE_MS = parseInt(process.env.CULLING_PARTY_OFFLINE_MS || '120000', 10);
+const offlineTimers = new Map();     // userID -> timer
+function stopWatchingOffline(userID) {
+  clearTimeout(offlineTimers.get(userID));
+  offlineTimers.delete(userID);
+}
+function watchPartyOffline(userID) {
+  stopWatchingOffline(userID);
+  if (!friends.party(userID)) return;
+  const timer = setTimeout(() => {
+    offlineTimers.delete(userID);
+    if (liveSocket(userID)) return;
+    if (presenceState(userID) === 'match') return watchPartyOffline(userID);   // playing: their menu comes back after
+    const p = friends.party(userID);
+    if (!p) return;
+    const before = p.members.slice();
+    const wasLeader = p.leader === userID;
+    const name = usernameOf(userID) || 'A party member';
+    friends.leave(userID);
+    const leader = p.members.length > 1 ? usernameOf(p.leader) : null;
+    log('party', p.id, 'removed offline member', userID, wasLeader && leader ? '(leader now ' + p.leader + ')' : '');
+    for (const id of before) {
+      if (id === userID) continue;
+      const s = liveSocket(id);
+      if (s) {
+        s.emit('remaster-party-notice', { reason: 'member-offline', username: name, leader,
+          message: name + ' has been offline for a while and left the party.' + (wasLeader && leader ? ' ' + leader + ' leads now.' : '') });
+      }
+      sendFriends(id);
     }
-    lobbies.joinGroup(mode, group, map);
-    log('party', p.id, 'queued', mode, group.length + '/' + p.members.length, 'player(s)');
-    return;
-  }
-  lobbies.join(mode, { id: socket.userID, socket }, map);
+  }, PARTY_OFFLINE_MS);
+  if (timer.unref) timer.unref();
+  offlineTimers.set(userID, timer);
 }
 
-// The lobby's countdown ended: this player's match starts (against bots, on
-// their PC). Ranked counts from here, so cancelling in the lobby costs nothing.
-function launchMatch(socket, queue, map) {
-  const showdown = queue === SHOWDOWN.queue;
-  // Duo: the pairs mode, you and a teammate (patch/make_duo.py); the menu
-  // starts it from "duo:<map>".
-  const duo = lobbyQueue(queue).mode === 'coop2';
+// A player asks to queue (the menu's join-mm, or the game's /api/matchqueue).
+// A party queues as one: only its leader can queue it, every member must be
+// in the menu, the playlist must take a party that size, and every member
+// joins one lobby and later gets the same match. Nothing is half done: a
+// request that can't be met is refused, with the reason, before anyone moves.
+function startLocalMatch(socket, raw) {
+  const userID = socket.userID;
+  const { queue: q, playlist } = playlists.resolve(raw);
+  const { map } = lobbyQueue(raw);      // the first vote (a night map by name when offered)
+  const mode = playlist.id;
+  const p = friends.party(userID);
+  const size = p ? p.members.length : 1;
+  const current = lobbies.lobbyOf(userID);
+
+  // A party member doesn't queue on their own. Already in their party's lobby
+  // (they pressed a mode again): they stay there. Otherwise: refused.
+  if (p && size > 1 && p.leader !== userID) {
+    if (current && lobbies.lobbyOf(p.leader) === current) {
+      socket.emit('join-mm-group', { queueName: q, playlist: current.queue, partyId: p.id });
+      socket.emit('remaster-lobby', lobbies.view(current));
+      return;
+    }
+    const leader = usernameOf(p.leader) || 'Your party leader';
+    return refuseQueue(socket, 'party-leader-queues',
+      leader + ' leads your party: only the leader can queue it. Leave the party to queue on your own.');
+  }
+  const ok = playlists.checkParty(playlist, size);
+  if (!ok.ok) return refuseQueue(socket, ok.error, ok.message, { playlist: mode });
+
+  // Already queued for this playlist (with the whole party, if in one):
+  // nothing changes (a repeated request).
+  if (current && current.queue === mode && (size === 1 || partyQueued(p, userID))) {
+    socket.emit('join-mm-ack');
+    socket.emit('remaster-lobby', lobbies.view(current));
+    return;
+  }
+  // Another playlist: allowed while that lobby is still searching (the party
+  // moves together), not once its match is counting down.
+  if (current && current.state !== 'searching') {
+    return refuseQueue(socket, 'match-starting', 'Your match is about to start: leave the lobby before choosing another mode.');
+  }
+
+  // Every member must be here to play: online, in the menu, not in a match.
+  const others = p && size > 1 ? p.members.filter((id) => id !== userID) : [];
+  const away = others.filter((id) => !liveSocket(id) || presenceState(id) === 'match');
+  if (away.length) {
+    const names = away.map((id) => usernameOf(id) || 'A party member');
+    return refuseQueue(socket, 'party-not-ready', names.join(', ') + (names.length > 1 ? ' are' : ' is')
+      + ' not in the menu (offline or in a match): your party can queue when everyone is back.',
+    { members: names });
+  }
+
+  if (playlist.kind === 'showdown' && playlist.teamSize === 1) {
+    socket.emit('join-mm-ack');
+    // Out of any lobby still searching: its match-ready would land mid-series.
+    lobbies.leave(userID);
+    return launchMatch(socket, SHOWDOWN.queue, SHOWDOWN.map, { matchId: newMatchId(), lobbyId: null, partyId: null });
+  }
+
+  socket.emit('join-mm-ack');
+  if (!others.length) {
+    lobbies.join(mode, { id: userID, socket }, playlist.kind === 'showdown' ? null : map);
+    return;
+  }
+  // The party: the members' menus follow the leader (join-mm-group, with the
+  // queue so they show the right mode), then everyone joins one lobby at once.
+  for (const id of others) liveSocket(id).emit('join-mm-group', { queueName: q, playlist: mode, partyId: p.id });
+  const group = [{ id: userID, socket }].concat(others.map((id) => ({ id, socket: liveSocket(id) })));
+  const lobby = lobbies.joinGroup(mode, group, playlist.kind === 'showdown' ? null : map, p.id);
+  log('party', p.id, 'queued', mode, 'lobby', lobby.id, p.members.length, 'player(s)');
+}
+
+const newMatchId = () => crypto.randomBytes(8).toString('hex');
+
+// Test hook: CULLING_FAULT_ALLOCATION=1 makes every lobby's match allocation
+// fail (test/party.test.js), so the failure path is exercised for real.
+const FAULT_ALLOCATION = process.env.CULLING_FAULT_ALLOCATION === '1';
+
+// A lobby's countdown ended: its match. Every member gets the same match id
+// and lobby id (and their party's id), on their match-ready and their ticket.
+// A party is all or nothing: if any member can't be sent (gone since the
+// countdown), none of that party is, and each is told why; nothing (ticket,
+// ranked match) has been started for them.
+function allocateMatch(lobby) {
+  const matchId = newMatchId();
+  const members = [...lobby.members.values()];
+  const fail = (ids, message) => {
+    for (const id of ids) {
+      setPresence(id, 'menu');
+      const s = liveSocket(id);
+      if (s) s.emit('join-mm-fail', { reason: 'allocation-failed', message, playlist: lobby.queue });
+    }
+  };
+  if (FAULT_ALLOCATION) {
+    log('lobby', lobby.id, 'allocation failed (CULLING_FAULT_ALLOCATION)');
+    return fail(members.map((m) => m.id), 'The match could not be set up. Nobody was sent in: queue again.');
+  }
+  const go = [];
+  const byParty = new Map();
+  for (const m of members) {
+    if (!m.party) { if (memberSocket(m)) go.push(m); continue; }
+    if (!byParty.has(m.party)) byParty.set(m.party, []);
+    byParty.get(m.party).push(m);
+  }
+  for (const [party, list] of byParty) {
+    const gone = list.filter((m) => !memberSocket(m));
+    if (gone.length) {
+      log('lobby', lobby.id, 'party', party, 'not allocated:', gone.length, 'member(s) gone');
+      fail(list.map((m) => m.id), (gone.map((m) => usernameOf(m.id) || 'A party member').join(', '))
+        + ' left before the match started: your party was not sent in.');
+      continue;
+    }
+    go.push(...list);
+  }
+  log('lobby', lobby.id, lobby.queue, 'match', matchId, 'starting with', go.length, 'player(s)');
+  for (const m of go) launchMatch(memberSocket(m), lobby.queue, lobby.map, { matchId, lobbyId: lobby.id, partyId: m.party || null });
+}
+
+// The match starts for this player (against bots, on their PC). Ranked counts
+// from here, so cancelling in the lobby costs nothing. `shared` is the match
+// record the player's lobby shares: { matchId, lobbyId, partyId }.
+function launchMatch(socket, queue, map, shared = {}) {
+  const sdPlaylist = playlists.resolve(queue).playlist;
+  const showdown = sdPlaylist.kind === 'showdown';
+  const mode = showdown ? sdPlaylist.id : lobbyQueue(queue).mode;
+  // Duo, Trios, Quads: the pairs mode with you and 1-3 teammates
+  // (patch/make_duo.py); the menu starts it from "duo:<map>" ("trio:", "quad:").
+  const team = TEAM_MODES[mode] || null;
   const mapIndex = Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0;
   let rankedId = null;
-  if (String(queue).startsWith('ranked')) {
+  const rankedMode = ranked.modeForPlaylist(mode);
+  if (rankedMode && playlists.PLAYLISTS[mode].ranked) {
     const p = getProfile(socket.userID);
-    const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p));
-    if (abandoned) log('ranked abandoned', abandoned.matchId, abandoned.ratingBefore, '->', abandoned.ratingAfter);
-    log('ranked match', match.id, 'rating', match.ratingBefore, 'mmr', match.mmr);
+    // A team match is scored among its teams: the map's contestants / team size.
+    const ticketMap = Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle';
+    const opts = { mode: rankedMode, field: team ? ranked.teamField(rankedMode, teamContestants(ticketMap)) : undefined };
+    const { match, abandoned } = ranked.startMatch(p, Date.now(), rankedGrant(p), opts);
+    if (abandoned) log('ranked abandoned', rankedMode, abandoned.matchId, abandoned.ratingBefore, '->', abandoned.ratingAfter);
+    log('ranked match', rankedMode, match.id, 'rating', match.ratingBefore, 'mmr', match.mmr, 'field', match.field,
+      shared.partyId ? 'party ' + shared.partyId : '');
     rankedId = match.id;
     saveProfiles();
   }
-  // The ticket says which match this is: its map, its mode, and the ranked
-  // match it scores (only that ranked match is finished by its result).
+  const matchId = shared.matchId || newMatchId();
+  // The ticket says which match this is: its map, its mode, the ranked match
+  // it scores (only that ranked match is finished by its result), and the
+  // shared record (match, lobby, party).
   tickets.start(socket.userID, socketIp(socket), {
     map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle',
-    mode: showdown ? SHOWDOWN.queue : lobbyQueue(queue).mode,
-    ranked: rankedId
+    mode,
+    ranked: rankedId,
+    // Which mode's rating that ranked match is (solo, duo, trio, quad).
+    rankedMode: rankedId ? rankedMode : null,
+    matchId,
+    lobbyId: shared.lobbyId || null,
+    partyId: shared.partyId || null
   });
-  if (!showdown) setPresence(socket.userID, 'match', { mode: lobbyQueue(queue).mode });
-  log('match-ready ->', socket.userID, showdown ? 'showdown ' + SHOWDOWN.format : (duo ? 'duo map ' : 'offline map ') + mapIndex);
+  if (!showdown) setPresence(socket.userID, 'match', { mode });
+  else beginSeries(socket, sdPlaylist);
+  // Night maps and weather: the map's URL with the match's weather preset and
+  // seed ("map:<solo|duo>:<index>[?TeamSize=N]?Weather=..."); otherwise the
+  // stock answers (offline:, duo:, trio:, quad:<map>).
+  const sky = showdown ? null : weather.weatherFor(WEATHER, map);
+  // Showdown: "showdown:1v1" (the arena URL), team Showdown "showdown:<N>"
+  // (the arena URL with ?TeamSize=N; ClientWeb.js RemasterShowdownURL).
+  const answer = showdown ? 'showdown:' + (sdPlaylist.teamSize > 1 ? sdPlaylist.teamSize : SHOWDOWN.format)
+    : weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, team, sky);
+  log('match-ready ->', socket.userID, showdown ? 'showdown ' + sdPlaylist.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
+    'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   socket.emit('match-ready', {
-    gameServer: showdown ? 'showdown:' + SHOWDOWN.format : (duo ? 'duo:' : 'offline:') + mapIndex,
+    gameServer: answer,
     nonce: crypto.randomBytes(8).toString('hex'),
-    serverNonce: crypto.randomBytes(8).toString('hex')
+    serverNonce: crypto.randomBytes(8).toString('hex'),
+    // The shared record. Each player's match still runs on their own PC with
+    // AI contestants (and an AI teammate in Duo): netplay is false.
+    matchId,
+    lobbyId: shared.lobbyId || null,
+    partyId: shared.partyId || null,
+    playlist: mode,
+    // The ranked mode this match is rated in (null: not ranked).
+    ranked: rankedId ? rankedMode : null,
+    netplay: false
   });
+}
+
+// The whole series is this match (any team size): one left unfinished is
+// forfeited first. The menu gets the series, friends see the round.
+function beginSeries(socket, playlist) {
+  const userID = socket.userID;
+  const before = showdowns.current(userID);
+  const { series, left } = showdowns.startSeries(userID, { mode: playlist.id, teamSize: playlist.teamSize });
+  if (left && before && before.recorded === false) { before.recorded = true; recordShowdown(userID, false, before.mode); }
+  socket.emit('remaster-showdown', showdownState('round', series));
+  setPresence(userID, 'match', { mode: playlist.id, round: series.round });
 }
 
 // How many contestants a match had: the stock 16 unless the game reports a
 // higher cap (builds with patch_exe.py), then what the map places, within it.
 function matchField(map, cap) {
-  if (map === SHOWDOWN.map) return SHOWDOWN.field;
+  if (map === SHOWDOWN.map) return SHOWDOWN.field;   // Showdown results are scored by showdownMatchResult
   const reported = parseInt(cap, 10);
   if (!Number.isInteger(reported) || reported <= ranked.CONFIG.field) return ranked.CONFIG.field;
   return Math.min(reported, ranked.CONFIG.maxField, FIELD_BY_MAP[map] || ranked.CONFIG.field);
@@ -1252,7 +1543,7 @@ function sendShowdown(socket, loginAt) {
   const s = showdowns.current(socket.userID) || showdowns.last(socket.userID);
   if (!s) return;
   if (!s.over && s.startedAt >= loginAt) return;
-  if (!s.over && showdowns.leave(socket.userID) && showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false);
+  if (!s.over && showdowns.leave(socket.userID) && showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false, s.mode);
   if (s.over && showdowns.markAnnounced(socket.userID)) socket.emit('remaster-showdown', showdownState('over', showdowns.view(s)));
 }
 
@@ -1262,7 +1553,10 @@ function sendShowdown(socket, loginAt) {
 // match (with the mode, and the round in Showdown). Offline is derived.
 const presence = new Map();     // userID -> { state, mode, round, since }
 const MATCH_PRESENCE_MS = 45 * 60 * 1000;
-const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', ranked_ffa: 'Ranked', showdown: 'Showdown', lightning: 'Lightning' };
+const MODE_LABELS = { ffa: 'Solo', coop2: 'Duo', coop3: 'Trios', coop4: 'Quads', ranked_ffa: 'Ranked',
+  ranked_coop2: 'Ranked Duos', ranked_coop3: 'Ranked Trios', ranked_coop4: 'Ranked Quads', showdown: 'Showdown',
+  showdown_duo: 'Showdown Duos', showdown_trio: 'Showdown Trios', showdown_quad: 'Showdown Quads',
+  lightning: 'Lightning', custom: 'Custom' };
 
 function usernameOf(userID) {
   const key = accounts.keyForUserID(userID);
@@ -1299,7 +1593,7 @@ function statusOf(userID) {
   else if (playing) state = 'match';
   const mode = st && st.mode && MODE_LABELS[st.mode] ? MODE_LABELS[st.mode] : null;
   let label = { offline: 'Offline', menu: 'In menu', searching: 'Searching', lobby: 'In lobby', match: 'In match' }[state];
-  if (mode && state !== 'offline' && state !== 'menu') label += ' · ' + mode + (st.round && mode === 'Showdown' ? ' round ' + st.round : '');
+  if (mode && state !== 'offline' && state !== 'menu') label += ' · ' + mode + (st.round && /^Showdown/.test(mode) ? ' round ' + st.round : '');
   return { state, label, lastSeen: state === 'offline' ? friends.peek(userID).seen : null };
 }
 
@@ -1348,12 +1642,30 @@ function notifyFriends(userID) {
   }
 }
 
-// A finished Showdown series on the player's record (their card shows it).
-function recordShowdown(userID, won) {
+// A finished Showdown series on the player's record (their card shows it):
+// 1v1 under `showdown` (as before), team Showdown per playlist under
+// `showdownTeams` ({ showdown_duo: { won, lost }, ... }).
+const SHOWDOWN_TEAM_MODES = ['showdown_duo', 'showdown_trio', 'showdown_quad'];
+function recordShowdown(userID, won, mode) {
   const p = getProfile(userID);
-  p.showdown = p.showdown || { won: 0, lost: 0 };
-  if (won) p.showdown.won++; else p.showdown.lost++;
+  let rec;
+  if (SHOWDOWN_TEAM_MODES.includes(mode)) {
+    if (!p.showdownTeams || typeof p.showdownTeams !== 'object') p.showdownTeams = {};
+    rec = p.showdownTeams[mode] = p.showdownTeams[mode] || { won: 0, lost: 0 };
+  } else {
+    rec = p.showdown = p.showdown || { won: 0, lost: 0 };
+  }
+  if (won) rec.won++; else rec.lost++;
   saveProfiles();
+}
+
+function showdownTeamsCard(p) {
+  const out = {};
+  for (const m of SHOWDOWN_TEAM_MODES) {
+    const r = p.showdownTeams && p.showdownTeams[m];
+    out[m] = { won: (r && r.won) || 0, lost: (r && r.lost) || 0 };
+  }
+  return out;
 }
 
 // A player's card: who they are and what their profile records.
@@ -1372,6 +1684,7 @@ function playerCard(userID, viewer) {
     damage: Math.round(s.totalDamage || 0),
     memberSince: p.createdAt || null,
     showdown: p.showdown ? { won: p.showdown.won || 0, lost: p.showdown.lost || 0 } : { won: 0, lost: 0 },
+    showdownTeams: showdownTeamsCard(p),
     ranked: null,
     status: statusOf(userID)
   });
@@ -1385,6 +1698,14 @@ function playerCard(userID, viewer) {
       matches: r.matches || 0, wins: r.wins || 0,
       tiersReached: ranked.TIERS.filter((t) => r.tiersReached && r.tiersReached[t.name]).map((t) => t.name)
     };
+  }
+  // The team modes this season (null: not played this season).
+  card.rankedTeams = {};
+  for (const mode of ranked.TEAM_MODE_IDS) {
+    const t = ranked.record(p, mode);
+    const thisSeason = t && Number.isFinite(t.rating) && t.season === ranked.CONFIG.season.id && (t.matches || 0) > 0;
+    const rating = thisSeason ? Math.min(ranked.CONFIG.maxRating, t.rating) : null;
+    card.rankedTeams[mode] = thisSeason ? { tier: ranked.tierFor(rating).name, rating, matches: t.matches || 0, wins: t.wins || 0 } : null;
   }
   if (viewer) {
     const me = friends.peek(viewer);
@@ -1463,6 +1784,7 @@ io.on('connection', (socket) => {
     clearTimeout(socket.loginTimer);
     socket.userID = userID;
     socketsByUser.set(userID, socket);
+    stopWatchingOffline(userID);         // back in time: their party keeps them
     activity.seen(userID);
     const p = getProfile(userID);
     log('socket login', userID);
@@ -1473,7 +1795,9 @@ io.on('connection', (socket) => {
     socket.emit('player-online-response', { data: socketsByUser.size });
     socket.emit('player-counts', { online: socketsByUser.size, inQueue: 0 });
     socket.emit('update-queue-status', {
-      ffa: { isActive: true }, coop2: { isActive: true }, lightning: { isActive: true }, ranked_ffa: { isActive: true }
+      ffa: { isActive: true }, coop2: { isActive: true }, coop3: { isActive: true }, coop4: { isActive: true },
+      lightning: { isActive: true }, ranked_ffa: { isActive: true }, ranked_coop2: { isActive: true },
+      ranked_coop3: { isActive: true }, ranked_coop4: { isActive: true }
     }, Date.now());
     socket.emit('update-average-queue-time', 2000);
     later(sendEntitlements, 2000);
@@ -1491,25 +1815,22 @@ io.on('connection', (socket) => {
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => {
-    lobbies.leave(socket.userID);
-    socket.emit('leave-mm-ack');
-    setPresence(socket.userID, 'menu');
-    // The party leader cancelling takes the party out of the lobby too.
-    const p = friends.party(socket.userID);
-    if (p && p.leader === socket.userID) {
-      for (const id of p.members) {
-        if (id === socket.userID || !lobbies.leave(id)) continue;
-        const s = socketsByUser.get(id);
-        if (s) s.emit('leave-mm-group');
-        setPresence(id, 'menu');
-      }
+    const me = socket.userID;
+    // A party queued together leaves together, whoever cancels: the others'
+    // menus are told who did.
+    const p = friends.party(me);
+    if (!(p && partyQueued(p, me) && cancelPartyQueue(p, p.leader === me ? 'party-leader-cancelled' : 'party-member-cancelled',
+      (usernameOf(me) || 'A party member') + ' cancelled the search.', me))) {
+      lobbies.leave(me);
     }
+    socket.emit('leave-mm-ack');
+    setPresence(me, 'menu');
   });
   // Showdown: leave the series from the menu (the next round isn't played).
   on('showdown-leave', () => {
     const series = showdowns.leave(socket.userID);
     if (series) {
-      if (showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false);
+      if (showdowns.markRecorded(socket.userID)) recordShowdown(socket.userID, false, series.mode);
       socket.emit('remaster-showdown', showdownState('left', series));
     }
   });
@@ -1657,8 +1978,25 @@ io.on('connection', (socket) => {
   // dropped, and that last player hears of it too.
   const membersOf = (p) => (p ? p.members.slice() : []);
   friendAction('party-accept', (me, msg, reply) => {
-    const before = membersOf(friends.party(me));
-    const r = friends.acceptInvite(me, shortString(msg.partyId, 40, ''));
+    const partyId = shortString(msg.partyId, 40, '');
+    // A party searching can't change: join when its search is over (that
+    // includes a leader still searching alone before anyone joined).
+    const target = friends.parties.get(partyId);
+    if (target && target.members.some((id) => lobbies.lobbyOf(id))) {
+      return reply({ error: 'party-in-queue', message: 'That party is searching for a match: accept when its search is over.' });
+    }
+    const old = friends.party(me);
+    const before = membersOf(old);
+    // Out of whatever search this player was in (their old party's, or
+    // their own) before they join.
+    if (old && partyQueued(old, me)) {
+      cancelPartyQueue(old, 'party-changed', (usernameOf(me) || 'A party member') + ' joined another party: the search was stopped.');
+    } else if (lobbies.lobbyOf(me)) {
+      lobbies.leave(me);
+      setPresence(me, 'menu');
+      socket.emit('leave-mm-group', { reason: 'joined-party', message: 'You joined a party: its leader queues for it.' });
+    }
+    const r = friends.acceptInvite(me, partyId);
     reply(r.ok ? { ok: true, partyId: r.party.id } : r);
     if (!r.ok) return;
     for (const id of before) sendFriends(id);
@@ -1672,7 +2010,11 @@ io.on('connection', (socket) => {
     if (r.ok) for (const id of new Set([me].concat(before))) sendFriends(id);
   });
   friendAction('party-leave', (me, msg, reply) => {
-    const before = membersOf(friends.party(me));
+    const was = friends.party(me);
+    const before = membersOf(was);
+    if (was && partyQueued(was, me)) {
+      cancelPartyQueue(was, 'party-changed', (usernameOf(me) || 'A party member') + ' left the party: the search was stopped.');
+    }
     const p = friends.leave(me);
     reply(p ? { ok: true } : { error: 'not-in-party' });
     for (const id of new Set([me].concat(before))) sendFriends(id);
@@ -1690,28 +2032,40 @@ io.on('connection', (socket) => {
     socket.emit('remaster-leaderboard', leaderboard.view(usernameOf(socket.userID) ? socket.userID : null));
   });
 
-  // Private ("custom") lobbies also go straight to a local bot match.
+  // CUSTOM (custommatch.js): a private lobby of one, played on the player's
+  // PC with the map and the settings the CUSTOM screen picked. Nobody can join
+  // one (there is no multiplayer hosting): the menu says to use a party.
   on('lobby-create', (msg) => {
-    socket.lobby = {
-      code: crypto.randomBytes(3).toString('hex'),
-      owner: socket.userID,
-      mapName: shortString(msg && msg.mapName, 64, '') || 'Jungle_P',
-      members: [{ user: socket.userID, team: 0 }]
-    };
+    socket.lobby = custom.lobby(crypto.randomBytes(3).toString('hex'), socket.userID, lobbyCard(socket.userID),
+      msg && msg.cullingcard, msg && msg.mapName);
     socket.emit('lobby-update', socket.lobby);
   });
-  on('lobby-join', () => socket.emit('lobby-join-fail', { reason: 'not-found' }));
+  on('lobby-join', () => socket.emit('lobby-join-fail', { reason: custom.JOIN_REFUSED }));
   on('lobby-set-map', (msg) => {
     if (!socket.lobby) return socket.emit('lobby-update-fail', {});
-    socket.lobby.mapName = shortString(msg && msg.mapName, 64, '') || socket.lobby.mapName;
+    socket.lobby.mapName = custom.mapName(msg && msg.mapName, socket.lobby.mapName);
     socket.emit('lobby-update', socket.lobby);
+  });
+  // The CUSTOM MATCH SETTINGS screen: whole numbers within each setting's
+  // bounds; anything else keeps the setting as it was. Acknowledged on its
+  // own event (a lobby-update would reset the settings screen's focus).
+  on('lobby-set-mods', (msg) => {
+    if (!socket.lobby) return socket.emit('lobby-set-mods-fail', { reason: 'not-in-lobby' });
+    socket.lobby.mods = custom.cleanMods(msg && msg.mods, socket.lobby.mods);
+    socket.emit('lobby-set-mods-ack', { mods: socket.lobby.mods });
   });
   on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   on('lobby-start-match', () => {
-    if (!socket.lobby) return socket.emit('lobby-update-fail', {});
-    const map = socket.lobby && /prison|jungle2/i.test(socket.lobby.mapName) ? 1 : 0;
-    tickets.start(socket.userID, socket.ip, { map: map ? 'prison' : 'jungle', mode: 'custom' });
-    socket.emit('match-ready', { gameServer: 'offline:' + map, nonce: 'x', serverNonce: 'x' });
+    if (!socket.lobby) return socket.emit('lobby-start-match-fail', { reason: 'not-in-lobby' });
+    // Out of any matchmaking lobby: its match-ready would land on top of this one.
+    lobbies.leave(socket.userID);
+    const map = custom.mapIndex(socket.lobby.mapName);
+    const gameServer = custom.gameServer(socket.lobby.mapName, socket.lobby.mods);
+    tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom' });
+    setPresence(socket.userID, 'match', { mode: 'custom' });
+    log('match-ready ->', socket.userID, gameServer);
+    socket.emit('match-ready', { gameServer, nonce: crypto.randomBytes(8).toString('hex'),
+      serverNonce: crypto.randomBytes(8).toString('hex') });
   });
 
   socket.on('disconnect', (reason) => {
@@ -1721,12 +2075,20 @@ io.on('connection', (socket) => {
     if (left > 0) socketsByIp.set(socket.ip, left); else socketsByIp.delete(socket.ip);
     clearTimeout(socket.loginTimer);
     if (socket.userID && socketsByUser.get(socket.userID) === socket) {
-      lobbies.leave(socket.userID);
+      const me = socket.userID;
+      // Gone mid-search: the party's search stops for everyone, with the
+      // reason (never a party sent on without one of its members).
+      const p = friends.party(me);
+      if (!(p && partyQueued(p, me) && cancelPartyQueue(p, p.leader === me ? 'party-leader-disconnected' : 'party-member-disconnected',
+        (usernameOf(me) || 'A party member') + ' disconnected: the search was stopped.', me))) {
+        lobbies.leave(me);
+      }
       socketsByUser.delete(socket.userID);
       if (usernameOf(socket.userID)) friends.seen(socket.userID);
       notifyFriends(socket.userID);
       // Offline with no match running: nothing to remember about them.
       if (!tickets.peek({ userID: socket.userID })) presence.delete(socket.userID);
+      watchPartyOffline(me);
     }
   });
 });
@@ -1791,5 +2153,12 @@ process.on('unhandledRejection', (e) => {
 });
 
 server.listen(PORT, HOST, () => {
+  const port = server.address().port;
+  if (!process.env.CULLING_PUBLIC_URL) BASE = `http://${HOST}:${port}`;
+  if (process.env.CULLING_PORT_FILE) {
+    const file = process.env.CULLING_PORT_FILE;
+    fs.writeFileSync(file + '.tmp', String(port));
+    fs.renameSync(file + '.tmp', file);
+  }
   log(`The Culling local server listening on ${BASE}  (ClientWeb root: ${BASE}/api)`);
 });

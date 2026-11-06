@@ -1,20 +1,24 @@
-/* The native module: Showdown rounds, the Duo team's win and the Chokening's
- * kills.
+/* The native module: Showdown rounds, team sizes (Duo, Trios, Quads), the
+ * team's win and the Chokening's kills.
  *
  * Built by build_showdown_rounds.py (MSVC cl, no CRT) into a blob that
  * patch_exe.py places in a new section of Victory.exe. All game addresses are
  * image-relative (the exe is ASLR-enabled): the base is found from the RVA of
  * sd_self_rva, which the builder writes into the blob.
  *
- * Five entry points:
+ * Seven entry points:
  *
  * sd_should_end(gm) replaces AShooterGame_FreeForAll's "should the match end"
  *   virtual (vtable slot 282, VA 0x140244d30), which AShooterGameMode::Tick
  *   calls once a second while the match is InProgress. For Solo and every
- *   other mode it is the stock function. For Duo (ClassicTeams) it is the
- *   stock function, and also ends the match once every living contestant is
- *   on one team (duo_should_end, below). For Lightning (Showdown) it runs the
- *   series:
+ *   other mode it is the stock function. For Duo, Trios and Quads
+ *   (ClassicTeams) it is the stock function, and also ends the match once
+ *   every living contestant is on one team (duo_should_end, below), and in
+ *   Trios and Quads it reports the teammates the game's own panel doesn't
+ *   show ("TMS|", below). For Lightning (Showdown) it runs the series - 1v1,
+ *   or team against team when the URL has ?TeamSize=N, N 2-8 (team
+ *   Showdown: "you" is your team, the "rival" the other team, a round ends
+ *   when one team has nobody standing):
  *     FIGHT    both fighters alive -> keep playing. One left (by the game's
  *              own alive records, AShooterGameState+0x468) -> the round goes
  *              to them; the HUD is told ("SDR|E|...").
@@ -22,8 +26,34 @@
  *              unpossessed and destroyed (corpses too), both alive records
  *              are restored, and RestartPlayer respawns both fighters at the
  *              arena starts with a fresh kit; the HUD is told ("SDR|S|...").
+ *     SIDES    at the series' start and after every reset each fighter is
+ *              teleported (AActor::K2_TeleportTo) to its side of the arena:
+ *              you (1v1) or team 1 to the west, the rival or team 2 to the
+ *              east, a team side by side (place(), below). The arena's eight
+ *              PlayerStarts (make_showdown.py) are north and south, away from
+ *              both sides, so a fighter the game spawned at any of them never
+ *              stands on another's spot.
  *     DONE     a fighter has 4 rounds: the stock end of match (VICTORY or
  *              DEFEAT, then the menu).
+ *
+ * sd_teams(gs) replaces the sort call at the end of patch_exe.py fix 4's
+ *   pairing stub (VA 0x14005ac50), so it runs right after the stub has paired
+ *   a ClassicTeams match (SetTeamNum(ps, index / 2 + 1); the stub and its
+ *   hook at the scoreboard refresh, VA 0x140203b3a, are 1.3.9's, proven in
+ *   game for Duo). It re-teams only what the stub can't: a ClassicTeams match
+ *   with ?TeamSize= 3-8 (Trios, Quads) and a Lightning match with ?TeamSize=
+ *   2-8 (team Showdown) get SetTeamNum(ps, index / N + 1, true) over
+ *   GameState.PlayerArray. N is the match URL's ?TeamSize= (the GameMode's
+ *   OptionsString, +0x400). Duo (no ?TeamSize=, or 2) and every other match
+ *   keep what the stub set, untouched. Then the sort. Each refresh.
+ *   (The first build put sd_teams on the refresh's own call, VA 0x140203b3d,
+ *   doing Duo's pairing too; in game Duo then had no teammate.)
+ *
+ * sd_spawn_bots(gm) replaces the GameMode's call of its bot spawner at match
+ *   start (VA 0x14023330d, call 0x1402320f0). In a team Showdown match it
+ *   first sets BotsToSpawn (+0x518) to 2N - 1 (your N - 1 teammates and N
+ *   rivals; N at most 4, the arena's sides); every other match spawns the
+ *   mode's own count.
  *
  * sd_rand_exec(ctx, stack, result) replaces the native of
  *   KismetMathLibrary.RandomIntegerInRange. PlayerPawn.GetSpawnWithWeaponClasses
@@ -66,14 +96,25 @@
  *   stands in a pylon the Chokening started (still not Inert), with that
  *   pylon's wound class, the answer is the Chokening's user - unless the
  *   wounded character is the user or the user's teammate (TeamNumber > 0 and
- *   equal, i.e. Duo), who keep the stock "no instigator".
+ *   equal: Duo, Trios, Quads), who keep the stock "no instigator".
+ *
+ * Every second sd_should_end also runs, in every mode, the weather
+ * (weather.c, off without ?Weather=) and the stuck-player safety net
+ * (unstick.c: the local player stuck on a perch it can't stand on, or inside
+ * geometry, for 2 s while pushing a direction goes back to where it last
+ * walked, or the nearest free spot, through AActor::K2_TeleportTo).
  *
  * HUD messages go through AVictoryPlayerHUD::ShowGameMessage, which the HUD
  * page receives as the ShowGameMessage event (ShowdownHud.js takes the "SDR|"
- * ones):
- *   SDR|S|<round>|<you>|<rival>|<kit>   round starts (kit 0-6)
- *   SDR|E|<round>|<you>|<rival>|<W/L/D> round over, the series goes on
- *   SDR|O|<round>|<you>|<rival>|<W/L/D> last round, the series is over
+ * ones, hud.js the "TMS|" ones; neither is shown):
+ *   SDR|S|<round>|<you>|<rival>|<kit>|<N>   round starts (kit 0-6)
+ *   SDR|E|<round>|<you>|<rival>|<W/L/D>|<N> round over, the series goes on
+ *   SDR|O|<round>|<you>|<rival>|<W/L/D>|<N> last round, the series is over
+ *       N is the team size (1: 1v1); "you" and "rival" are the teams' scores.
+ *   TMS|<k>{|<health %>|<stamina %>|<alive 0/1>|<name>}*k
+ *       once a second in a team match of 3 or more: the teammates the game's
+ *       own teammate panel doesn't show (it shows one, the first it finds:
+ *       AVictoryPlayerHUD +0x658), in PlayerArray order.
  */
 
 typedef unsigned long long u64;
@@ -116,6 +157,13 @@ unsigned __int64 __rdtsc(void);
 #define R_RATING         0x2494d0  /* AShooterPlayerState::HandleAirDropRatingActivity(FString, FString, int32) */
 #define R_CLS_PYLON      0x302980  /* APylon */
 #define R_WEAK_SET       0x69c2a0  /* FWeakObjectPtr::operator=(const UObject *) */
+#define R_SET_TEAM       0x24e7e0  /* AVictoryPlayerState::SetTeamNum(int32, bool) */
+#define R_SORT_SCORES    0x243c80  /* AVictoryGameState::BuildSortedScoreboard */
+#define R_SPAWN_BOTS     0x2320f0  /* AVictoryGameMode: spawn BotsToSpawn bots (match start) */
+#define R_HEALTH         0x262d20  /* health component (pawn +0x830): health */
+#define R_MAX_HEALTH     0x2634c0  /* health component: max health */
+#define R_STAMINA        0x28ee40  /* stamina component (pawn +0x828): stamina */
+#define R_MAX_STAMINA    0x28f9c0  /* stamina component: max stamina */
 
 /* Virtual functions (byte offsets in the vtable). */
 #define V_GET_WORLD      0x120     /* UObject::GetWorld */
@@ -157,8 +205,18 @@ unsigned __int64 __rdtsc(void);
 #define PY_STATE       0x480       /* APylon::PylonState (EPylonState) */
 #define PY_IN_AREA     0x488       /* APylon::PlayersInDangerArea (TArray<AShooterCharacter *>) */
 #define PY_WOUND_CLASS 0x438       /* APylon::WoundClass */
+#define GM_OPTIONS     0x400       /* AGameModeBase::OptionsString (the URL's options) */
+#define GM_BOTS        0x518       /* AVictoryGameMode::BotsToSpawn */
+#define GS_TYPE        0x4e4       /* the game mode type, copied from GM_TYPE */
+#define HUD_MATE       0x658       /* AVictoryPlayerHUD: the teammate its panel shows (weak) */
+#define P_PLAYERSTATE  0x420       /* APawn::PlayerState */
+#define PS_NAME        0x408       /* APlayerState::PlayerName */
+#define CH_HEALTH      0x830       /* AShooterCharacter health component */
+#define CH_STAMINA     0x828       /* AShooterCharacter stamina component */
+#define C_CONTROL_ROT  0x430       /* AController::ControlRotation (FRotator) */
+#define HUD_MATE_FOUND 0x654       /* AVictoryPlayerHUD: its teammate panel has found its pawn (set once) */
 
-#define CLASSIC_TEAMS  2           /* EVictoryGameMode::ClassicTeams: Duo (CoopRanked) */
+#define CLASSIC_TEAMS  2           /* EVictoryGameMode::ClassicTeams: Duo/Trios/Quads (CoopRanked) */
 #define LIGHTNING      3           /* EVictoryGameMode::Lightning: Showdown */
 #define PYLON_INERT    0           /* EPylonState */
 #define PYLON_RISING   1
@@ -169,6 +227,10 @@ unsigned __int64 __rdtsc(void);
 #define BLACK_TICKS    3           /* seconds between a round's end and the reset */
 #define GRACE_TICKS    2           /* seconds after a reset before deaths count */
 #define KIT_BITS       44.0f       /* the Showdown perk's SpawnWithWeapon bits (make_showdown.KIT) */
+#define DUO            2           /* ClassicTeams without ?TeamSize= */
+#define MAX_TEAM       8           /* ?TeamSize= is 2-8 */
+#define NAME_CHARS     20          /* a teammate's name in a TMS message */
+#define SD_MAX_SIDE    4           /* team Showdown: up to 4v4 (the arena's 8 starts, 4 spots a side) */
 
 /* The builder writes the RVA of this variable into it. */
 volatile u64 sd_self_rva = 0x5344524f554e4453ULL;
@@ -189,6 +251,9 @@ typedef void *(*fn_spawn_with)(u8 *, void *, float);
 typedef u8 *(*fn_spawn_weapon)(u8 *, u8 *);
 typedef void (*fn_actors)(u8 *, u8 *, void *);
 typedef void (*fn_free)(void *);
+typedef void (*fn_set_team)(u8 *, i32, u8);
+typedef char (*fn_sort)(u8 *);
+typedef float (*fn_float)(u8 *);
 typedef struct { u8 **data; i32 num; i32 max; } PtrArray;
 
 static u8 *B;                      /* image base */
@@ -209,10 +274,12 @@ static struct {
     i32 offset, kit;
     i32 announced;
     i32 kitted;                    /* the round the rival has its kit for */
+    i32 size;                      /* the team size (1: 1v1), for the HUD */
+    i32 placing;                   /* ticks left to put the fighters on their sides */
     u8 *kit_target, *kit_source;   /* sd_spawn_with: the rival's pawn asks the player's */
 } S;
 
-static u16 message[32];
+static u16 message[256];
 
 static u8 *base(void) { return (u8 *)&sd_self_rva - sd_self_rva; }
 
@@ -255,21 +322,37 @@ static void ensure(u8 *gm)
         S.kit = kit_for(1);
         S.announced = 0;
         S.kitted = 0;
+        S.placing = 0;
     }
     S.last_elapsed = elapsed;
 }
 
 static int is_fighter(u8 *c) { return is_a(c, R_CLS_PC) || is_a(c, R_CLS_AI); }
 
-typedef struct { i32 humans, humans_alive, bots, bots_alive; u8 *pc; } Count;
+/* The two sides of a Showdown: "mine" is the player (1v1) or the player's
+   team (team Showdown), "theirs" the rival or the other team. */
+typedef struct { i32 mine, mine_alive, theirs, theirs_alive; u8 *pc; } Count;
 
-static void count(u8 *world, Count *n)
+static i32 team_of(u8 *c);
+
+static void count(u8 *world, Count *n, int teams)
 {
     u8 *list = world + W_CONTROLLERS;
-    i32 i, num = FIELD(list, 8, i32);
+    i32 i, num = FIELD(list, 8, i32), my_team = 0;
+    n->mine = n->mine_alive = n->theirs = n->theirs_alive = 0;
+    n->pc = 0;
+    if (teams) {
+        /* The teams are sd_teams'; none yet (before its first refresh): no
+           sides yet either. */
+        for (i = 0; i < num && !n->pc; i++) {
+            u8 *c = weak_get(list, i);
+            if (c && is_a(c, R_CLS_PC)) { n->pc = c; my_team = team_of(c); }
+        }
+        if (my_team <= 0) return;
+    }
     for (i = 0; i < num; i++) {
         u8 *c = weak_get(list, i), *ps;
-        int pc, alive;
+        int pc, alive, mine;
         if (!c) continue;
         pc = is_a(c, R_CLS_PC);
         if (!pc && !is_a(c, R_CLS_AI)) continue;
@@ -280,30 +363,35 @@ static void count(u8 *world, Count *n)
            runs). */
         alive = FIELD(c, C_PAWN, u8 *) != 0
             && !((fn_bool)AT(R_PS_HAS_LEFT))(ps) && ((fn_bool)AT(R_PS_IS_ALIVE))(ps);
-        if (pc) { n->humans++; n->humans_alive += alive; n->pc = c; }
-        else { n->bots++; n->bots_alive += alive; }
+        if (pc) n->pc = c;
+        mine = teams ? FIELD(ps, PS_TEAM, i32) == my_team : pc;
+        if (mine) { n->mine++; n->mine_alive += alive; }
+        else { n->theirs++; n->theirs_alive += alive; }
     }
 }
 
-static void put(i32 *at, u16 ch) { message[(*at)++] = ch; }
+static void put(i32 *at, u16 ch)
+{
+    if (*at < (i32)(sizeof(message) / sizeof(message[0])) - 1) message[(*at)++] = ch;
+}
 
-/* "SDR|<ev>|<round>|<you>|<rival>|<x>" to the player's HUD. */
-static void tell(u8 *pc, u16 ev, i32 round, i32 wins, i32 losses, u16 x)
+static void put_int(i32 *at, i32 v)
+{
+    if (v < 0) v = 0;
+    if (v >= 100) put(at, (u16)('0' + v / 100 % 10));
+    if (v >= 10) put(at, (u16)('0' + v / 10 % 10));
+    put(at, (u16)('0' + v % 10));
+}
+
+/* message[0..n) (n counts its closing 0) to the player's HUD. */
+static void send(u8 *pc, i32 n)
 {
     u8 *hud;
     FString s;
-    i32 n = 0, i;
+    i32 i;
     if (!pc) return;
     hud = FIELD(pc, PC_HUD, u8 *);
     if (!is_a(hud, R_CLS_HUD)) return;
-    put(&n, 'S'); put(&n, 'D'); put(&n, 'R'); put(&n, '|');
-    put(&n, ev); put(&n, '|');
-    if (round >= 10) put(&n, (u16)('0' + round / 10 % 10));
-    put(&n, (u16)('0' + round % 10)); put(&n, '|');
-    put(&n, (u16)('0' + wins % 10)); put(&n, '|');
-    put(&n, (u16)('0' + losses % 10)); put(&n, '|');
-    put(&n, x);
-    put(&n, 0);
     s.data = 0;
     s.num = n;
     s.max = 0;
@@ -311,6 +399,23 @@ static void tell(u8 *pc, u16 ev, i32 round, i32 wins, i32 losses, u16 x)
     if (!s.data) return;
     for (i = 0; i < n; i++) s.data[i] = message[i];
     ((fn_message)AT(R_HUD_MESSAGE))(hud, &s, 0.0f);   /* takes the string */
+}
+
+/* "SDR|<ev>|<round>|<you>|<rival>|<x>|<N>" to the player's HUD. */
+static void tell(u8 *pc, u16 ev, i32 round, i32 wins, i32 losses, u16 x)
+{
+    i32 n = 0;
+    put(&n, 'S'); put(&n, 'D'); put(&n, 'R'); put(&n, '|');
+    put(&n, ev); put(&n, '|');
+    if (round >= 10) put(&n, (u16)('0' + round / 10 % 10));
+    put(&n, (u16)('0' + round % 10)); put(&n, '|');
+    put(&n, (u16)('0' + wins % 10)); put(&n, '|');
+    put(&n, (u16)('0' + losses % 10)); put(&n, '|');
+    put(&n, x);
+    put(&n, '|');
+    put(&n, (u16)('0' + (S.size > 0 && S.size < 10 ? S.size : 1)));
+    put(&n, 0);
+    send(pc, n);
 }
 
 /* The player's record in the game state says alive again. */
@@ -431,6 +536,225 @@ static void reset(u8 *gm, u8 *world)
             ((fn_void2)VFN(gm, V_RESTART_PLAYER))(gm, c);
         }
     }
+}
+
+/* ---------------------------------------------------------------- team sizes */
+
+/* The match URL's ?TeamSize= (UE's option syntax: "?Key=Value", the key in
+   any case), from the GameMode's OptionsString; 0 when absent or not 2-8. */
+static i32 url_team_size(u8 *gm)
+{
+    static const u16 KEY[] = { 't', 'e', 'a', 'm', 's', 'i', 'z', 'e', '=' };
+    FString *o = gm ? (FString *)(gm + GM_OPTIONS) : 0;
+    i32 i, k, n, v;
+    if (!o || !o->data) return 0;
+    n = o->num;
+    for (i = 0; i + 10 < n; i++) {
+        if (o->data[i] != '?') continue;
+        for (k = 0; k < 9; k++) {
+            u16 ch = o->data[i + 1 + k];
+            if (ch >= 'A' && ch <= 'Z') ch = (u16)(ch + 32);
+            if (ch != KEY[k]) break;
+        }
+        if (k < 9) continue;
+        v = 0;
+        for (k = i + 10; k < n && o->data[k] >= '0' && o->data[k] <= '9' && v <= MAX_TEAM; k++)
+            v = v * 10 + (o->data[k] - '0');
+        if (k < n && o->data[k] && o->data[k] != '?') return 0;      /* "3x": not a number */
+        return v >= 2 && v <= MAX_TEAM ? v : 0;
+    }
+    return 0;
+}
+
+/* The match URL has the option exactly ("?TeamDebug=1", the key in any case,
+   then the next option or the end). opt is lower case. */
+static int url_flag(u8 *gm, const char *opt)
+{
+    FString *o = gm ? (FString *)(gm + GM_OPTIONS) : 0;
+    i32 i, k, n;
+    if (!o || !o->data) return 0;
+    n = o->num;
+    for (i = 0; i < n; i++) {
+        if (o->data[i] != '?') continue;
+        for (k = 0; opt[k] && i + 1 + k < n; k++) {
+            u16 ch = o->data[i + 1 + k];
+            if (ch >= 'A' && ch <= 'Z') ch = (u16)(ch + 32);
+            if (ch != (u16)opt[k]) break;
+        }
+        if (opt[k]) continue;
+        k += i + 1;
+        if (k >= n || !o->data[k] || o->data[k] == '?') return 1;
+    }
+    return 0;
+}
+
+/* Team Showdown's size: ?TeamSize= 2-8, at most SD_MAX_SIDE (the arena's
+   sides hold 4 each); 0 without it (1v1). */
+static i32 showdown_size(u8 *gm)
+{
+    i32 n = url_team_size(gm);
+    return n > SD_MAX_SIDE ? SD_MAX_SIDE : n;
+}
+
+/* The team size of a match (gm, its game state's mode type): ClassicTeams
+   2-8 (?TeamSize=, else Duo's 2), Lightning only with ?TeamSize= (team
+   Showdown, 2-4), 0 = no teams (Solo, 1v1 Showdown and the rest). */
+static i32 team_size(u8 *gm, u8 type)
+{
+    i32 n = url_team_size(gm);
+    if (type == CLASSIC_TEAMS) return n ? n : DUO;
+    if (type == LIGHTNING) return showdown_size(gm);
+    return 0;
+}
+
+char sd_teams(u8 *gs)
+{
+    u8 *world, *gm = 0, **players, type;
+    i32 size, i, n;
+    B = base();
+    type = gs ? FIELD(gs, GS_TYPE, u8) : 0;
+    if (type == CLASSIC_TEAMS || type == LIGHTNING) {
+        world = world_of(gs);
+        gm = world ? FIELD(world, W_AUTH_GM, u8 *) : 0;
+        size = type == LIGHTNING ? showdown_size(gm) : url_team_size(gm);
+        /* Duo: fix 4's stub has paired them; only Trios/Quads and team Showdown are ours. */
+        if (size > (type == CLASSIC_TEAMS ? DUO : 1)) {
+            players = FIELD(gs, GS_PLAYERS, u8 **);
+            n = FIELD(gs, GS_NUM_PLAYERS, i32);
+            for (i = 0; i < n; i++)
+                if (players[i]) ((fn_set_team)AT(R_SET_TEAM))(players[i], i / size + 1, 1);
+        }
+    }
+    return ((fn_sort)AT(R_SORT_SCORES))(gs);
+}
+
+void sd_spawn_bots(u8 *gm)
+{
+    i32 size;
+    B = base();
+    if (gm && FIELD(gm, GM_TYPE, u8) == LIGHTNING && (size = showdown_size(gm)) >= 2)
+        FIELD(gm, GM_BOTS, i32) = 2 * size - 1;
+    ((fn_void)AT(R_SPAWN_BOTS))(gm);
+}
+
+/* Trios and Quads: the game's teammate panel (AVictoryPlayerHUD tick, VA
+   0x1401fbea1) shows one teammate - the first pawn it finds with your
+   TeamNumber, kept at HUD +0x658 - and its status (SetTeamMemberStatus).
+   The others go to the HUD page as one "TMS|" message a second. */
+static struct { u8 *gm, *shown; } M;   /* the panel's teammate's player state */
+
+static i32 percent(u8 *comp, u64 value_rva, u64 max_rva)
+{
+    float v, m;
+    if (!comp) return 0;
+    v = ((fn_float)AT(value_rva))(comp);
+    m = ((fn_float)AT(max_rva))(comp);
+    if (!(m > 0.0f) || !(v > 0.0f)) return 0;
+    if (v >= m) return 100;
+    return (i32)(100.0f * v / m + 0.5f);
+}
+
+static void report_mates(u8 *gm, u8 *world)
+{
+    u8 *list = world + W_CONTROLLERS, *gs = FIELD(gm, GM_GAMESTATE, u8 *);
+    u8 *pc = 0, *me, *hud, *mate, **players;
+    i32 i, j, k, n, at, num = FIELD(list, 8, i32), team, mates = 0;
+    if (!gs) return;
+    for (i = 0; i < num && !pc; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC)) pc = c;
+    }
+    if (!pc) return;
+    me = FIELD(pc, C_PLAYERSTATE, u8 *);
+    hud = FIELD(pc, PC_HUD, u8 *);
+    if (!is_a(me, R_CLS_PS) || !is_a(hud, R_CLS_HUD) || (team = FIELD(me, PS_TEAM, i32)) <= 0) return;
+    if (M.gm != gm) { M.gm = gm; M.shown = 0; }
+    mate = ((fn_ptr)AT(R_WEAK_GET))(hud + HUD_MATE);
+    if (mate && FIELD(mate, P_PLAYERSTATE, u8 *)) M.shown = FIELD(mate, P_PLAYERSTATE, u8 *);
+    at = 0;
+    put(&at, 'T'); put(&at, 'M'); put(&at, 'S'); put(&at, '|');
+    k = at;
+    put(&at, '0');
+    players = FIELD(gs, GS_PLAYERS, u8 **);
+    n = FIELD(gs, GS_NUM_PLAYERS, i32);
+    for (i = 0; i < n && mates < MAX_TEAM; i++) {
+        u8 *ps = players[i], *pawn = 0;
+        FString *name;
+        int alive;
+        if (!ps || ps == me || ps == M.shown || FIELD(ps, PS_TEAM, i32) != team) continue;
+        if (FIELD(ps, PS_FLAGS, u32) & 1) continue;
+        alive = !((fn_bool)AT(R_PS_HAS_LEFT))(ps) && ((fn_bool)AT(R_PS_IS_ALIVE))(ps);
+        for (j = 0; j < num && !pawn; j++) {
+            u8 *c = weak_get(list, j);
+            if (c && FIELD(c, C_PLAYERSTATE, u8 *) == ps) pawn = FIELD(c, C_PAWN, u8 *);
+        }
+        if (!pawn || !is_a(pawn, R_CLS_CHARACTER)) alive = 0;
+        put(&at, '|');
+        put_int(&at, alive ? percent(FIELD(pawn, CH_HEALTH, u8 *), R_HEALTH, R_MAX_HEALTH) : 0);
+        put(&at, '|');
+        put_int(&at, alive ? percent(FIELD(pawn, CH_STAMINA, u8 *), R_STAMINA, R_MAX_STAMINA) : 0);
+        put(&at, '|');
+        put(&at, (u16)(alive ? '1' : '0'));
+        put(&at, '|');
+        name = (FString *)(ps + PS_NAME);
+        for (j = 0; name->data && j < name->num && j < NAME_CHARS && name->data[j]; j++)
+            put(&at, name->data[j] == '|' ? (u16)'/' : name->data[j]);
+        mates++;
+    }
+    message[k] = (u16)('0' + mates);
+    put(&at, 0);
+    send(pc, at);
+}
+
+/* Debug only (the match URL has ?TeamDebug=1; no menu URL does): once a
+   match, a few seconds in, a team match (Duo, Trios, Quads) says who is
+   on your team as an ordinary game message: "Your team of <N>: <names>" -
+   N the team size the module read from the URL, the names every contestant
+   with your TeamNumber, in PlayerArray order (alive or not). It is also the
+   in-game check of each link: no message means the module's HUD messages
+   don't arrive (or you have no team); "of 2" in Trios means ?TeamSize= wasn't
+   read; "of 3" with one name means the teams stayed pairs. */
+#define ANNOUNCE_AFTER   3          /* seconds InProgress */
+#define ANNOUNCE_LATEST  10         /* ... and at the latest, even with no team */
+static struct { u8 *gm; i32 done; } A;
+
+static void put_str(i32 *at, const char *s) { while (*s) put(at, (u16)*s++); }
+
+static void announce_team(u8 *gm, u8 *world, i32 size)
+{
+    u8 *list = world + W_CONTROLLERS, *gs = FIELD(gm, GM_GAMESTATE, u8 *), *pc = 0, *me, **players;
+    i32 i, j, n, at = 0, num = FIELD(list, 8, i32), team, elapsed, names = 0;
+    if (A.gm != gm) { A.gm = gm; A.done = 0; }
+    if (A.done || !gs) return;
+    elapsed = FIELD(gs, GS_ELAPSED, i32);
+    if (elapsed < ANNOUNCE_AFTER) return;
+    for (i = 0; i < num && !pc; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC)) pc = c;
+    }
+    if (!pc) return;
+    me = FIELD(pc, C_PLAYERSTATE, u8 *);
+    team = is_a(me, R_CLS_PS) ? FIELD(me, PS_TEAM, i32) : 0;
+    if (team <= 0 && elapsed < ANNOUNCE_LATEST) return;
+    A.done = 1;
+    put_str(&at, "Your team of ");
+    put_int(&at, size);
+    put_str(&at, ":");
+    players = FIELD(gs, GS_PLAYERS, u8 **);
+    n = FIELD(gs, GS_NUM_PLAYERS, i32);
+    for (i = 0; team > 0 && i < n && names < MAX_TEAM; i++) {
+        u8 *ps = players[i];
+        FString *name;
+        if (!ps || ps == me || FIELD(ps, PS_TEAM, i32) != team) continue;
+        put_str(&at, names ? ", " : " ");
+        name = (FString *)(ps + PS_NAME);
+        for (j = 0; name->data && j < name->num && j < NAME_CHARS && name->data[j]; j++)
+            put(&at, name->data[j]);
+        names++;
+    }
+    if (!names) put_str(&at, team > 0 ? " no teammates" : " no team");
+    put(&at, 0);
+    send(pc, at);
 }
 
 /* ---------------------------------------------------------------- Duo: a team's win */
@@ -591,26 +915,148 @@ u8 *sd_gas_instigator(u8 *wound)
     return by;
 }
 
+#include "weather.c"            /* weather over a match (weather_tick) */
+#include "unstick.c"            /* the stuck-player safety net (unstick_tick) */
+
+/* ---------------------------------------------------------------- the arena's sides */
+
+/* Each side's spots: a line across the arena's west (side 0: you in 1v1,
+   team 1) or east (side 1) approach, SD_SIDE_X out from the centre, facing
+   in. A side of n fighters stands SD_SPACING apart, centred on the approach:
+   1v1's spots are exactly the two arena starts version 1 used ((-1800, 0, 200)
+   facing east, (1800, 0, 200) facing west). Every spot of a side of up to 4
+   is on the arena floor's navmesh (make_showdown.py checks it against the
+   stock Navigation level), 160 apart (a pawn's capsule is 100 across). */
+#define SD_SIDE_X      1800.0f
+#define SD_SPACING     160.0f
+#define SD_SLOT_Z      200.0f      /* a little above the floor (navmesh z 16-20 there), as the starts were */
+#define SD_PLACE_TICKS 3           /* a refused teleport (or a fighter without a pawn yet) is tried again */
+#define SD_MAX_FIGHTERS 16
+
+static struct { Weak done[SD_MAX_FIGHTERS]; i32 n; } P;   /* the pawns on their spots this round */
+
+static int sd_placed(u8 *pawn)
+{
+    i32 i;
+    for (i = 0; i < P.n && i < SD_MAX_FIGHTERS; i++)
+        if (weak(&P.done[i]) == pawn) return 1;
+    return 0;
+}
+
+/* A side's k-th spot of n, and its facing (pitch, yaw, roll). */
+static void sd_spot(i32 side, i32 k, i32 n, float *at, float *rot)
+{
+    at[0] = side ? SD_SIDE_X : -SD_SIDE_X;
+    at[1] = ((float)k - 0.5f * (float)(n - 1)) * SD_SPACING;
+    at[2] = SD_SLOT_Z;
+    rot[0] = 0.0f;
+    rot[1] = side ? 180.0f : 0.0f;
+    rot[2] = 0.0f;
+}
+
+/* Every fighter not on its spot yet this round goes there: its side is its
+   team (team 1 west, any other east; 1v1: the player west, the rival east),
+   its place on the side its order among that side's fighters in the world's
+   controller list (stable through the match). The controller's rotation is
+   set too, so the player looks into the arena. Returns how many fighters are
+   still not on their spots. */
+static i32 place(u8 *world, i32 teams)
+{
+    u8 *list = world + W_CONTROLLERS;
+    i32 i, pass, side, k, left = 0, num = FIELD(list, 8, i32);
+    i32 n[2], at[2];
+    float to[3], rot[3];
+    n[0] = n[1] = at[0] = at[1] = 0;
+    for (pass = 0; pass < 2; pass++) {
+        for (i = 0; i < num; i++) {
+            u8 *c = weak_get(list, i), *ps, *pawn;
+            if (!c || !is_fighter(c)) continue;
+            ps = FIELD(c, C_PLAYERSTATE, u8 *);
+            if (!is_a(ps, R_CLS_PS) || (FIELD(ps, PS_FLAGS, u32) & 2)) continue;
+            side = teams ? FIELD(ps, PS_TEAM, i32) != 1 : !is_a(c, R_CLS_PC);
+            if (!pass) { n[side]++; continue; }
+            k = at[side]++;
+            pawn = wx_live(FIELD(c, C_PAWN, u8 *));
+            if (!pawn || !is_a(pawn, R_CLS_CHARACTER)) { left++; continue; }
+            if (sd_placed(pawn)) continue;
+            sd_spot(side, k, n[side], to, rot);
+            if (!((us_teleport_t)AT(US_TELEPORT))(pawn, to, rot)) { left++; continue; }
+            FIELD(c, C_CONTROL_ROT, float) = rot[0];
+            FIELD(c, C_CONTROL_ROT + 4, float) = rot[1];
+            FIELD(c, C_CONTROL_ROT + 8, float) = rot[2];
+            if (P.n < SD_MAX_FIGHTERS) weak_set(&P.done[P.n++], pawn);
+        }
+    }
+    return left;
+}
+
+/* A new round: nobody is on a spot yet. In team Showdown the player's HUD
+   looks for its teammate's (new) pawn again: its panel finds one once
+   (AVictoryPlayerHUD +0x654, VA 0x1401fbec7) and that pawn is gone. */
+static void new_round_sides(u8 *world, i32 teams)
+{
+    u8 *list = world + W_CONTROLLERS;
+    i32 i, num = FIELD(list, 8, i32);
+    P.n = 0;
+    S.placing = SD_PLACE_TICKS;
+    if (!teams) return;
+    for (i = 0; i < num; i++) {
+        u8 *c = weak_get(list, i), *hud;
+        if (!c || !is_a(c, R_CLS_PC)) continue;
+        hud = FIELD(c, PC_HUD, u8 *);
+        if (is_a(hud, R_CLS_HUD)) FIELD(hud, HUD_MATE_FOUND, u8) = 0;
+    }
+}
+
+static void sides_tick(u8 *world, i32 teams)
+{
+    if (S.placing <= 0) return;
+    S.placing--;
+    if (!place(world, teams)) S.placing = 0;
+}
+
+/* For the tests: the sides' state. */
+void sd_sides_probe(i32 *out)
+{
+    out[0] = P.n;
+    out[1] = S.placing;
+}
+
 char sd_should_end(u8 *gm)
 {
     u8 *world;
     Count n;
+    i32 teams;
     u16 x;
     B = base();
+    weather_tick(gm);
+    unstick_tick(gm);
     if (C.n) sweep();
-    if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) return duo_should_end(gm);
+    if (gm && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) {
+        if ((world = world_of(gm)) != 0) {
+            teams = team_size(gm, CLASSIC_TEAMS);
+            if (teams > DUO) report_mates(gm, world);
+            if (url_flag(gm, "teamdebug=1")) announce_team(gm, world, teams);   /* debug only */
+        }
+        return duo_should_end(gm);
+    }
     if (!gm || FIELD(gm, GM_TYPE, u8) != LIGHTNING) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     world = world_of(gm);
     if (!world) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
+    teams = team_size(gm, LIGHTNING);
+    if (teams > DUO) report_mates(gm, world);
     ensure(gm);
-    n.humans = n.humans_alive = n.bots = n.bots_alive = 0;
-    n.pc = 0;
-    count(world, &n);
-    if (!n.humans || !n.bots) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
+    S.size = teams ? teams : 1;
+    count(world, &n, teams);
+    if (!n.mine || !n.theirs) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     if (!S.announced) {
         S.announced = 1;
+        new_round_sides(world, 0);
+        sides_tick(world, teams);
         if (kit_rival(world)) S.kitted = S.round;
         tell(n.pc, 'S', S.round, S.wins, S.losses, (u16)('0' + S.kit));
+    } else if (S.phase == FIGHT) {
+        sides_tick(world, teams);
     }
     if (S.phase == DONE) return 1;
     if (S.phase == BETWEEN) {
@@ -618,20 +1064,20 @@ char sd_should_end(u8 *gm)
         S.round++;
         S.kit = kit_for(S.round);
         reset(gm, world);
+        new_round_sides(world, teams);
+        sides_tick(world, teams);
         S.kitted = kit_rival(world) ? S.round : 0;
         S.phase = FIGHT;
         S.grace = GRACE_TICKS;
-        n.pc = 0;
-        n.humans = n.humans_alive = n.bots = n.bots_alive = 0;
-        count(world, &n);
+        count(world, &n, teams);
         tell(n.pc, 'S', S.round, S.wins, S.losses, (u16)('0' + S.kit));
         return 0;
     }
     /* Until the rival has this round's kit (no pawn yet, say): try again. */
     if (S.kitted != S.round && kit_rival(world)) S.kitted = S.round;
     if (S.grace > 0) { S.grace--; return 0; }
-    if (n.humans_alive && n.bots_alive) return 0;
-    x = n.humans_alive ? 'W' : n.bots_alive ? 'L' : 'D';
+    if (n.mine_alive && n.theirs_alive) return 0;
+    x = n.mine_alive ? 'W' : n.theirs_alive ? 'L' : 'D';
     if (x == 'W') S.wins++;
     else if (x == 'L') S.losses++;
     if (S.wins >= ROUNDS_TO_WIN || S.losses >= ROUNDS_TO_WIN) {

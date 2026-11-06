@@ -5,7 +5,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const { stage } = require("./stage_objects");
+const { spawnSync } = require("child_process");
+const { stage, plan } = require("./stage_objects");
 
 const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
 const t = fs.mkdtempSync(path.join(os.tmpdir(), "stage-"));
@@ -40,7 +41,34 @@ function publish(version, files) {
     fs.writeFileSync(path.join(pub, "objects", m.files[0].sha256), Buffer.from("fake D"));
     await assert.rejects(stage(pub, upd, () => {}), /doesn't match/);
     assert.ok(!fs.existsSync(path.join(upd, "objects", m.files[0].sha256)), "nothing bad left in objects");
-    console.log("stage_objects: all 4 checks passed");
+    // Release 2 goes live; a release that drops files from it is refused unless allowed.
+    publish("2", { "Victory/a.pak": A, "Victory/c.pak": C });
+    fs.copyFileSync(path.join(pub, "manifest.json"), path.join(upd, "manifest.json"));
+    publish("4", { "Victory/a.pak": A });                                    // drops c.pak
+    await assert.rejects(stage(pub, upd, () => {}), /removes 1 of the 2 files.*Victory\/c\.pak.*--allow-removals/);
+    assert.throws(() => plan(pub, upd, () => {}), /removes 1 of the 2 files/);
+    n = await stage(pub, upd, () => {}, { allowRemovals: true });
+    assert.strictEqual(n.reused, 1, "allowed explicitly: staged");
+    // A release built from an empty folder (no files) is refused even with removals allowed.
+    publish("5", {});
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true }), /lists no files/);
+    // The command line refuses too, and says how to allow it.
+    publish("4", { "Victory/a.pak": A });
+    const cli = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", pub, upd], { encoding: "utf8" });
+    assert.strictEqual(cli.status, 1, cli.stdout + cli.stderr);
+    assert.match(cli.stderr, /--allow-removals/);
+    const ok = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", "--allow-removals", pub, upd], { encoding: "utf8" });
+    assert.strictEqual(ok.status, 0, ok.stdout + ok.stderr);
+    // A test build (make_release.py --skip-gate records gate "skipped") is refused.
+    publish("6", { "Victory/a.pak": A });
+    const tm = JSON.parse(fs.readFileSync(path.join(pub, "manifest.json")));
+    tm.build = { commit: "abc", gate: "skipped" };
+    fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(tm));
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true }), /without the release consistency gate/);
+    tm.build.gate = "passed";
+    fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(tm));
+    await stage(pub, upd, () => {}, { allowRemovals: true });
+    console.log("stage_objects: all 10 checks passed");
   } finally {
     fs.rmSync(t, { recursive: true, force: true });
   }

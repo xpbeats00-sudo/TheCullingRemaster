@@ -232,6 +232,8 @@
     "party-full": "The party is full.",
     "no-invite": "That invite has expired.",
     "not-in-party": "You're not in a party.",
+    "not-party-leader": "Only the party leader can invite.",
+    "party-in-queue": "That party is searching for a match: accept when its search is over.",
     "slow-down": "Slow down a moment.",
     "no-account": "Sign in with your account to add friends."
   };

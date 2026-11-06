@@ -41,8 +41,8 @@ def main():
         open(path, "wb").write(data)
         entry["purchaseCost"] = price
         changed += 1
-    with open(make_camos.CATALOG, "w") as f:
-        json.dump(catalog, f, indent=1)
+    from build_catalog import write_catalog       # refuses an item ID used twice
+    write_catalog(make_camos.CATALOG, catalog)
     print("%d skins repriced: %s" % (changed, make_camos.PRICE))
 
 

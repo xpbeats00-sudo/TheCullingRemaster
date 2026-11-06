@@ -65,7 +65,7 @@ The mesh copies rename names to the same total length, so each copy's header and
 - The weapon material (`PM_Weapon_Master`) has no time input on its camo layer, so no camo texture can move.
 - The only animated route is the GeoSkin mesh copy plus `Chainsaw_A_MI` panner material. That route produced "Serialization Error: Corrupt data found" in game, and its Ice Axe diagnostics still have no result.
 - So the camos are static mist pictures made from the effect's own cloud texture in each colour. They draw like every other custom camo: opaque and readable.
-- If the Ice Axe diagnostics ever prove the animated route, make_animated_camos.py picks up every camo from make_camos, Necro Mist included.
+- If the Ice Axe diagnostics ever prove the animated route, `patch/diagnostics/make_animated_camos.py` picks up every camo from make_camos, Necro Mist included (it would then have to move back into the release build and out of make_pak.py's test-content list).
 
 ## Status
 
@@ -75,15 +75,12 @@ The mesh copies rename names to the same total length, so each copy's header and
   - that the colours read as intended;
   - that every item appears in Customization and can be bought.
 
-## Earlier attempt (left in place)
+## Earlier attempt (diagnostics only)
 
-The animated camo attempt is still in the build, and nothing here removes it:
+The animated camo attempt is out of the release build:
 
-- `make_animated_camos.py` and `make_camo_tests.py`;
-- the 4 Ice Axe diagnostic skins in the live pak. They can be bought, and the server's ranked rewards hand out Teal Current (Hunter) and Lava Storm (Reaper, Fireman's Axe).
+- `make_animated_camos.py` and `make_camo_tests.py` live in `patch/diagnostics/` and `patch/build_release.py` never runs them;
+- `make_pak.py` refuses to pack what they write (`<Mesh>_XPAnim*`, `Camo_XP_Anim_*`, `IceAxe_A_XPTest`, any skin pointing at them, anything saying `TEST BUILD`) unless `--allow-test-content` is given for a local diagnostics pak;
+- `build_release.py` deletes those files from `patch/src` before it runs the generators, and `make_camos.py` rewrites every `*_XP_*` skin, so a rebuild puts the plain Ice Axe camo skins back.
 
-To retire the attempt:
-
-1. Stop running `make_camo_tests.py` in the release build.
-2. Rebuild with `make_camos.py`, which overwrites the Ice Axe skins with static ones.
-3. Point the Hunter and Reaper rewards in `server.js` at other camos.
+The live 1.3.x paks still have the 4 Ice Axe diagnostic skins (and 111 `_XPAnim` assets) until the next release built this way. The server's ranked rewards hand out Teal Current (Hunter) and Lava Storm (Reaper, Fireman's Axe): after a clean build those are ordinary static camos.

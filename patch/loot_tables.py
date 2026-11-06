@@ -25,9 +25,10 @@ from collections import OrderedDict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from build_catalog import pak_entries, read_entry  # noqa: E402
+from build_catalog import pak_entries, read_entry, stock_paks  # noqa: E402
 from uasset import Package  # noqa: E402
 from uasset_tree import Tree, clean  # noqa: E402
+from make_airdrop_prices import new_price  # noqa: E402
 
 OUT_JSON = os.path.join(HERE, "loot", "loot_tables.json")
 OUT_DOC = os.path.join(HERE, "..", "docs", "LOOT_TABLE_REFERENCE.md")
@@ -73,10 +74,8 @@ def read_assets(paks):
     """Every asset we need, stock version (the Remaster patch pak excluded)."""
     found = {}
     wanted = (TIER_LISTS, CONTAINERS, GAME_MODES, AIRDROPS)
-    for pak in sorted(os.listdir(paks)):
-        if not pak.endswith(".pak") or pak.startswith("LocalServer"):
-            continue
-        for f, name, off, usize, method, blocks in pak_entries(os.path.join(paks, pak)):
+    for pak in stock_paks(paks):
+        for f, name, off, usize, method, blocks in pak_entries(pak):
             rel = name.replace("../../../", "")
             if rel in MAPS.values() or any(p.search(rel) for p in wanted):
                 found[rel] = read_entry(f, off, usize, method, blocks)
@@ -152,8 +151,11 @@ def build(paks):
             props = Tree(pkg).props(e["offset"], e["offset"] + e["size"])
             items = [re.sub(r".*\.", "", clean_item) for clean_item in
                      re.findall(r"/Game/[\w/]+\.\w+", data[e["offset"]:e["offset"] + e["size"]].decode("latin1"))]
+            # funcCost is what the Remaster charges (make_airdrop_prices.py: 25% off the stock price).
+            stock_cost = props.get("ActivityResourceCost")
             table["airdrops"][e["name"]] = OrderedDict(name=props.get("DisplayName"), itemId=props.get("ItemID"),
-                                                       funcCost=props.get("ActivityResourceCost"), items=items)
+                                                       funcCost=None if stock_cost is None else new_price(stock_cost),
+                                                       stockFuncCost=stock_cost, items=items)
     # Every item that appears anywhere, with its category and the game's text.
     seen = set()
     for lst in list(table["tiers"].values()) + [l for m in table["maps"].values() for l in m.values()] + \
@@ -209,9 +211,11 @@ def doc(table):
     for gm, v in sorted(table["gameModes"].items()):
         out.append("| %s | %s | %s |" % (gm, " | ".join(str(v.get(k, "")) for k in LOOT_COUNTS), v.get("SelectedAirDrop", "")))
     out += ["", "Blank: inherited from the parent mode or the engine default.", "", "## Airdrop kits", "",
-            "| Kit | ID | FUNC | Items |", "|---|---|---:|---|"]
+            "FUNC is the Remaster's price, 25% off the stock one (`patch/make_airdrop_prices.py`, `docs/AIRDROP_PRICES.md`).", "",
+            "| Kit | ID | FUNC | Stock FUNC | Items |", "|---|---|---:|---:|---|"]
     for a, v in sorted(table["airdrops"].items()):
-        out.append("| %s | %s | %s | %s |" % (v["name"], v["itemId"], v["funcCost"] or "", ", ".join(name(i) for i in v["items"])))
+        out.append("| %s | %s | %s | %s | %s |" % (v["name"], v["itemId"], v["funcCost"] or "", v.get("stockFuncCost") or "",
+                                                  ", ".join(name(i) for i in v["items"])))
     return "\n".join(out) + "\n"
 
 

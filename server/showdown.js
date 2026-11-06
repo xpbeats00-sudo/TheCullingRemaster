@@ -1,5 +1,7 @@
 // Showdown series (patch/make_showdown.py): you against one rival in the
-// Jungle arena, first to `roundsToWin` (default 4).
+// Jungle arena, first to `roundsToWin` (default 4) - or your team against
+// another (team Showdown, 2v2 to 4v4): the same series, the rounds your
+// team's. Each series knows its playlist (`mode`) and team size.
 //
 // In-match series (patch/showdown_rounds.c, the patched exe): the whole
 // series is one match. The queue starts it (startSeries); the HUD reports each
@@ -65,9 +67,11 @@ class ShowdownSeries {
   // The last series, finished or not (what the menu shows after a match).
   last(userID) { return this.series.get(userID) || null; }
 
-  fresh(userID, inMatch) {
+  fresh(userID, inMatch, kind = {}) {
+    const teamSize = Number.isInteger(kind.teamSize) && kind.teamSize >= 1 && kind.teamSize <= 4 ? kind.teamSize : 1;
     const s = { id: Math.random().toString(36).slice(2, 10), wins: 0, losses: 0, rounds: [], inRound: false,
       over: false, won: null, inMatch, paid: false, recorded: false, announced: false,
+      mode: typeof kind.mode === 'string' ? kind.mode : 'showdown', teamSize,
       startedAt: this.options.now(), updatedAt: this.options.now() };
     this.series.set(userID, s);
     this.save();
@@ -77,11 +81,12 @@ class ShowdownSeries {
   // ------------------------------------------------------------ in-match series
 
   // The queue starts a whole series in one match. One still being played (the
-  // player left it) is forfeited first: returned as `left`.
-  startSeries(userID) {
+  // player left it) is forfeited first: returned as `left`. `kind`: the
+  // playlist's { mode, teamSize } (1v1 Showdown when left out).
+  startSeries(userID, kind = {}) {
     const before = this.current(userID);
     const left = before ? this.leave(userID) : null;
-    const s = this.fresh(userID, true);
+    const s = this.fresh(userID, true, kind);
     s.inRound = true;
     return { series: this.view(s), left };
   }
@@ -186,8 +191,12 @@ class ShowdownSeries {
   }
 
   view(s) {
+    const teamSize = s.teamSize || 1;
     return {
       id: s.id,
+      mode: s.mode || 'showdown',
+      teamSize,
+      format: teamSize + 'v' + teamSize,
       round: s.rounds.length + (s.inRound ? 1 : 0),
       wins: s.wins,
       losses: s.losses,
@@ -208,18 +217,21 @@ class ShowdownSeries {
 // What a finished in-match series pays: one series, not a match per round.
 // XP and credits grow with rounds won (a fraction of a full match's), the
 // series counts once on the career (one game, a win only for the series),
-// kills at most one per round won, damage at most 200 a round.
+// kills at most one rival per round won (in team Showdown the team size per
+// round won: a round is won by downing every rival), damage at most 200 a
+// round. The same for every team size.
 const PAYOUT = { xpBase: 250, xpPerRound: 250, xpWin: 750, creditsBase: 40, creditsPerRound: 20, creditsWin: 120,
   damagePerRound: 200 };
 
 function seriesPayout(view, report) {
   const roundsWon = view.wins;
+  const maxKills = roundsWon * (view.teamSize || 1);
   const played = Math.max(1, view.rounds.filter((r) => r !== 'left').length);
   const won = Boolean(view.won);
   const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
   return {
     victory: won,
-    kills: Math.min(roundsWon, bounded(parseInt(report.kills, 10), roundsWon)),
+    kills: bounded(parseInt(report.kills, 10), maxKills),
     damage: bounded(Number(report.damage), PAYOUT.damagePerRound * played),
     timeAlive: bounded(Number(report.timeAlive), report.maxTime || 0),
     func: 0,

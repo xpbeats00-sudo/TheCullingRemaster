@@ -29,15 +29,20 @@ The menu connection can drop while the game is in a match. A player is still *in
 
 ## Parties
 
-- **Forming a party.** You invite a friend, which creates the party if you don't have one. You lead it.
+- **Forming a party.** You invite a friend, which creates the party if you don't have one. You lead it. Only the leader invites (`not-party-leader`).
   - The invited player gets a pop-up (Join / Decline) and sees the invite in the friends panel. Invites last 5 minutes.
   - Joining a party leaves any other party.
   - A party holds at most 4 players (`party-full`).
-- **Leaving.** Anyone can leave. When the leader leaves, the next member leads. A party left with one player, and no invites still open, is dropped.
-- **Queueing together.** When the leader queues Solo, Duo or Ranked, every member who is online and not in a match joins the leader's lobby (`joinGroup`). If the open lobby can't fit the whole party, it starts counting down and the party opens the next one.
-  - Members get `join-mm-group`, so their menu shows the search as if they had queued.
-  - If the leader cancels, the members leave the lobby too (`leave-mm-group`).
-- **Showdown** queues only the player who presses it, because it is a 1v1 series.
+  - A party that is searching can't be joined until its search ends (`party-in-queue`).
+- **Leaving.** Anyone can leave. When the leader leaves, the next member leads. A party left with one player, and no invites still open, is dropped. Leaving while the party searches stops the search for everyone (`leave-mm-group`, reason `party-changed`).
+- **Offline members.** A member who disconnects keeps their place. If they stay offline for 2 minutes (`CULLING_PARTY_OFFLINE_MS`) and aren't in a match, they leave the party and the others get `remaster-party-notice`. If that member was the leader, the next member leads.
+- **Queueing together.** The party queues as one unit (details in [AUDIT_02_PARTY_MATCHMAKING.md](AUDIT_02_PARTY_MATCHMAKING.md)):
+  - Only the leader queues. A member who presses a mode is refused (`party-leader-queues`). If their party is already queued, they stay in its lobby.
+  - Every member must be in the menu. If one is offline or in a match, the queue is refused (`party-not-ready`) and the reply names them.
+  - The playlist must take a party that size: Duos takes 2 at most, Showdown Solo takes 1 (`party-too-large`). Nobody is left behind.
+  - Members get `join-mm-group` with the leader's queue name, and everyone joins one lobby at once (`joinGroup`). If the open lobby can't fit the whole party, it starts counting down and the party opens the next one.
+  - Every member gets the same `matchId`, `lobbyId` and `partyId` on `match-ready` and on their match ticket. Each member still plays their own local match with AI contestants (`netplay: false`).
+  - If anyone cancels, disconnects or leaves the party during the search, it stops for everyone. Each menu gets `leave-mm-group` with a reason and a message.
 - **Not saved.** Parties live in memory and end when the server restarts.
 
 ## Player card

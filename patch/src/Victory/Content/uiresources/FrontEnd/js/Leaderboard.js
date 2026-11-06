@@ -1,8 +1,8 @@
 // The Culling Remaster: the global leaderboard (server/leaderboard.js).
 //
 // LEADERBOARD (a main menu item, added by make_branding.py) opens a panel with
-// one tab per board: Ranked (this season's rating and tier), Wins, Kills, K/D,
-// Showdown series won and Time played. Each lists the top players by account
+// one tab per board: Ranked Solo, Duo, Trio and Quads (this season's rating
+// and tier in each mode), Wins, Kills, K/D, Showdown series won and Time played. Each lists the top players by account
 // username; your own row is highlighted, and pinned under the list with your
 // position even when you are outside the top. Clicking a row opens that
 // player's card (Friends.js). The server answers "remaster-leaderboard-get"
@@ -10,14 +10,18 @@
 // asks again. Self-contained: builds its own markup and styles.
 (function () {
   var BOARDS = {
-    ranked: { tab: "Ranked", column: "Rating" },
+    ranked: { tab: "Ranked Solo", column: "Rating", mode: "Solo" },
+    ranked_duo: { tab: "Ranked Duo", column: "Rating", mode: "Duo" },
+    ranked_trio: { tab: "Ranked Trio", column: "Rating", mode: "Trio" },
+    ranked_quad: { tab: "Ranked Quads", column: "Rating", mode: "Quads" },
     wins: { tab: "Wins", column: "Wins", hint: "Matches won." },
     kills: { tab: "Kills", column: "Kills", hint: "Kills across every match." },
     kd: { tab: "K/D", column: "K/D" },
     showdown: { tab: "Showdown", column: "Series won", hint: "Showdown series won." },
     time: { tab: "Time played", column: "Time", hint: "Time alive in matches." }
   };
-  var ORDER = ["ranked", "wins", "kills", "kd", "showdown", "time"];
+  var ORDER = ["ranked", "ranked_duo", "ranked_trio", "ranked_quad", "wins", "kills", "kd", "showdown", "time"];
+  function isRanked(id) { return id === "ranked" || id.indexOf("ranked_") === 0; }
   var CSS = [
     "#remaster-leaderboard { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 100; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
     "#remaster-leaderboard.hidden { display: none; }",
@@ -113,7 +117,7 @@
   }
 
   function detailText(id, e) {
-    if (id === "ranked") return (e.rank ? e.rank + " · " : "") + plural(e.matches || 0, "match", "matches") + " · " + plural(e.wins || 0, "win", "wins");
+    if (isRanked(id)) return (e.rank ? e.rank + " · " : "") + plural(e.matches || 0, "match", "matches") + " · " + plural(e.wins || 0, "win", "wins");
     if (id === "kd") return plural(e.kills || 0, "kill", "kills") + " · " + plural(e.deaths || 0, "death", "deaths");
     if (id === "showdown") return plural(e.lost || 0, "series", "series") + " lost";
     return plural(e.matches || 0, "match", "matches");
@@ -121,13 +125,15 @@
 
   function hintText(id) {
     if (id === "ranked") return (data && data.season ? data.season.name + " rating. " : "") + "Ranked Solo rating moves on placement.";
+    if (isRanked(id)) return (data && data.season ? data.season.name + " rating. " : "") + "Ranked " + BOARDS[id].mode +
+      " rating moves on your team's placement.";
     if (id === "kd") return "Kills per death, for players with at least " + ((data && data.minMatches) || 10) + " matches.";
     return BOARDS[id].hint;
   }
 
   // Why you aren't on this board yet.
   function notListed(id, you) {
-    if (id === "ranked") return "Play Ranked Solo to get a rating this season.";
+    if (isRanked(id)) return "Play Ranked " + BOARDS[id].mode + " to get a rating this season.";
     if (id === "kd") return "Play " + plural(you.needMatches || 0, "more match", "more matches") + " to be listed.";
     if (id === "showdown") return "Win a Showdown series to be listed.";
     if (id === "time") return "Play a match to be listed.";
@@ -194,7 +200,7 @@
     }
     sub.textContent = data.season.name + " · " + plural(b.players, "player", "players") + " on this board";
     panel.querySelector(".lb-foot").textContent = hintText(board);
-    if (!b.top.length) box.appendChild(el("div", "lb-hint", board === "ranked" ? "No ranked ratings this season yet. Be the first." : "Nobody is on this board yet. Be the first."));
+    if (!b.top.length) box.appendChild(el("div", "lb-hint", isRanked(board) ? "No ranked ratings this season yet. Be the first." : "Nobody is on this board yet. Be the first."));
     var mine = null;
     for (var j = 0; j < b.top.length; j++) {
       var me = data.you && b.top[j].username === data.you;

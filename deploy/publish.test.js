@@ -19,6 +19,7 @@ const pair = crypto.generateKeyPairSync("ed25519");
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
 const quiet = () => {};
+const ALLOW = { allowRemovals: true };
 
 // A release folder like make_manifest.js writes: objects, signed manifest.
 function release(version, files, setup) {
@@ -61,7 +62,11 @@ function serve() {
       goLive();
       release("1.3.1", { "Game.bin": GAME, "Patch.pak": PAK2, "New.txt": Buffer.from("new") }, SETUP);
       const lines = [];
-      const p = plan(pub, upd, (l) => lines.push(l));
+      // Old.txt is dropped: refused unless removals are allowed (launchers delete what a release drops).
+      assert.throws(() => plan(pub, upd, quiet), /removes 1 of the 3 files.*Old\.txt.*--allow-removals/);
+      await assert.rejects(stage(pub, upd, quiet), /removes 1 of the 3 files/);
+      assert.ok(!fs.existsSync(path.join(upd, "objects", sha(PAK2))), "a refused release stages nothing");
+      const p = plan(pub, upd, (l) => lines.push(l), ALLOW);
       assert.deepStrictEqual(p.changed.map((f) => f.path), ["Patch.pak"]);
       assert.deepStrictEqual(p.added.map((f) => f.path), ["New.txt"]);
       assert.deepStrictEqual(p.removed.map((f) => f.path), ["Old.txt"]);
@@ -71,10 +76,10 @@ function serve() {
     });
 
     await test("the launcher setup is staged as an object, like the game files", async () => {
-      const n = await stage(pub, upd, quiet);
+      const n = await stage(pub, upd, quiet, ALLOW);
       assert.strictEqual(n.uploaded, 3);
       assert.ok(fs.readFileSync(path.join(upd, "objects", sha(SETUP.data))).equals(SETUP.data));
-      assert.strictEqual((await stage(pub, upd, quiet)).uploaded, 0, "publishing again uploads nothing");
+      assert.strictEqual((await stage(pub, upd, quiet, ALLOW)).uploaded, 0, "publishing again uploads nothing");
     });
 
     await test("the website's setup and launcher.json come from the staged object", async () => {
@@ -85,7 +90,7 @@ function serve() {
       assert.strictEqual(info.url, "/download/TheCullingRemasterSetup.exe");
       fs.rmSync(path.join(upd, "objects", sha(SETUP.data)));
       await assert.rejects(publishSetup(pub, upd, www, quiet), /isn't staged/);
-      await stage(pub, upd, quiet);
+      await stage(pub, upd, quiet, ALLOW);
     });
 
     const prev = path.join(t, "previous.json");

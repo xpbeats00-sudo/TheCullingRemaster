@@ -11,7 +11,7 @@ let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
 
 (async () => {
-  const srv = startServer(8155);
+  const srv = startServer();
   const sockets = [];
   try {
     await srv.ready();

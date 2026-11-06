@@ -1,4 +1,4 @@
-// The Culling Remaster - Ranked Solo (LOCAL TEST MODE).
+// The Culling Remaster - Ranked Solo, Duo, Trio and Quads (LOCAL TEST MODE).
 //
 // Implements the rating rules of Ranked/Markdown/The_Culling_Remaster_Ranked_Mode_Design.md
 // for the local server. Every opponent is a bot and results come from the
@@ -17,6 +17,14 @@
 //    unfinished counts as last place when the next ranked match starts.
 //  - Kills, damage and survival time are recorded but never rated.
 //  - Tier rewards are granted once, on first reaching a tier, and kept.
+//
+// Ranked Duo, Trio and Quads (docs/RANKED_TEAMS.md) are the same ladder with
+// a rating of their own per mode (same tiers, seasons, K, placements and
+// caps), kept beside Solo's: profile.ranked is Solo (unchanged), and
+// profile.rankedTeams.{duo,trio,quad} the team modes, created when first
+// used. A team match is rated on the TEAM's placement among the teams
+// (field = contestants / team size: 12 duos, 8 trios or 6 quads on Jungle),
+// against bot teams rated around the player's MMR for that mode.
 
 const crypto = require('crypto');
 
@@ -60,6 +68,35 @@ function seasonAt(now = Date.now()) {
   return { id: 'S' + (n + 1), name: 'Season ' + (n + 1), start: new Date(s).toISOString(), end: new Date(s + length).toISOString() };
 }
 Object.defineProperty(CONFIG, 'season', { get: () => seasonAt(Date.now()), enumerable: true });
+
+// The ranked modes: Solo is profile.ranked; the others profile.rankedTeams[id].
+const MODES = Object.freeze({
+  solo: Object.freeze({ id: 'solo', playlist: 'ranked_ffa', name: 'Ranked Solo', teamSize: 1 }),
+  duo: Object.freeze({ id: 'duo', playlist: 'ranked_coop2', name: 'Ranked Duos', teamSize: 2 }),
+  trio: Object.freeze({ id: 'trio', playlist: 'ranked_coop3', name: 'Ranked Trios', teamSize: 3 }),
+  quad: Object.freeze({ id: 'quad', playlist: 'ranked_coop4', name: 'Ranked Quads', teamSize: 4 })
+});
+const MODE_IDS = Object.keys(MODES);
+const TEAM_MODE_IDS = MODE_IDS.filter((m) => m !== 'solo');
+
+// A mode id ('solo', 'duo', 'trio', 'quad'); anything else is Solo.
+function modeId(mode) {
+  return typeof mode === 'string' && Object.prototype.hasOwnProperty.call(MODES, mode) ? mode : 'solo';
+}
+
+// The ranked mode a playlist id scores ('ranked_coop2' -> 'duo'), or null.
+function modeForPlaylist(playlist) {
+  for (const id of MODE_IDS) if (MODES[id].playlist === playlist) return id;
+  return null;
+}
+
+// How many teams a team match has: the contestants the map places, divided
+// by the team size (24 on Jungle: 12 duos, 8 trios, 6 quads).
+function teamField(mode, contestants = CONFIG.maxField) {
+  const size = MODES[modeId(mode)].teamSize;
+  const n = Number.isInteger(contestants) && contestants >= 2 ? Math.min(contestants, CONFIG.maxField) : CONFIG.maxField;
+  return Math.max(2, Math.floor(n / size));
+}
 
 const TIERS = [
   { name: 'Scrapper', min: 0, identity: 'Prove you belong.' },
@@ -167,9 +204,42 @@ function blank() {
   };
 }
 
-function ensure(profile, now = Date.now()) {
-  if (!profile.ranked) profile.ranked = blank();
-  const r = profile.ranked;
+const isRecord = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+// The stored record of a mode, or null if there is none yet (never creates one).
+function record(profile, mode = 'solo') {
+  const id = modeId(mode);
+  if (!profile) return null;
+  if (id === 'solo') return isRecord(profile.ranked) ? profile.ranked : null;
+  const teams = profile.rankedTeams;
+  return isRecord(teams) && isRecord(teams[id]) ? teams[id] : null;
+}
+
+// A mode's record, created (or repaired) if needed and brought to the current
+// season. Profiles from before the team modes have no rankedTeams: it is
+// added, with only the modes played, when a team mode is first used; Solo's
+// record (profile.ranked) is never touched by another mode.
+function ensure(profile, now = Date.now(), mode = 'solo') {
+  const id = modeId(mode);
+  let r;
+  if (id === 'solo') {
+    if (!isRecord(profile.ranked)) profile.ranked = blank();
+    r = profile.ranked;
+  } else {
+    if (!isRecord(profile.rankedTeams)) profile.rankedTeams = {};
+    if (!isRecord(profile.rankedTeams[id])) profile.rankedTeams[id] = blank();
+    r = profile.rankedTeams[id];
+  }
+  // Fields a hand-edited or imported record may lack.
+  if (!isRecord(r.processed)) r.processed = {};
+  if (!isRecord(r.tiersReached)) r.tiersReached = {};
+  if (!Array.isArray(r.history)) r.history = [];
+  if (!Number.isFinite(r.rating)) r.rating = CONFIG.startRating;
+  if (!Number.isFinite(r.mmr)) r.mmr = r.rating;
+  if (!Number.isInteger(r.matches) || r.matches < 0) r.matches = 0;
+  if (!Number.isInteger(r.wins) || r.wins < 0) r.wins = 0;
+  if (!Number.isFinite(r.peakRating)) { r.peakRating = r.rating; r.peakTier = tierFor(r.rating).name; }
+  if (r.pending !== null && !isRecord(r.pending)) r.pending = null;
   const season = seasonAt(now);
   if (r.season !== season.id) rollover(r, season);
   // Profiles from before the season caps (or imported): brought within them.
@@ -184,7 +254,7 @@ function isPlacement(r) {
 }
 
 // Applies a finished (or abandoned) match. Returns the history entry.
-function apply(r, match, result, now, grant) {
+function apply(r, match, result, now, grant, mode = 'solo') {
   const order = opponentsFor(match.id, match.mmr, match.field);
   const k = isPlacement(r) ? CONFIG.kProvisional : CONFIG.kEstablished;
   const before = r.rating;
@@ -211,6 +281,8 @@ function apply(r, match, result, now, grant) {
   }
   const entry = {
     matchId: match.id,
+    mode,
+    teamSize: MODES[mode].teamSize,
     at: now,
     abandoned: Boolean(result.abandoned),
     placement: result.placement,
@@ -243,27 +315,37 @@ function apply(r, match, result, now, grant) {
   return entry;
 }
 
-// Starts a ranked match; an unfinished earlier one counts as last place.
-function startMatch(profile, now = Date.now(), grant) {
-  const r = ensure(profile, now);
+// Starts a ranked match of `opts.mode` (Solo by default); an unfinished
+// earlier one OF THE SAME MODE counts as last place (another mode's pending
+// match is left alone). opts.field: a team match's number of teams
+// (teamField); Solo starts at the stock 16 and the result may say more.
+function startMatch(profile, now = Date.now(), grant, opts = {}) {
+  const mode = modeId(opts.mode);
+  const r = ensure(profile, now, mode);
   let abandoned = null;
   if (r.pending) {
-    abandoned = apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant);
+    abandoned = apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant, mode);
   }
+  const field = mode === 'solo' ? CONFIG.field
+    : Number.isInteger(opts.field) && opts.field >= 2 && opts.field <= teamField(mode) ? opts.field : teamField(mode);
   r.pending = {
-    id: 'rk-' + crypto.randomBytes(8).toString('hex'),
+    id: (mode === 'solo' ? 'rk-' : 'rk' + mode[0] + '-') + crypto.randomBytes(8).toString('hex'),
+    mode,
     startedAt: now,
     ratingBefore: r.rating,
     mmr: Math.round(r.mmr),
-    field: CONFIG.field
+    field
   };
   return { match: r.pending, abandoned };
 }
 
-// Applies the result of the pending match. Same match ID twice: the first
-// result stands. Invalid results are rejected without changing anything.
-function finishMatch(profile, result, now = Date.now(), grant) {
-  const r = ensure(profile, now);
+// Applies the result of the pending match of `mode`. Same match ID twice: the
+// first result stands. Invalid results are rejected without changing anything.
+// A team match's placement is the team's, 1..its number of teams; its field is
+// the one it started with (a result can't change it).
+function finishMatch(profile, result, now = Date.now(), grant, mode = 'solo') {
+  mode = modeId(mode);
+  const r = ensure(profile, now, mode);
   if (result.matchId && Object.prototype.hasOwnProperty.call(r.processed, result.matchId)) {
     const entry = r.history.find((h) => h.matchId === result.matchId) || { matchId: result.matchId };
     return { entry, duplicate: true };
@@ -271,21 +353,42 @@ function finishMatch(profile, result, now = Date.now(), grant) {
   if (!r.pending) return { error: 'no-ranked-match' };
   const match = r.pending;
   if (result.matchId && result.matchId !== match.id) return { error: 'unknown-match' };
-  // The match's real field when the result knows it (more contestants on some maps).
-  const field = Number.isInteger(result.field) && result.field >= 2 && result.field <= CONFIG.maxField ? result.field : match.field;
+  // Solo: the match's real field when the result knows it (more contestants on some maps).
+  const field = mode === 'solo' && Number.isInteger(result.field) && result.field >= 2 && result.field <= CONFIG.maxField
+    ? result.field : match.field;
   const placement = Number(result.placement);
   if (!Number.isInteger(placement) || placement < 1 || placement > field) return { error: 'invalid-placement' };
   r.pending = null;
-  return { entry: apply(r, Object.assign({}, match, { field }), Object.assign({}, result, { placement }), now, grant) };
+  return { entry: apply(r, Object.assign({}, match, { field }), Object.assign({}, result, { placement }), now, grant, mode) };
 }
 
-function summary(profile, now = Date.now()) {
-  const r = ensure(profile, now);
+// A team match's placement from the HUD's report: 1 for the team's win (the
+// HUD posts a victory when your team wins, even after your own death); a loss
+// is the team-sized slice of the field the reported position falls in
+// (positions 1-2 of 24 in Duo are team place 1, 3-4 place 2, ... 23-24 place
+// 12), never first without the win and never past the number of teams; a
+// missing or malformed position is last. `reported`: the contestant position
+// the HUD sent, `teams`: the match's number of teams.
+function teamPlacement(mode, reported, victory, teams) {
+  if (victory) return 1;
+  const size = MODES[modeId(mode)].teamSize;
+  const n = typeof reported === 'number' ? reported : Number(reported);
+  if (!Number.isInteger(n) || n < 1) return teams;
+  return Math.min(teams, Math.max(2, Math.ceil(n / size)));
+}
+
+function summary(profile, now = Date.now(), mode = 'solo') {
+  mode = modeId(mode);
+  const r = ensure(profile, now, mode);
   const tier = tierFor(r.rating);
   const season = seasonAt(now);
   const end = Date.parse(season.end);
   return {
     localTestMode: true,
+    mode,
+    name: MODES[mode].name,
+    playlist: MODES[mode].playlist,
+    teamSize: MODES[mode].teamSize,
     season: { id: season.id, name: season.name, end: season.end,
       daysLeft: Math.max(0, Math.ceil((end - now) / 86400000)) },
     rating: r.rating,
@@ -300,4 +403,15 @@ function summary(profile, now = Date.now()) {
   };
 }
 
-module.exports = { CONFIG, TIERS, tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, summary, seasonAt };
+// Every mode's summary, for the Ranked screen's tabs. A team mode never
+// played shows a blank record's summary, and nothing is written for it.
+function summaries(profile, now = Date.now()) {
+  const out = {};
+  for (const id of MODE_IDS) {
+    out[id] = id === 'solo' || record(profile, id) ? summary(profile, now, id) : summary({}, now, id);
+  }
+  return out;
+}
+
+module.exports = { CONFIG, TIERS, MODES, MODE_IDS, TEAM_MODE_IDS, modeId, modeForPlaylist, teamField, teamPlacement, record,
+  tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, summary, summaries, seasonAt };
