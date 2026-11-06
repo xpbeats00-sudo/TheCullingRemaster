@@ -448,7 +448,7 @@ typedef u8 (*conn_actor_fn)(void *conn, void *actor);
 typedef i32 (*conn_ready_fn)(void *conn, u8 saturate);
 
 struct weak { i32 index, serial; };
-struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; };
+struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn; };
 
 /* The channel already replicating actor on conn: UNetConnection::ActorChannels'
  * hash lookup, as UDemoNetDriver::ReplicateActor does it (key = the actor's
@@ -540,6 +540,18 @@ static i32 collect(u8 *world, u8 **out)
 
 static u32 last_rep, last_trace, last_alive;
 static i32 prerep_state = 1;       /* 1 = not looked up yet, 2 = on, 3 = off */
+static i32 move_state = 1;
+
+/* "1" in the environment variable var (UTF-16), looked up once into *state. */
+static i32 env_on(const u16 *var, i32 *state)
+{
+    u16 v[8];
+    if (*state == 1) {
+        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(var, v, 8);
+        *state = (n == 1 && v[0] == '1') ? 2 : 3;
+    }
+    return *state == 2;
+}
 
 /* CULLING_NETPLAY_PREREP=1 turns on AActor::CallPreReplication before
  * replicating (it updates replicated movement); off until it's proven safe
@@ -547,12 +559,7 @@ static i32 prerep_state = 1;       /* 1 = not looked up yet, 2 = on, 3 = off */
 static i32 prerep_on(void)
 {
     static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','P','R','E','R','E','P',0 };
-    u16 v[8];
-    if (prerep_state == 1) {
-        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(var, v, 8);
-        prerep_state = (n == 1 && v[0] == '1') ? 2 : 3;
-    }
-    return prerep_state == 2;
+    return env_on(var, &prerep_state);
 }
 
 static void server_replicate(u8 *driver)
@@ -561,7 +568,7 @@ static void server_replicate(u8 *driver)
     u8 *world = F(driver, O_ND_WORLD, u8 *);
     u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
     i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), n, i, c, live = 0;
-    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0 };
+    struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0 };
     struct line l;
     u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
     if (now - last_alive >= 5000 && trace_begin(&l, "host-alive")) {
@@ -585,6 +592,8 @@ static void server_replicate(u8 *driver)
         if (!conn || !pc || F(conn, O_CONN_STATE, i32) != 3)
             continue;
         live++;
+        if (!st.remote_pawn)
+            st.remote_pawn = F(pc, O_C_PAWN, u8 *);
         ready = (conn_ready_fn)(*(void ***)conn)[VT_CONN_NET_READY / 8];
         st.opened_now = 0;
         if (!ready(conn, 0)) { st.saturated++; continue; }   /* as the engine does: wait for room */
@@ -605,6 +614,13 @@ static void server_replicate(u8 *driver)
         kv(&l, "skipped", st.skipped, 0);
         kv(&l, "deferred", st.deferred, 0);
         kv(&l, "saturated", st.saturated, 0);
+        if (st.remote_pawn && F(st.remote_pawn, O_A_ROOT, u8 *)) {
+            u8 *root = F(st.remote_pawn, O_A_ROOT, u8 *);
+            kv(&l, "remote_pawn", (u64)st.remote_pawn, 1);
+            kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
+            kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
+            kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
+        }
         trace_end(&l);
     }
 }
@@ -644,6 +660,31 @@ static void client_trace(u8 *driver)
     }
 }
 
+/* A client with CULLING_NETPLAY_MOVE=1 walks its own pawn: AddMovementInput
+ * (APawn vtable +0x6b0, as the autotest mode drives it), +X for 3 s then -X
+ * for 3 s, every frame. The client's movement component sends that to the
+ * host as its ServerMove updates; the host's trace shows whether it moved
+ * the client's pawn there. */
+#define VT_ADD_MOVEMENT    0x6b0
+typedef void (*add_move_fn)(void *pawn, const float *dir, float scale, u8 force);
+
+static void client_move(u8 *driver)
+{
+    static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','M','O','V','E',0 };
+    u8 *conn = F(driver, O_ND_SERVERCONN, u8 *);
+    u8 *pc = conn ? F(conn, O_CONN_PC, u8 *) : 0;
+    u8 *pawn = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+    float dir[3];
+    u32 now;
+    if (!pawn || !env_on(var, &move_state))
+        return;
+    now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+    dir[0] = (now / 3000) & 1 ? -1.0f : 1.0f;
+    dir[1] = 0.0f;
+    dir[2] = 0.0f;
+    ((add_move_fn)(*(void ***)pawn)[VT_ADD_MOVEMENT / 8])(pawn, dir, 1.0f, 1);
+}
+
 /* Replaces the Steam driver's vtable slot +0x278 (TickFlush). */
 #define O_GM_NO_END        0x74d       /* AShooterGame_FreeForAll: while set, its end-of-match check never ends the match (showdown_rounds.c GM_NO_END) */
 
@@ -658,7 +699,9 @@ void np_tick_flush(void *driver, float dt)
         if (gm)
             F(gm, O_GM_NO_END, u8) = 1;
         server_replicate((u8 *)driver);
-    } else if (driver && F(driver, O_ND_SERVERCONN, void *))
+    } else if (driver && F(driver, O_ND_SERVERCONN, void *)) {
+        client_move((u8 *)driver);
         client_trace((u8 *)driver);
+    }
     FN(R_STEAM_TICKFLUSH, tick_flush_fn)(driver, dt);
 }
