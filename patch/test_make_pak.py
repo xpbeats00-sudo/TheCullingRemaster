@@ -73,6 +73,23 @@ try:
     make_pak.main(src, out, allow_test_content=True)
     assert len(list(pak_entries(out))) == 13
     print("ok    --allow-test-content packs them (local diagnostics builds)")
+
+    # The same tree packs to the same bytes (no timestamps, sorted entries):
+    # a rebuild of a release changes nothing a launcher would download again.
+    again = os.path.join(tmp, "again.pak")
+    make_pak.main(src, again, allow_test_content=True)
+    assert open(again, "rb").read() == open(out, "rb").read(), "two packs of one tree differ"
+    print("ok    the same tree packs to the same bytes")
+
+    before = open(out, "rb").read()
+    put(src, "Victory/Content/uiresources/FrontEnd/js/Café.js", b"var a = 1;")
+    try:
+        make_pak.main(src, out, allow_test_content=True)
+        raise AssertionError("a non-ASCII name was packed")
+    except make_pak.TestContentError as e:
+        assert r"Caf\xe9.js" in str(e) and "plain ASCII" in str(e), e
+    assert open(out, "rb").read() == before and not os.path.exists(out + ".new"), "a refused pak was written"
+    print("ok    a file name that isn't ASCII is refused by name, nothing written")
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 print("all make_pak tests passed")
