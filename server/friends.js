@@ -137,20 +137,27 @@ class Friends {
     return out.reverse();
   }
 
+  // A new party led by `leader` (who is in no party).
+  newParty(leader) {
+    const p = { id: crypto.randomBytes(6).toString("hex"), leader, members: [leader] };
+    this.parties.set(p.id, p);
+    this.partyOf.set(leader, p.id);
+    return p;
+  }
+
   // `from` invites friend `to` to their party (made now if they have none).
-  invite(from, to) {
+  // anyone: the server already checked that `to` lets `from` invite them
+  // without being friends (a recent player whose privacy setting allows it,
+  // server/recentplayers.js).
+  invite(from, to, { anyone = false } = {}) {
     if (from === to) return { error: "self" };
-    if (!this.areFriends(from, to)) return { error: "not-friends" };
+    if (!anyone && !this.areFriends(from, to)) return { error: "not-friends" };
     let p = this.party(from);
     // One leader per party: only they invite (a member asking is refused).
     if (p && p.leader !== from) return { error: "not-party-leader" };
     if (p && p.members.includes(to)) return { error: "already-in-party" };
     if (p && p.members.length >= this.limits.maxParty) return { error: "party-full" };
-    if (!p) {
-      p = { id: crypto.randomBytes(6).toString("hex"), leader: from, members: [from] };
-      this.parties.set(p.id, p);
-      this.partyOf.set(from, p.id);
-    }
+    if (!p) p = this.newParty(from);
     if (!this.invites.has(to)) this.invites.set(to, new Map());
     const m = this.invites.get(to);
     m.delete(p.id);
@@ -174,6 +181,48 @@ class Friends {
     p.members.push(id);
     this.partyOf.set(id, p.id);
     return { ok: true, party: p, left };
+  }
+
+  // `id` joins `leader`'s party (made now, led by them, if they have none),
+  // leaving any other party first: a join request the leader accepted. The
+  // server checked who may ask (server/recentplayers.js).
+  join(leader, id) {
+    if (leader === id) return { error: "self" };
+    const p = this.party(leader);
+    if (p && p.leader !== leader) return { error: "not-party-leader" };
+    if (p && p.members.includes(id)) return { error: "already-in-party" };
+    if (p && p.members.length >= this.limits.maxParty) return { error: "party-full" };
+    const left = this.leave(id);
+    const party = this.party(leader) || this.newParty(leader);
+    party.members.push(id);
+    this.partyOf.set(id, party.id);
+    // An invite to this party for them is answered.
+    const m = this.invites.get(id);
+    if (m) { m.delete(party.id); if (!m.size) this.invites.delete(id); }
+    return { ok: true, party, left };
+  }
+
+  // Every open invite between `a` and `b` (either way) is withdrawn (a block).
+  dropInvitesBetween(a, b) {
+    let dropped = 0;
+    for (const [to, from] of [[a, b], [b, a]]) {
+      const m = this.invites.get(to);
+      if (!m) continue;
+      for (const [partyId, inv] of m) {
+        const p = this.parties.get(partyId);
+        if (inv.from === from || (p && p.members.includes(from))) { m.delete(partyId); dropped++; }
+      }
+      if (!m.size) this.invites.delete(to);
+    }
+    return dropped;
+  }
+
+  // Whether `to` has an open invite to `from`'s party.
+  inviteOpen(from, to) {
+    const p = this.party(from);
+    const m = p && this.invites.get(to);
+    const inv = m && m.get(p.id);
+    return !!inv && this.now() - inv.at <= this.limits.inviteTtlMs;
   }
 
   declineInvite(id, partyId) {

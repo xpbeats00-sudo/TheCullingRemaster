@@ -76,6 +76,7 @@ const acc = require('./accounts');
 const { MatchLobbies } = require('./matchlobby');
 const playlists = require('./playlists');
 const { Friends } = require('./friends');
+const { RecentPlayers, PRIVACY: JOIN_PRIVACY, REPORT_REASONS } = require('./recentplayers');
 const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
 const custom = require('./custommatch');
@@ -340,12 +341,34 @@ const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin, file: 
 // Friends (friends.json) and parties (memory); see friends.js.
 // Recent activity for the launcher: matches today, players this week.
 const activity = new Activity(Date.now, path.join(DATA_DIR, 'activity.json'));
+// How long a party invite (and a join request) stays open.
+const INVITE_TTL_MS = parseInt(process.env.CULLING_INVITE_TTL_MS || String(5 * 60 * 1000), 10);
 const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
   saveDelayMs: SAVE_DELAY_MS,
+  limits: { inviteTtlMs: INVITE_TTL_MS },
   onSaveError: (e) => { metrics.error('save'); log('saving friends failed:', e.message); }
 });
+// Recent players, blocks, the invite / join privacy setting and player
+// reports (recent-players.json); see recentplayers.js and
+// docs/RECENT_PLAYERS_SYSTEM.md.
+const recent = new RecentPlayers(path.join(DATA_DIR, 'recent-players.json'), {
+  saveDelayMs: SAVE_DELAY_MS,
+  onSaveError: (e) => { metrics.error('save'); log('saving recent players failed:', e.message); },
+  options: {
+    limit: Math.max(1, parseInt(process.env.CULLING_RECENT_LIMIT || '50', 10) || 50),
+    requestTtlMs: INVITE_TTL_MS,
+    pairCooldownMs: parseInt(process.env.CULLING_SOCIAL_PAIR_MS || '30000', 10)
+  }
+});
+// Invites and join requests from Recent players, and reports, per player: one
+// every 5 seconds, bursts of 6 (on top of allowFriendAction). The same invite
+// or join request to the same player waits CULLING_SOCIAL_PAIR_MS (30 s).
+const allowSocialRequest = rateLimiter(parseFloat(process.env.CULLING_SOCIAL_RATE || '0.2'),
+  parseInt(process.env.CULLING_SOCIAL_BURST || '6', 10));
+// Recent players lists asked for, per player: one a second, bursts of 10.
+const allowRecentGet = rateLimiter(1, parseInt(process.env.CULLING_RECENT_GET_BURST || '10', 10));
 // Friend requests, removals and party invites per player: one a second, bursts of 20.
-const allowFriendAction = rateLimiter(1, 20);
+const allowFriendAction = rateLimiter(1, parseInt(process.env.CULLING_FRIEND_ACTION_BURST || '20', 10));
 // Leaderboard requests per player: one every 2 seconds, bursts of 5.
 const allowLeaderboard = rateLimiter(0.5, 5);
 const allowHttp = rateLimiter(20, 60);
@@ -473,6 +496,9 @@ app.post('/api/login', (req, res) => {
   const userID = normalizeUserID(body.userid);
   if (!validUserID(userID)) return res.status(400).json({ error: 'invalid-userid' });
   const ipHash = accounts.hashIp(requestIp(req));
+  // A banned account's profile doesn't play (operator: /admin/ban).
+  const owner = accounts.get(accounts.keyForUserID(userID));
+  if (owner && owner.bannedAt) return res.status(403).json({ errorCode: 'banned', error: 'banned' });
   if (REQUIRE_ACCOUNT && !accounts.useGrant(userID, ipHash)) {
     log('login refused (no play grant)', userID);
     return res.status(403).json({ errorCode: 'account-required', error: 'account-required' });
@@ -888,6 +914,7 @@ app.post('/api/account/login', asyncRoute(async (req, res) => {
   // An unknown name costs the same scrypt as a wrong password.
   const ok = await acc.verifyPassword(password, a ? a.password : await acc.dummyPasswordHash());
   if (!ok || !a) return res.status(401).json({ error: 'wrong-credentials' });
+  if (a.bannedAt) return res.status(403).json({ error: 'banned' });
   allowLoginIp.refund(ip);
   if (userCounted) allowLoginUser.refund(key);
   rememberAccountIp(a, ip);
@@ -1031,6 +1058,52 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
   res.json({ username: a.username, password, revokedTokens: revoked });
 }));
 
+// Bans an account ({ username, banned: false } lifts it). A banned account is
+// signed out everywhere, can't sign in or play, leaves its party, and drops
+// out of every Recent players list (docs/RECENT_PLAYERS_SYSTEM.md). Nothing
+// else is deleted: lifting the ban brings it all back.
+app.post('/admin/ban', (req, res) => {
+  if (!operator(req)) return res.status(404).json({});
+  const body = bodyObject(req);
+  const key = acc.usernameKey(body.username);
+  const a = key && accounts.get(key);
+  if (!a) return res.status(404).json({ error: 'no-such-account' });
+  const banned = body.banned !== false;
+  let revoked = 0;
+  if (banned) {
+    a.bannedAt = a.bannedAt || Date.now();
+    a.banReason = typeof body.reason === 'string' ? body.reason.slice(0, 200) : a.banReason || null;
+    accounts.save();
+    revoked = accounts.revokeAll(key);
+    accounts.revokeGrant(a.userID);
+    sessions.revokeUser(a.userID);
+    recent.dropJoinRequests(a.userID);
+    const p = friends.party(a.userID);
+    if (p) {
+      const before = p.members.slice();
+      if (partyQueued(p, a.userID)) cancelPartyQueue(p, 'party-changed', a.username + ' left the party: the search was stopped.');
+      friends.leave(a.userID);
+      for (const id of before) sendFriends(id);
+    }
+    const s = liveSocket(a.userID);
+    if (s) s.disconnect(true);
+  } else {
+    delete a.bannedAt;
+    delete a.banReason;
+    accounts.save();
+  }
+  for (const id of friends.friendsOf(a.userID)) sendFriends(id);
+  log(banned ? 'account banned' : 'ban lifted', a.userID, '(' + revoked + ' tokens revoked)');
+  res.json({ username: a.username, banned, revokedTokens: revoked });
+});
+
+// Player reports from Recent players, oldest first. Nothing is done about
+// them automatically: they are for the operator to read.
+app.get('/admin/reports', (req, res) => {
+  if (!operator(req)) return res.status(404).json({});
+  res.json({ reports: recent.listReports() });
+});
+
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
 app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: true, users: socketsByUser.size }, activity.summary())));
@@ -1102,7 +1175,8 @@ function gauges() {
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
     rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
       registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
-      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size() },
+      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size(), social: allowSocialRequest.size() },
+    recentPlayers: recent.stats(),
     saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null,
       accounts: accounts.store ? accounts.store.stats : null },
     stopping
@@ -1396,6 +1470,10 @@ function startLocalMatch(socket, raw) {
     { members: names });
   }
 
+  // What this player (and their party) last queued: a join request must fit it.
+  lastPlaylist.set(userID, mode);
+  if (p) p.playlist = mode;
+
   if (playlist.kind === 'showdown' && playlist.teamSize === 1) {
     socket.emit('join-mm-ack');
     // Out of any lobby still searching: its match-ready would land mid-series.
@@ -1417,6 +1495,8 @@ function startLocalMatch(socket, raw) {
 }
 
 const newMatchId = () => crypto.randomBytes(8).toString('hex');
+// userID -> the playlist they last queued (see startLocalMatch).
+const lastPlaylist = new Map();
 
 // Test hook: CULLING_FAULT_ALLOCATION=1 makes every lobby's match allocation
 // fail (test/party.test.js), so the failure path is exercised for real.
@@ -1466,15 +1546,20 @@ function allocateMatch(lobby) {
   log('lobby', lobby.id, lobby.queue, 'match', matchId, 'starting with', go.length, 'player(s)');
   // One player's match failing to start never stops the others' (that player
   // is told; nothing more was started for them).
+  const launched = [];
   for (const m of go) {
     try {
       launchMatch(memberSocket(m), lobby.queue, lobby.map, { matchId, lobbyId: lobby.id, partyId: m.party || null });
+      launched.push(m);
     } catch (e) {
       metrics.error('timer');
       log('lobby', lobby.id, 'match for', m.id, 'failed to start:', e && e.stack ? e.stack : e);
       fail([m.id], ALLOCATION_FAILED);
     }
   }
+  // Recent players: only the players this lobby really sent into this match.
+  guarded('recent players', () => recordPlayedTogether({ matchId, playlist: lobby.queue, map: lobby.map, source: 'lobby',
+    participants: launched.map((m) => ({ userID: m.id, partyId: m.party || null })) }));
 }
 
 // A lobby's view or match set-up threw (from its timers: uncaught, that would
@@ -1725,6 +1810,185 @@ function notifyFriends(userID) {
     if (told.has(id)) continue;
     told.add(id);
     sendFriends(id);
+  }
+}
+
+// ---------------------------------------------------------------- recent players
+
+// docs/RECENT_PLAYERS_SYSTEM.md. Who a player played with comes only from what
+// the server confirmed (recordPlayedTogether); everything a menu asks is
+// checked here; no IDs, emails or addresses go out.
+
+// An account that exists and isn't banned (an operator's /admin/ban).
+function accountActive(userID) {
+  const key = accounts.keyForUserID(userID);
+  const a = key ? accounts.get(key) : null;
+  return !!a && !a.bannedAt;
+}
+
+// THE recording hook: the players of one match as the server knows them.
+// match: { matchId, playlist, map, source, participants: [{ userID, partyId?, team? }] }.
+// Today allocateMatch calls it with the account players a lobby launched into
+// one match (source 'lobby'). Once shared matches exist, the match host's
+// authoritative roster (with teams) goes through here, source 'match'. Never
+// called with a list a client sent. Players without an account (or banned)
+// are left out; names are the account usernames now.
+function recordPlayedTogether(match) {
+  const participants = (match.participants || []).filter((p) => p && accountActive(p.userID))
+    .map((p) => ({ userID: p.userID, name: usernameOf(p.userID), partyId: p.partyId || null,
+      team: Number.isInteger(p.team) ? p.team : null }));
+  const n = recent.recordMatch({ matchId: match.matchId, playlist: match.playlist, map: match.map || null,
+    source: match.source, at: Date.now(), participants });
+  if (n) {
+    log('recent players: match', match.matchId, participants.length, 'player(s) recorded');
+    for (const p of participants) sendRecent(p.userID);
+  }
+  return n;
+}
+
+// Why `me` can't invite `other` to their party now (null: they can).
+// reach: whether other's setting lets me (recent.allows).
+function inviteRefusal(me, other, reach) {
+  if (!reach) return 'unavailable';
+  const p = friends.party(me);
+  if (p && p.leader !== me) return 'not-party-leader';
+  if (p && p.members.includes(other)) return 'already-in-party';
+  if (p && p.members.length >= friends.limits.maxParty) return 'party-full';
+  return null;
+}
+
+// Why `me` can't ask to join `other`'s party now (null: they can). A party
+// without one: `other` alone, who would lead it.
+function joinRefusal(me, other) {
+  const p = friends.party(other);
+  if (p && p.members.includes(me)) return 'already-in-party';
+  if (p && p.leader !== other) return 'not-party-leader';
+  const members = p ? p.members : [other];
+  if (members.length >= friends.limits.maxParty) return 'party-full';
+  if (members.some((id) => id !== me && recent.blockedEitherWay(id, me))) return 'unavailable';
+  if (!liveSocket(other)) return 'offline';
+  if (members.some((id) => presenceState(id) === 'match')) return 'in-match';
+  if (members.some((id) => lobbies.lobbyOf(id))) return 'party-in-queue';
+  const mode = (p && p.playlist) || lastPlaylist.get(other);
+  const pl = mode && playlists.PLAYLISTS[mode];
+  if (pl && members.length + 1 > pl.maxParty) return 'mode-full';
+  return null;
+}
+
+// How a recent player shows on `me`'s list.
+function recentEntry(me, e) {
+  const other = e.with;
+  const isFriend = friends.areFriends(me, other);
+  const card = friendEntry(other);
+  // When someone was last online is for their friends only.
+  if (!isFriend) card.status = Object.assign({}, card.status, { lastSeen: null });
+  const mine = friends.peek(me);
+  const reach = recent.allows(other, me, isFriend);
+  const theirs = friends.party(other);
+  const ours = friends.party(me);
+  const inviteWhy = inviteRefusal(me, other, reach);
+  const joinWhy = reach ? joinRefusal(me, other) : 'unavailable';
+  const mode = playlists.PLAYLISTS[e.playlist];
+  return Object.assign(card, {
+    nameThen: e.name,
+    relation: e.relation,
+    playlist: e.playlist,
+    mode: MODE_LABELS[e.playlist] || (mode ? mode.name : null),
+    map: e.map,
+    playedAt: e.playedAt,
+    lastInteraction: e.lastInteraction,
+    friend: isFriend ? 'friend' : mine.outgoing.includes(other) ? 'requested' : mine.incoming.includes(other) ? 'asked-you' : 'none',
+    invite: { can: !inviteWhy, reason: inviteWhy, sent: friends.inviteOpen(me, other) },
+    join: { can: !joinWhy, reason: joinWhy, sent: !!recent.joinRequestFrom(me, other) },
+    // Their party, only when their setting lets you join it.
+    party: reach && theirs ? { size: theirs.members.length, max: friends.limits.maxParty, leads: theirs.leader === other,
+      yours: !!ours && ours === theirs } : null
+  });
+}
+
+// Everything the RECENT tab shows.
+function recentView(userID) {
+  const players = [];
+  for (const e of recent.list(userID)) {
+    if (!accountActive(e.with) || recent.blockedEitherWay(userID, e.with)) continue;
+    players.push(recentEntry(userID, e));
+  }
+  const requests = [];
+  for (const r of recent.joinRequestsFor(userID)) {
+    if (!accountActive(r.from) || recent.blockedEitherWay(userID, r.from)) continue;
+    requests.push({ requestId: r.id, from: friendEntry(r.from) });
+  }
+  return {
+    you: usernameOf(userID),
+    players,
+    joinRequests: requests,
+    blocked: recent.blockedBy(userID).map((id) => usernameOf(id)).filter(Boolean).sort().map((username) => ({ username })),
+    settings: { join: recent.privacy(userID) },
+    privacyOptions: JOIN_PRIVACY.slice(),
+    reportReasons: REPORT_REASONS.slice(),
+    limit: recent.options.limit,
+    maxParty: friends.limits.maxParty
+  };
+}
+
+// Pushed (coalesced, like the friends panel) to menus that have asked for
+// the tab since they signed in.
+const recentDirty = new Set();
+let recentFlush = null;
+function sendRecent(userID) {
+  const s = liveSocket(userID);
+  if (!s || !s.wantsRecent) return;
+  recentDirty.add(userID);
+  if (!recentFlush) recentFlush = setImmediate(flushRecent);
+}
+function flushRecent() {
+  recentFlush = null;
+  const ids = [...recentDirty];
+  recentDirty.clear();
+  for (const id of ids) {
+    guarded('recent push', () => {
+      const s = liveSocket(id);
+      if (s && s.wantsRecent) s.emit('remaster-recent', recentView(id));
+    });
+  }
+}
+
+// A block: friendship, friend requests, party invites and join requests
+// between the two are gone, and a blocker sharing a party with them leaves it.
+function applyBlock(me, other) {
+  if (friends.areFriends(me, other)) friends.remove(me, other);
+  friends.decline(me, other);
+  friends.dropInvitesBetween(me, other);
+  recent.dropJoinRequests(me, other);
+  const p = friends.party(me);
+  if (p && p.members.includes(other)) {
+    const before = p.members.slice();
+    if (partyQueued(p, me)) cancelPartyQueue(p, 'party-changed', (usernameOf(me) || 'A party member') + ' left the party: the search was stopped.');
+    friends.leave(me);
+    for (const id of before) sendFriends(id);
+  }
+}
+
+// A block between `me` and `other` refuses what `me` asks: 'blocked' when it
+// is theirs to undo, 'unavailable' (the same answer their privacy setting
+// gives) when the other player blocked them. null: no block.
+function blockRefusal(me, other) {
+  if (recent.hasBlocked(me, other)) return 'blocked';
+  if (recent.hasBlocked(other, me)) return 'unavailable';
+  return null;
+}
+
+// `userID` is about to join a party: out of whatever search they are in
+// (their old party's stops for everyone, with the reason).
+function leaveSearchForParty(userID) {
+  const old = friends.party(userID);
+  if (old && partyQueued(old, userID)) {
+    cancelPartyQueue(old, 'party-changed', (usernameOf(userID) || 'A party member') + ' joined another party: the search was stopped.');
+  } else if (lobbies.lobbyOf(userID)) {
+    lobbies.leave(userID);
+    setPresence(userID, 'menu');
+    const s = liveSocket(userID);
+    if (s) s.emit('leave-mm-group', { reason: 'joined-party', message: 'You joined a party: its leader queues for it.' });
   }
 }
 
@@ -2036,9 +2300,16 @@ io.on('connection', (socket) => {
   friendAction('friend-request', (me, msg, reply) => {
     const to = target(msg);
     if (!to) return reply({ error: 'no-such-player', username: msg.username });
+    // Blocks work both ways; the blocked player isn't told why.
+    const blocked = blockRefusal(me, to);
+    if (blocked) return reply({ error: blocked, username: usernameOf(to) });
     const r = friends.request(me, to);
     reply(Object.assign({ username: usernameOf(to) }, r));
-    if (r.ok) { notifyFriends(me); sendFriends(to); }
+    if (r.ok) {
+      notifyFriends(me); sendFriends(to);
+      if (recent.touch(me, to)) sendRecent(me);
+      sendRecent(to);
+    }
   });
   for (const [action, method] of [['friend-accept', 'accept'], ['friend-decline', 'decline'], ['friend-remove', 'remove']]) {
     friendAction(action, (me, msg, reply) => {
@@ -2046,12 +2317,16 @@ io.on('connection', (socket) => {
       if (!other) return reply({ error: 'no-such-player', username: msg.username });
       const r = friends[method](me, other);
       reply(Object.assign({ username: usernameOf(other) }, r));
-      if (r.ok) { notifyFriends(me); notifyFriends(other); }
+      if (r.ok) { notifyFriends(me); notifyFriends(other); sendRecent(me); sendRecent(other); }
     });
   }
   friendAction('party-invite', (me, msg, reply) => {
     const to = target(msg);
     if (!to) return reply({ error: 'no-such-player', username: msg.username });
+    const blocked = blockRefusal(me, to);
+    if (blocked) return reply({ error: blocked, username: usernameOf(to) });
+    // A friend whose setting is "nobody" can't be invited either.
+    if (friends.areFriends(me, to) && !recent.allows(to, me, true)) return reply({ error: 'unavailable', username: usernameOf(to) });
     const r = friends.invite(me, to);
     reply(Object.assign({ username: usernameOf(to) }, r));
     if (!r.ok) return;
@@ -2059,6 +2334,7 @@ io.on('connection', (socket) => {
     if (s && s.connected) s.emit('remaster-party-invite', { partyId: r.partyId, from: friendEntry(me) });
     notifyFriends(me);
     sendFriends(to);
+    sendRecent(me); sendRecent(to);
   });
   // Who was in a party before a change: a party left with one player is
   // dropped, and that last player hears of it too.
@@ -2071,6 +2347,8 @@ io.on('connection', (socket) => {
     if (target && target.members.some((id) => lobbies.lobbyOf(id))) {
       return reply({ error: 'party-in-queue', message: 'That party is searching for a match: accept when its search is over.' });
     }
+    // Never into a party with someone either of you blocked.
+    if (target && target.members.some((id) => recent.blockedEitherWay(id, me))) return reply({ error: 'unavailable' });
     const old = friends.party(me);
     const before = membersOf(old);
     // Out of whatever search this player was in (their old party's, or
@@ -2110,6 +2388,152 @@ io.on('connection', (socket) => {
     const id = msg.username === undefined ? me : target(msg);
     socket.emit('remaster-player-card', id ? Object.assign({ found: true }, playerCard(id, me))
       : { found: false, username: typeof msg.username === 'string' ? msg.username.slice(0, 40) : null });
+  });
+
+  // Recent players (Friends.js, the RECENT tab; docs/RECENT_PLAYERS_SYSTEM.md).
+  // Every action answers with remaster-recent-result and pushes the new tab
+  // (remaster-recent) to whoever it changed for. Invites, join requests and
+  // reports are rate-limited twice: per player (allowSocialRequest) and per
+  // pair (CULLING_SOCIAL_PAIR_MS).
+  const SOCIAL = new Set(['recent-invite', 'recent-join-request', 'recent-report']);
+  const recentAction = (action, fn) => on(action, (msg) => {
+    const me = socket.userID;
+    const reply = (r) => socket.emit('remaster-recent-result', Object.assign({ action }, r));
+    if (!usernameOf(me)) return reply({ error: 'no-account' });
+    if (action === 'recent-get' ? !allowRecentGet(me) : !allowFriendAction(me)) return reply({ error: 'slow-down' });
+    if (SOCIAL.has(action) && !allowSocialRequest(me)) return reply({ error: 'slow-down' });
+    fn(me, msg && typeof msg === 'object' ? msg : {}, reply);
+  });
+  const askedName = (msg) => (typeof msg.username === 'string' ? msg.username.slice(0, 40) : null);
+  // A player on your own list, by username: { to, name }, or null (refused, answered).
+  const recentTarget = (me, msg, reply) => {
+    const to = target(msg);
+    if (!to || !accountActive(to)) { reply({ error: 'no-such-player', username: askedName(msg) }); return null; }
+    if (to === me) { reply({ error: 'self' }); return null; }
+    const name = usernameOf(to);
+    if (!recent.entry(me, to)) { reply({ error: 'not-recent', username: name }); return null; }
+    return { to, name };
+  };
+  recentAction('recent-get', (me) => {
+    socket.wantsRecent = true;
+    socket.emit('remaster-recent', recentView(me));
+  });
+  // Invite a recent player to your party (made now if you have none). Their
+  // setting decides whether you may; friendship isn't needed.
+  recentAction('recent-invite', (me, msg, reply) => {
+    const t = recentTarget(me, msg, reply);
+    if (!t) return;
+    const why = blockRefusal(me, t.to) || inviteRefusal(me, t.to, recent.allows(t.to, me, friends.areFriends(me, t.to)));
+    if (why) return reply({ error: why, username: t.name });
+    if (recent.coolingDown('invite', me, t.to)) return reply({ error: 'too-soon', username: t.name });
+    const r = friends.invite(me, t.to, { anyone: true });
+    reply(Object.assign({ username: t.name }, r));
+    if (!r.ok) return;
+    recent.markSent('invite', me, t.to);
+    recent.touch(me, t.to);
+    const s = liveSocket(t.to);
+    if (s) s.emit('remaster-party-invite', { partyId: r.partyId, from: friendEntry(me) });
+    notifyFriends(me);
+    sendFriends(t.to);
+    sendRecent(me);
+    sendRecent(t.to);
+  });
+  // Ask to join a recent player's party: their setting must let you, they
+  // must lead it (or have none), it must have room, not be searching or
+  // playing, and fit the mode it last queued. They answer it.
+  recentAction('recent-join-request', (me, msg, reply) => {
+    const t = recentTarget(me, msg, reply);
+    if (!t) return;
+    const why = blockRefusal(me, t.to)
+      || (recent.allows(t.to, me, friends.areFriends(me, t.to)) ? joinRefusal(me, t.to) : 'unavailable');
+    if (why) return reply({ error: why, username: t.name });
+    if (recent.coolingDown('join', me, t.to)) return reply({ error: 'too-soon', username: t.name });
+    const r = recent.requestJoin(me, t.to);
+    if (!r.ok) return reply(Object.assign({ username: t.name }, r));
+    recent.markSent('join', me, t.to);
+    recent.touch(me, t.to);
+    const s = liveSocket(t.to);
+    if (s) s.emit('remaster-join-request', { requestId: r.id, from: friendEntry(me) });
+    reply({ ok: true, username: t.name });
+    sendRecent(me);
+    sendRecent(t.to);
+  });
+  // The leader answers a join request. Everything is checked again: the
+  // party may have changed since it was asked.
+  recentAction('recent-join-accept', (me, msg, reply) => {
+    const r = recent.takeJoinRequest(me, shortString(msg.requestId, 40, ''));
+    if (!r) return reply({ error: 'no-request' });
+    const from = r.from;
+    const name = usernameOf(from);
+    sendRecent(from);
+    if (!accountActive(from)) return reply({ error: 'no-such-player' });
+    let why = blockRefusal(me, from) || joinRefusal(from, me);
+    if (!why && !liveSocket(from)) why = 'requester-offline';
+    if (!why && presenceState(from) === 'match') why = 'requester-busy';
+    if (why) return reply({ error: why, username: name });
+    leaveSearchForParty(from);
+    const before = membersOf(friends.party(from));
+    const j = friends.join(me, from);
+    if (!j.ok) return reply(Object.assign({ username: name }, j));
+    reply({ ok: true, username: name, partyId: j.party.id });
+    recent.touch(me, from);
+    const s = liveSocket(from);
+    if (s) s.emit('remaster-recent-result', { action: 'recent-join-accepted', ok: true, username: usernameOf(me) });
+    for (const id of before) sendFriends(id);
+    for (const id of j.party.members) notifyFriends(id);
+    sendRecent(me);
+  });
+  recentAction('recent-join-decline', (me, msg, reply) => {
+    const r = recent.takeJoinRequest(me, shortString(msg.requestId, 40, ''));
+    if (!r) return reply({ error: 'no-request' });
+    reply({ ok: true, username: usernameOf(r.from) });
+    sendRecent(me);
+    sendRecent(r.from);
+  });
+  // Block anyone with an account (from the list, or the blocked list's name).
+  recentAction('recent-block', (me, msg, reply) => {
+    const to = target(msg);
+    if (!to) return reply({ error: 'no-such-player', username: askedName(msg) });
+    const r = recent.block(me, to);
+    if (!r.ok) return reply(Object.assign({ username: usernameOf(to) }, r));
+    applyBlock(me, to);
+    log('block', me, '->', to);
+    reply({ ok: true, username: usernameOf(to) });
+    notifyFriends(me);
+    notifyFriends(to);
+    sendRecent(me);
+    sendRecent(to);
+  });
+  recentAction('recent-unblock', (me, msg, reply) => {
+    const to = target(msg);
+    if (!to) return reply({ error: 'no-such-player', username: askedName(msg) });
+    const r = recent.unblock(me, to);
+    reply(Object.assign({ username: usernameOf(to) }, r));
+    if (r.ok) { sendRecent(me); sendRecent(to); }
+  });
+  // A report for the operator (GET /admin/reports): stored, never acted on
+  // automatically. Only about someone on your list.
+  recentAction('recent-report', (me, msg, reply) => {
+    const t = recentTarget(me, msg, reply);
+    if (!t) return;
+    const r = recent.report({ from: me, fromName: usernameOf(me), about: t.to, aboutName: t.name,
+      reason: msg.reason, note: msg.note, context: recent.entry(me, t.to) });
+    if (r.ok) log('player report', r.id, me, 'about', t.to, msg.reason);
+    reply(r.ok ? { ok: true, username: t.name } : Object.assign({ username: t.name }, r));
+  });
+  recentAction('recent-remove', (me, msg, reply) => {
+    const t = recentTarget(me, msg, reply);
+    if (!t) return;
+    const r = recent.remove(me, t.to);
+    reply(Object.assign({ username: t.name }, r));
+    if (r.ok) sendRecent(me);
+  });
+  // Who may invite you or ask to join your party: everyone, recent (friends
+  // and recent players), friends, nobody.
+  recentAction('recent-settings', (me, msg, reply) => {
+    const r = recent.setPrivacy(me, msg.join);
+    reply(r);
+    if (r.ok) sendRecent(me);
   });
 
   // The global leaderboard (Leaderboard.js): every board, with your own rows.
@@ -2228,6 +2652,7 @@ function flushAll(why) {
   showdowns.flushSync();
   const wroteAccounts = accounts.flushSync();
   friends.flushSync();
+  recent.flushSync();
   activity.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {
     log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
@@ -2256,6 +2681,7 @@ function shutdown(signal) {
   if (sessions.store) sessions.store.close();
   accounts.close();
   friends.close();
+  recent.close();
   // Let replies already in flight go out, then exit.
   io.close();
   server.close();
