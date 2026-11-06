@@ -78,6 +78,9 @@ typedef unsigned short u16;
 #define COLL_DYNAMIC_SOURCE 0
 #define COLL_STATIC        2
 #define VT_INITLISTEN      0x220       /* UNetDriver vtable: InitListen(this, notify, url, reuse, error) */
+#define R_STEAM_INITLISTEN 0x2324a10   /* USteamNetDriver::InitListen */
+#define R_IP_INITLISTEN    0x22d9800   /* UIpNetDriver::InitListen (the UDP socket) */
+#define O_STEAM_PASSTHRU   0x438       /* USteamNetDriver::bIsPassthrough (its LAN branch sets it) */
 #define O_URL_PORT         0x20        /* FURL::Port */
 #define O_CONN_PC          0x30        /* UPlayer::PlayerController (UNetConnection) */
 #define O_CONN_STATE       0x124       /* UNetConnection::State (1 closed, 2 pending, 3 open) */
@@ -252,9 +255,21 @@ u8 np_listen(void *world, void *url)
 
     struct fstring error = { 0, 0, 0 };
     void **vt = *(void ***)driver;
-    u8 ok = ((init_listen_fn)vt[VT_INITLISTEN / 8])(driver, (u8 *)world + O_WORLD_NOTIFY, url, 0, &error);
+    init_listen_fn init = (init_listen_fn)vt[VT_INITLISTEN / 8];
+    u8 steam = (u64)init == image_base() + R_STEAM_INITLISTEN;
+    /* The GameNetDriver definition is the Steam driver. Its InitListen opens a
+     * Steam (emulator) P2P socket unless the URL has ?bIsLanMatch, and on this
+     * launch path the option doesn't reach it (in game: no UDP port, ok=1).
+     * Take its LAN branch directly, as it does itself: bIsPassthrough = 1,
+     * then UIpNetDriver::InitListen, a plain UDP socket on the URL's port. */
+    if (steam) {
+        F(driver, O_STEAM_PASSTHRU, u8) = 1;
+        init = FN(R_IP_INITLISTEN, init_listen_fn);
+    }
+    u8 ok = init(driver, (u8 *)world + O_WORLD_NOTIFY, url, 0, &error);
     if (trace_begin(&l, "listen-init")) {
         kv(&l, "ok", ok, 0);
+        kv(&l, "steam_lan", steam, 0);
         kv(&l, "port", (u64)F(url, O_URL_PORT, i32), 0);
         kv(&l, "notify", (u64)F(driver, O_ND_NOTIFY, void *), 1);
         kv(&l, "error_len", (u64)error.num, 0);

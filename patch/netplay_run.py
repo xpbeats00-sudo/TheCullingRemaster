@@ -45,7 +45,7 @@ WIN64 = os.path.join(GAME, "Victory", "Binaries", "Win64")
 LOGS = os.path.join(LOCAL, "TheCulling", "Saved", "Logs")
 STOCK_EXE = r"C:\Culling\TheCulling\Victory\Binaries\Win64\Victory.exe"
 PORT = 7777
-HOST_URL = ("Jungle_P?listen?bIsLanMatch?bEnableBots=false"
+HOST_URL = ("Jungle_P?listen?bIsLanMatch?bEnableBots=true"
             "?game=/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C")
 
 
@@ -113,7 +113,7 @@ def read(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(os.environ.get("TEMP", "."), "culling-netplay-run"))
-    ap.add_argument("--host-wait", type=int, default=75)
+    ap.add_argument("--host-wait", type=int, default=120)
     ap.add_argument("--client-wait", type=int, default=90)
     ap.add_argument("--no-client", action="store_true")
     a = ap.parse_args()
@@ -151,8 +151,16 @@ def main():
         host = wait_game(host_l, 90)
         started += [p for p in (host,) if p]
         log("host Victory.exe pid", host)
-        time.sleep(a.host_wait)
-        pids, lines = udp_owners(PORT)
+        # Poll: the listen socket lives as long as the host's world (a match
+        # that ends sends the game back to the menu and closes it), so the
+        # client starts as soon as it is open.
+        t0, pids, lines = time.time(), set(), []
+        while host and time.time() - t0 < a.host_wait:
+            pids, lines = udp_owners(PORT)
+            if host in pids:
+                result["evidence"]["listen_after_s"] = round(time.time() - t0)
+                break
+            time.sleep(3)
         result["evidence"]["netstat"] = lines
         result["evidence"]["host_trace"] = read(host_trace).splitlines()[:50]
         if not host:
@@ -172,7 +180,13 @@ def main():
                 time.sleep(2)
             started += [p for p in (client,) if p]
             log("client Victory.exe pid", client)
-            time.sleep(a.client_wait)
+            t1 = time.time()
+            while time.time() - t1 < a.client_wait:
+                time.sleep(3)
+                if "type=9" in read(host_trace):
+                    time.sleep(10)
+                    break
+            result["evidence"]["host_udp_at_end"] = udp_owners(PORT)[1]
             trace = read(host_trace)
             result["evidence"]["host_trace"] = trace.splitlines()[:200]
             result["evidence"]["client_trace"] = read(client_trace).splitlines()[:50]

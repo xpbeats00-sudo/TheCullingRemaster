@@ -218,6 +218,23 @@ def test_real_exe(path):
         assert iat.get(slot) == ("KERNEL32.dll", fn), "%s %#x is %s, not %s" % (macro, slot, iat.get(slot), fn)
     for name, (start, raw, size) in ((b".text", PN.TEXT), (b".rdata", PN.RDATA)):
         assert (sects[name][1], sects[name][3]) == (start, raw), name
+    # 0b. np_listen's LAN branch for the Steam driver: USteamNetDriver::InitListen sets
+    # bIsPassthrough (+0x438) = 1 on its LAN path and tail-jumps to UIpNetDriver::InitListen,
+    # and the Steam driver's vtable (seen in game, RVA 0x2e0a998) holds it at +0x220.
+    def mac(name):
+        return int(_re.search(r"#define %s\s+(0x[0-9a-f]+)" % name, src).group(1), 16)
+    steam, ip, flag = mac("R_STEAM_INITLISTEN"), mac("R_IP_INITLISTEN"), mac("O_STEAM_PASSTHRU")
+    s = data[PN._off(IMAGE_BASE + steam):PN._off(IMAGE_BASE + steam) + 0x11c]
+    lan = bytes.fromhex("c683") + struct.pack("<I", flag) + b"\x01"
+    assert lan in s, "Steam InitListen: no mov byte [rbx+%#x],1" % flag
+    j = s.rindex(b"\xe9")
+    assert IMAGE_BASE + steam + j + 5 + struct.unpack_from("<i", s, j + 1)[0] == IMAGE_BASE + ip, \
+        "Steam InitListen doesn't end in a jmp to UIpNetDriver::InitListen"
+    assert struct.unpack_from("<Q", data, PN._off(IMAGE_BASE + 0x2E0A998 + 0x220))[0] == IMAGE_BASE + steam, \
+        "the Steam driver's vtable +0x220 isn't its InitListen"
+    ipb = data[PN._off(IMAGE_BASE + ip):PN._off(IMAGE_BASE + ip) + 16]
+    assert ipb[:5] in (bytes.fromhex("48895c2408"), bytes.fromhex("4c8bdc4989")) or ipb[0] in (0x48, 0x4c, 0x40), \
+        "UIpNetDriver::InitListen doesn't look like a function start: %s" % ipb.hex()
     # 1. The Listen call and its stub.
     cur = data[PN.LISTEN_CALL_AT:PN.LISTEN_CALL_AT + 5]
     assert cur == PN.LISTEN_STUB_CALL, "Listen call bytes changed: %s" % cur.hex()
