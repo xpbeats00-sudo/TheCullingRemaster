@@ -22,6 +22,7 @@ char sd_should_end(u8 *gm);
 void sd_rating(u8 *ps, void *activity, void *player, i32 value);
 u8 *sd_gas_instigator(u8 *wound);
 char sd_teams(u8 *gs);
+i32 sd_spawn_team(u8 *ps);
 void sd_sides_probe(i32 *out);
 void sd_spawn_bots(u8 *gm);
 
@@ -657,6 +658,30 @@ static char teleport(u8 *pawn, const float *at, const float *rot)
     return 1;
 }
 static void unpossess(u8 *c) { F(c, 0x408, u8 *) = 0; }
+static i32 get_team(u8 *ps) { return F(ps, 0x490, i32); }
+
+/* The start chooser's team (fix 12): 0 in ClassicTeams (one free start each), the stock team otherwise. */
+static void test_spawn_team(void)
+{
+    u8 *ps = new_obj(cls_ps), *gm = new_obj(cls_gm), *old;
+    if (!world) world = new_obj(0);
+    old = F(world, 0xf0, u8 *);
+    F(world, 0xf0, u8 *) = gm;
+    F(ps, 0x490, i32) = 3;
+    F(gm, 0x4e0, u8) = 2;                              /* ClassicTeams: Duo, Trios, Quads */
+    CHECK(sd_spawn_team(ps) == 0);
+    F(gm, 0x4e0, u8) = 3;                              /* Lightning (team Showdown) */
+    CHECK(sd_spawn_team(ps) == 3);
+    F(gm, 0x4e0, u8) = 1;                              /* Solo */
+    CHECK(sd_spawn_team(ps) == 3);
+    F(ps, 0x490, i32) = 0;
+    CHECK(sd_spawn_team(ps) == 0);
+    F(world, 0xf0, u8 *) = 0;                          /* no GameMode: stock */
+    F(ps, 0x490, i32) = 5;
+    CHECK(sd_spawn_team(ps) == 5);
+    F(world, 0xf0, u8 *) = old;
+    printf("ok    start chooser's team: 0 in Duo/Trios/Quads (a free start each), the stock TeamNumber in Solo, Showdown, without a GameMode\n");
+}
 static int possessions;
 static void possess(u8 *c, u8 *p) { F(c, 0x408, u8 *) = p; F(p, 0x438, u8 *) = c; possessions++; }
 static char ch_alive(u8 *p) { (void)p; return 1; }
@@ -1166,6 +1191,7 @@ int main(void)
     vtable[0x650 / 8] = (void *)unpossess;
     vtable[0x700 / 8] = (void *)restart_player;
     vtable[0x648 / 8] = (void *)possess;
+    hook(0x249320, (void *)get_team);
     hook(0x26e0d0, (void *)ch_alive);
     hook(0x244d30, (void *)ffa_should_end);
     hook(0x249d20, (void *)ps_has_left);
@@ -1203,6 +1229,7 @@ int main(void)
     hook(0x111fae0, (void *)teleport);
     VirtualAlloc(image + 0x2567000, 0x1000, MEM_COMMIT, PAGE_READWRITE);   /* L"/Script/Victory" */
     sd_self_rva = (u64)&sd_self_rva - (u64)image;
+    test_spawn_team();
     test_duo();
     test_chokening();
     test_team_sizes();

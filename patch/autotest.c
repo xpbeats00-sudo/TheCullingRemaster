@@ -101,7 +101,7 @@ typedef u64 (__stdcall *at_ticks_t)(void);
 void __stosb(unsigned char *, unsigned char, unsigned __int64);
 #pragma intrinsic(__stosb)
 
-enum { AT_NONE, AT_TEAMWIN, AT_TEAMOUT, AT_SOLODEATH, AT_SD, AT_CHOKE, AT_UNSTICK, AT_NIGHT, AT_BOTS };
+enum { AT_NONE, AT_TEAMWIN, AT_TEAMOUT, AT_SOLODEATH, AT_SD, AT_CHOKE, AT_UNSTICK, AT_NIGHT, AT_BOTS, AT_PODS };
 #define AT_MAX     48               /* fighters tracked */
 #define AT_POST_END 25              /* seconds after the match's end before quitting (the HUD posts its result) */
 #define AT_LINE    2048
@@ -121,7 +121,7 @@ static struct {
     i32 tms_ms;                     /* last TMS line logged */
     i32 round_ms, round;            /* Showdown: when the round's S message came */
     i32 round_logged, sides_logged;
-    i32 kills_done, teams_logged, pods_logged;
+    i32 kills_done, teams_logged, pods_logged, starts_logged;
     Weak seen[AT_MAX];              /* player states seen, by PlayerArray index */
     i32 dead[AT_MAX];
     i32 state[AT_MAX];              /* bots: weapon state last frame (-1 none) */
@@ -486,6 +486,25 @@ static void at_match_end(char ended)
     at_end();
 }
 
+static int at_ensure(u8 *gm);
+
+/* The start chooser asked a contestant's team (sd_spawn_team): the TeamNumber
+   it had then, what the chooser was given, and the GameMode's pairing flags. */
+static void at_spawn_team(u8 *gm, u8 *ps, i32 team, i32 given)
+{
+    if (!at_ensure(gm)) return;
+    at_begin("spawn_team");
+    at_fs("name", (FString *)(ps + PS_NAME));
+    at_i("team", team);
+    at_i("given", given);
+    at_i("pc", FIELD(ps, PS_FLAGS, u32) & 8 ? 0 : 1);
+    at_i("pair_teams", FIELD(gm, GM_PAIR_TEAMS, u8));
+    at_i("pair_together", FIELD(gm, GM_PAIR_SPAWN, u8));
+    at_i("pair_balanced", FIELD(gm, GM_PAIR_BALANCED, u8));
+    at_i("team_starts", FIELD(gm, GM_TEAM_STARTS + 8, i32));
+    at_end();
+}
+
 /* Something the module did on its own (showdown_rounds.c). */
 static void at_note(const char *what)
 {
@@ -512,15 +531,15 @@ static void at_gas(u8 *victim, u8 *by, const char *why)
 /* ---------------------------------------------------------------- scenarios */
 static int at_parse(u8 *gm)
 {
-    static const char NAMES[AT_BOTS + 1][12] = { "", "teamwin", "teamout", "solodeath", "sd", "choke", "unstick", "night",
-                                                 "bots" };
+    static const char NAMES[AT_PODS + 1][12] = { "", "teamwin", "teamout", "solodeath", "sd", "choke", "unstick", "night",
+                                                 "bots", "pods" };
     const char (*names)[12] = (const char (*)[12])wx_launder(NAMES);
     i32 len = 0, i, k;
     const u16 *v = wx_option((FString *)(gm + GM_OPTIONS), "remasterautotest", &len);
     if (!v || len <= 0 || len >= 16) return AT_NONE;
     for (i = 0; i < len; i++) T.name[i] = v[i];
     T.name[len] = 0;
-    for (k = 1; k <= AT_BOTS; k++) {
+    for (k = 1; k <= AT_PODS; k++) {
         const char *n = names[k];
         for (i = 0; n[i] && i < len && wx_eq(v + i, n + i, 1); i++) ;
         if (i == len && !n[i]) return k;
@@ -876,6 +895,54 @@ static void at_sample_bots(i32 now)
    starts; BasicBot SpawnsWithWeapons off). Logged in the pods (InProgress
    second 0) and as they open (second 1): the contestants, the closest two
    pawns, and each bot's inventory other than fists. */
+/* Every contestant's TeamNumber and place (the pods scenario, each sample). */
+static void at_everyone(const char *ev)
+{
+    i32 i;
+    at_begin(ev);
+    at_key("f");
+    at_c('[');
+    for (i = 0; i < NF; i++) {
+        float q[3];
+        if (i) at_c(',');
+        at_where(F[i].pawn, q);
+        at_c('[');
+        at_wstr(((FString *)(F[i].ps + PS_NAME))->data, ((FString *)(F[i].ps + PS_NAME))->num);
+        at_c(','); at_num(F[i].team); at_c(','); at_num(F[i].pc); at_c(','); at_num(F[i].index);
+        at_c(','); at_fnum(q[0]); at_c(','); at_fnum(q[1]); at_c(','); at_fnum(q[2]);
+        at_c(']');
+    }
+    at_c(']');
+    at_end();
+}
+
+/* The GameMode's player starts: place and first tag (once). */
+static void at_starts(void)
+{
+    u8 **starts = FIELD(T.gm, GM_STARTS, u8 **);
+    i32 i, ns = FIELD(T.gm, GM_STARTS + 8, i32);
+    at_begin("starts");
+    at_i("n", ns);
+    at_key("s");
+    at_c('[');
+    for (i = 0; starts && i < ns && i < 40; i++) {
+        u8 *st = wx_live(starts[i]);
+        float q[3];
+        FString tag;
+        u64 *t = st ? FIELD(st, A_TAGS, u64 *) : 0;
+        if (i) at_c(',');
+        at_where(st, q);
+        tag.data = 0; tag.num = tag.max = 0;
+        if (t && FIELD(st, A_TAGS + 8, i32) > 0) ((at_string_t)AT(AT_FNAME_STRING))((u8 *)t, &tag);
+        at_c('['); at_fnum(q[0]); at_c(','); at_fnum(q[1]); at_c(','); at_fnum(q[2]); at_c(',');
+        at_wstr(tag.data, tag.num);
+        at_c(']');
+        at_free(&tag);
+    }
+    at_c(']');
+    at_end();
+}
+
 static float at_sqrt(float x)
 {
     float r = x > 1.0f ? x : 1.0f;
@@ -886,17 +953,23 @@ static float at_sqrt(float x)
 
 static void at_pods(const char *ev)
 {
-    i32 i, j, n, bots_armed = 0, a = -1, b = -1;
-    float best = 1e12f, p[AT_MAX][3];
-    for (i = 0; i < NF; i++) at_where(F[i].pawn, p[i]);
+    i32 i, j, n, bots_armed = 0, a = -1, b = -1, ra = -1, rb = -1, near = 0, near_rival = 0;
+    float best = 1e12f, rbest = 1e12f, p[AT_MAX][3];
+    u8 close[AT_MAX], close_rival[AT_MAX];
+    for (i = 0; i < NF; i++) { at_where(F[i].pawn, p[i]); close[i] = close_rival[i] = 0; }
     for (i = 0; i < NF; i++)
         for (j = i + 1; j < NF; j++) {
             float dx, dy, dz, d2;
+            int mates;
             if (!F[i].pawn || !F[j].pawn) continue;
             dx = p[i][0] - p[j][0]; dy = p[i][1] - p[j][1]; dz = p[i][2] - p[j][2];
             d2 = dx * dx + dy * dy + dz * dz;
+            mates = F[i].team > 0 && F[i].team == F[j].team;
             if (d2 < best) { best = d2; a = i; b = j; }
+            if (!mates && d2 < rbest) { rbest = d2; ra = i; rb = j; }
+            if (d2 < 300.0f * 300.0f) { close[i] = close[j] = 1; if (!mates) close_rival[i] = close_rival[j] = 1; }
         }
+    for (i = 0; i < NF; i++) { near += close[i]; near_rival += close_rival[i]; }
     at_begin(ev);
     at_i("contestants", NF);
     at_i("starts", mode_starts(T.gm));
@@ -907,6 +980,7 @@ static void at_pods(const char *ev)
         at_fs("a_name", (FString *)(F[a].ps + PS_NAME));
         at_fs("b_name", (FString *)(F[b].ps + PS_NAME));
         at_i("a_team", F[a].team); at_i("b_team", F[b].team);
+        at_i("a_pc", F[a].pc); at_i("b_pc", F[b].pc);
         at_key("a_at"); at_c('['); at_fnum(p[a][0]); at_c(','); at_fnum(p[a][1]); at_c(','); at_fnum(p[a][2]); at_c(']');
         at_key("b_at"); at_c('['); at_fnum(p[b][0]); at_c(','); at_fnum(p[b][1]); at_c(','); at_fnum(p[b][2]); at_c(']');
     }
@@ -937,6 +1011,15 @@ static void at_pods(const char *ev)
     }
     at_c(']');
     at_i("bots_armed", bots_armed);
+    at_i("near300", near);                  /* contestants within 300 of another */
+    at_i("near300_rival", near_rival);      /* ... of another not on their team */
+    at_f("closest_rival", rbest < 1e11f ? at_sqrt(rbest) : -1.0f);
+    if (ra >= 0) {
+        at_fs("ra_name", (FString *)(F[ra].ps + PS_NAME));
+        at_fs("rb_name", (FString *)(F[rb].ps + PS_NAME));
+        at_i("ra_team", F[ra].team); at_i("rb_team", F[rb].team);
+        at_i("ra_pc", F[ra].pc); at_i("rb_pc", F[rb].pc);
+    }
     at_end();
 }
 
@@ -956,7 +1039,12 @@ static void at_second(u8 *world, i32 now)
     /* In the pods (InProgress second 0, every second: the bots arrive), then as they open. */
     if (T.scen != AT_SD && T.pods_logged < 2) {
         at_pods(el < 1 ? "pods" : "pods_open");
-        if (el >= 1) T.pods_logged = 2;
+        if (T.scen == AT_PODS) {
+            if (!T.starts_logged) { at_starts(); T.starts_logged = 1; }
+            at_everyone(el < 1 ? "pods_all" : "pods_open_all");
+        }
+        if (el >= 2) T.pods_logged = 2;
+        if (T.scen == AT_PODS && el >= 2) at_quit("pods sampled");
     }
     if (el >= 6 && !T.teams_logged) {
         at_snapshot("teams", 1);
@@ -994,16 +1082,16 @@ static void at_second(u8 *world, i32 now)
     if (now > 25 * 60 * 1000) at_quit("timeout");
 }
 
-static void at_frame(u8 *gm)
+/* The scenario of gm's match (and T set up for it): 0 when it has none. */
+static int at_ensure(u8 *gm)
 {
-    u8 *gs = FIELD(gm, GM_GAMESTATE, u8 *), *world;
-    i32 now;
+    u8 *gs = FIELD(gm, GM_GAMESTATE, u8 *);
     if (T.gm != gm || T.gs != gs) {
         i32 scen = at_parse(gm), i;
         T.gm = gm;
         T.gs = gs;
         if (T.on && !scen) T.on = 0;
-        if (!scen) return;
+        if (!scen) return 0;
         if (!T.on) {
             T.on = 1;
             T.scen = scen;
@@ -1011,11 +1099,18 @@ static void at_frame(u8 *gm)
             T.last_sec = 0;
             T.last_ms = 0;
             T.frames = 0;
-            T.ended = T.quit = T.step = T.step_ms = T.kills_done = T.teams_logged = T.round_ms = T.pods_logged = 0;
+            T.ended = T.quit = T.step = T.step_ms = T.kills_done = T.teams_logged = T.round_ms = T.pods_logged = T.starts_logged = 0;
             for (i = 0; i < AT_MAX; i++) { T.state[i] = -2; T.state_ms[i] = 0; T.seen[i].index = -1; T.seen[i].serial = 0; }
         }
     }
-    if (!T.on || T.quit || !gs || !(world = world_of(gm))) return;
+    return T.on;
+}
+
+static void at_frame(u8 *gm)
+{
+    u8 *gs = FIELD(gm, GM_GAMESTATE, u8 *), *world;
+    i32 now;
+    if (!at_ensure(gm) || T.quit || !gs || !(world = world_of(gm))) return;
     now = at_ms();
     T.frames++;
     at_roster(world);

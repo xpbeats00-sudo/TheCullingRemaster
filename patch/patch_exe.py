@@ -174,6 +174,17 @@
    (test_match_urls.py); patch/autotest/run.py starts matches with it. Like
    slot 282 the slot has a base relocation, so the new value is relocated.
 
+12. One pod each in the team modes (module of fix 5): the FreeForAll start
+   chooser (VA 0x140244740) gives a contestant whose TeamNumber isn't 0 the
+   start its team got first (GameMode +0x7a0, recorded with
+   bSpawnPairTogether +0x799 / bSpawnPairBalanced +0x79a). In Duo, Trios and
+   Quads the teams while the contestants spawn are not the final ones (fix 4
+   and fix 9 set those at the scoreboard refresh), so contestants of
+   different teams shared a pod and a pod stayed empty (seen in game). The
+   chooser's GetTeamNum call (VA 0x1402447ff) goes to the module, which says
+   team 0 in a ClassicTeams match: every contestant gets a free start of its
+   own, as in Solo. Other modes keep the stock team. Part of the "teams" fix.
+
 The bytes are checked first, so it only patches the exe it was written for and
 is safe to run on an exe that already has it. The file is rewritten through a
 temporary file swapped in whole (os.replace): writing it in place would also
@@ -251,7 +262,7 @@ SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 # fix (1-11, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "9a365cf679a73b981a200f8ee96b082f8e5f54bd1dc72872372e3955d5c2a22e"
+PATCHED_SHA256 = "a92e0171a7554153f2def3ce79617472665e6d6b35cad10b6a04fa05d29c50fc"
 
 
 def _cap(data, path, contestants):
@@ -376,11 +387,13 @@ MODULE_CALLS = (
     ("teams", 0x5A250, 0x14005AC50, bytes.fromhex("e82b901e00"), ROUNDS.SD_TEAMS),
     # 9. the GameMode's "call 0x1402320f0" at match start (team Showdown's bot count)
     ("bots", 0x23290D, 0x14023330D, bytes.fromhex("e8deedffff"), ROUNDS.SD_SPAWN_BOTS),
+    # 12. the start chooser's "call 0x140249320" (GetTeamNum: team 0 in ClassicTeams, one pod each)
+    ("spawn team", 0x243DFF, 0x1402447FF, bytes.fromhex("e81c4b0000"), ROUNDS.SD_SPAWN_TEAM),
 )
 TEAMS_CALL = MODULE_CALLS[3]
 # Which MODULE_CALLS each fix's check needs (fix 8; fix 9).
 CHOKENING_CALLS = ("rating", "gas damage", "gas tick")
-TEAM_CALLS = ("teams", "bots")
+TEAM_CALLS = ("teams", "bots", "spawn team")
 
 
 def module_calls():

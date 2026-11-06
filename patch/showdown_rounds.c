@@ -627,6 +627,46 @@ static i32 team_size(u8 *gm, u8 type)
     return 0;
 }
 
+/* One pod each in the team modes. AShooterGame_FreeForAll's start chooser
+   (vtable slot 189, VA 0x140244740) asks the contestant's TeamNumber
+   (AVictoryPlayerState::GetTeamNum, VA 0x140249320, its call at VA
+   0x1402447ff) and, for a team other than 0, gives it the start its team got
+   first (the TMap<int32, APlayerStart*> at GameMode +0x7a0), and records the
+   team's start when bSpawnPairTogether (+0x799) or bSpawnPairBalanced
+   (+0x79a) is set; IsSpawnpointAllowed (vtable +0x8d8, VA 0x1402450f0)
+   refuses another contestant any start in that map. The teams a ClassicTeams
+   match has while it spawns (in the pods, the bots in one batch) are not its
+   final ones: fix 4's stub and sd_teams set those at the scoreboard refresh.
+   So two contestants of different final teams shared a pod (seen in game by
+   patch/autotest in Duo: a rival on the player's mate's start, one start
+   empty). In a ClassicTeams match the chooser now sees team 0, as in Solo:
+   every contestant gets a free start of its own (sd_spawn_bots caps them at
+   the starts), the map stays empty, and teammates start apart (their team is
+   set before the pods open). Every other mode keeps the stock team. */
+#define R_GET_TEAM     0x249320    /* AVictoryPlayerState::GetTeamNum (reads +0x490) */
+#define GM_PAIR_TEAMS  0x798       /* AShooterGame_FreeForAll::bPairTeams */
+#define GM_PAIR_SPAWN  0x799       /* bSpawnPairTogether: record the team's start */
+#define GM_PAIR_BALANCED 0x79a     /* bSpawnPairBalanced */
+#define GM_TEAM_STARTS 0x7a0       /* TMap<int32, APlayerStart*> team -> start (num at +0x7a8) */
+typedef i32 (*fn_int)(u8 *);
+static void at_spawn_team(u8 *gm, u8 *ps, i32 team, i32 given);
+
+i32 sd_spawn_team(u8 *ps)
+{
+    u8 *world, *gm;
+    i32 team;
+    B = base();
+    team = ((fn_int)AT(R_GET_TEAM))(ps);
+    world = ps ? world_of(ps) : 0;
+    gm = world ? FIELD(world, W_AUTH_GM, u8 *) : 0;
+    if (gm && is_a(gm, R_CLS_GAMEMODE) && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) {
+        at_spawn_team(gm, ps, team, 0);
+        return 0;
+    }
+    if (gm) at_spawn_team(gm, ps, team, team);
+    return team;
+}
+
 char sd_teams(u8 *gs)
 {
     u8 *world, *gm = 0, **players, type;

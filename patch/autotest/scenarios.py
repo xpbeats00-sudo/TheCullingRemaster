@@ -402,6 +402,10 @@ def check_bots(r, name):
 
 # name, queue the menu sends, the module's scenario, timeout (s), check
 SCENARIOS = [
+    # The pods only (InProgress seconds 0-2), then quit.
+    ("pods_solo", "ffa_jungle", "pods", 240, lambda r: ran(r, "Solo pods") + pods_check(r, "Solo pods", 16)),
+    ("pods_prison", "ffa_prison", "pods", 240, lambda r: ran(r, "Prison pods") + pods_check(r, "Prison pods", 16)),
+    ("pods_duo", "coop2_jungle", "pods", 240, lambda r: ran(r, "Duo pods") + pods_check(r, "Duo pods", 16)),
     # Jungle and Prison have 16 starts (SpawnsDecentral): 16 contestants, 15 in Trios (5 whole trios).
     ("quads_win", "coop4_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Quads", 4, 4) + no_teamkill_check(r, "Quads")),
     ("trios_win", "coop3_jungle", "teamwin", 420, lambda r: check_teamwin(r, "Trios", 3, 5) + no_teamkill_check(r, "Trios")),
