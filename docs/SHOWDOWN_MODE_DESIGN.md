@@ -26,7 +26,7 @@ Tests: `server/test/playlists.test.js`, `server/test/party.test.js`, `server/tes
 | Trios | `coop3` | 3 | 3 | no | no | `mode-not-supported`: the game only runs teams of two. Team sizes 3 and 4 are being worked on separately. |
 | Quads | `coop4` | 4 | 4 | no | no | `mode-not-supported`: same as Trios |
 | Ranked Solo | `ranked_ffa` | 1 | 4 | yes | **yes** | |
-| Ranked Duos / Trios / Quads | `ranked_coop2/3/4` | 2/3/4 | 2/3/4 | yes | no | `queue-unavailable`: Ranked is played Solo |
+| Ranked Duos / Trios / Quads | `ranked_coop2/3/4` | 2/3/4 | 2/3/4 | yes | **yes** | Rated on the team's placement, a rating per mode ([RANKED_TEAMS.md](RANKED_TEAMS.md)) |
 | Showdown Solo | `showdown` | 1 (1v1) | **1** | no | **yes** | |
 | Showdown Duos | `showdown_duo` | 2 (2v2) | 2 | no | no | `mode-not-supported`: Showdown is 1v1 against one rival. The arena mode has one rival and no team logic. |
 | Showdown Trios | `showdown_trio` | 3 (3v3) | 3 | no | no | `mode-not-supported` |
@@ -67,7 +67,7 @@ A result is only accepted against a **ticket the server issued** when it sent `m
   - A missing, `0`, negative or malformed placement is last place, and a placement past the field is clamped to last.
   - 1st place requires a victory on a match of at least `MIN_MATCH_SECONDS` (120 s). Without one, the best a report can claim is 2nd. A shorter match counts as last place.
   - Kills fit within the field, and `timeAlive` can't exceed the real match length.
-  - A Solo, Duos or Showdown result never finishes a pending ranked match.
+  - A Solo, Duos or Showdown result never finishes a pending ranked match, and a ranked ticket only scores the pending match of its own mode (Solo, Duos, Trios, Quads; [RANKED_TEAMS.md](RANKED_TEAMS.md)).
   - Ranked Showdown is disabled, so no Showdown result is ever rated.
 - `playlists.test.js` covers all of this, and `showdown.test.js` and `season.test.js` cover the Showdown and too-short rules.
 

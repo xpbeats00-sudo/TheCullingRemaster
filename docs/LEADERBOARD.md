@@ -16,7 +16,8 @@ Tests: `server/test/leaderboard.test.js` and `patch/test_menu_items.py`.
 
 | Board | Value | Listed when | Ties broken by (order only) |
 |---|---|---|---|
-| Ranked | this season's rating (capped at `ranked.CONFIG.maxRating`), with the tier | at least one ranked match in the current season (`profile.ranked.season`) | ranked wins |
+| Ranked (Solo) | this season's rating (capped at `ranked.CONFIG.maxRating`), with the tier | at least one ranked match in the current season (`profile.ranked.season`) | ranked wins |
+| Ranked Duo / Trio / Quads (`ranked_duo`, `ranked_trio`, `ranked_quad`) | that mode's rating this season, with that mode's tier ([RANKED_TEAMS.md](RANKED_TEAMS.md)) | at least one match of that mode this season (`profile.rankedTeams.<mode>`) | that mode's wins |
 | Wins | matches won | 1 win or more | fewer matches |
 | Kills | kills | 1 kill or more | fewer matches |
 | K/D | kills per death (deaths = matches not won, as on the player card) | at least 10 matches (`minMatches`) | more kills |
@@ -46,7 +47,7 @@ Tests: `server/test/leaderboard.test.js` and `patch/test_menu_items.py`.
   - `size`
   - `minMatches`
   - `you` (your username or `null`)
-  - `boards`: `[{id, players, top: [...], you}]` for the ids `ranked`, `wins`, `kills`, `kd`, `showdown` and `time`.
+  - `boards`: `[{id, players, top: [...], you}]` for the ids `ranked`, `wins`, `kills`, `kd`, `showdown`, `time`, `ranked_duo`, `ranked_trio` and `ranked_quad` (the team modes last, so the older boards keep their places). Each board also has `mode`: `solo`/`duo`/`trio`/`quad` on the ranked boards, null otherwise.
 
   Every board comes in one answer, so switching tabs never asks again.
 - **Rate limit.** Each player gets one request every 2 seconds, in bursts of 5. Over the limit the answer is `{error: "slow-down"}`. The panel keeps what it shows, or asks again after 2.5 s if it has nothing yet.
@@ -62,7 +63,7 @@ Tests: `server/test/leaderboard.test.js` and `patch/test_menu_items.py`.
 ## The panel
 
 - It looks like the Friends panel.
-- **Tabs:** Ranked, Wins, Kills, K/D, Showdown and Time played.
+- **Tabs:** Ranked Solo, Ranked Duo, Ranked Trio, Ranked Quads, Wins, Kills, K/D, Showdown and Time played.
 - **Rows:** your position (gold, silver and bronze for the top 3), level, name and details, rank emblem (`/images/ranked/<tier>.png`) and the value, over the player's calling card art.
 - **Your row:** it is highlighted in the list, and pinned under it with your position, or with what you need to get listed.
 - Clicking a row opens that player's card (`RemasterFriends.showCard`).

@@ -2,6 +2,9 @@
 
 ## Game (next release)
 
+**Ranked Duos, Trios and Quads**
+- The Ranked screen's Duo, Trio and Quads tabs are open: each shows its own tier, ELO, placements and recent matches, and the RANKED tile plays the selected mode. A team mode is the Duo/Trio/Quad match (AI teammates, or your party - the leader queues, up to the team size) rated on your team's placement among the teams (12 duos, 8 trios or 6 quads on Jungle). Your team's win counts as 1st for everyone on it, even if you fell early. Each mode has its own rating (same tiers, seasons and rewards); Ranked Solo is unchanged. The leaderboard has a board per ranked mode. Server and menus: [RANKED_TEAMS.md](RANKED_TEAMS.md). Not yet checked in a match.
+
 **No more getting stuck in trees**
 - American Elm and European Linden (the trees on both Jungle and Prison) had trunk collision that stopped about 2 m up, where the trunk forks, and marked unwalkable: a player who ran or jumped into one could land on top of it inside the crown and not get out. Their trunk collision now goes on up into the crown (same footprint, so bots and the navmesh are unchanged): the tree is a solid trunk you bump into (`patch/make_tree_collision.py`).
 - A safety net for anything else like it: if you are stuck for 2 seconds while pushing a direction - hanging on something you can't stand on, or inside the world's geometry - you are put back where you last walked (or the nearest free spot) and told "You were stuck: moved to a free spot". Never in the pods, while dead or spectating, using or crafting, on a ladder or swimming; at most once every 20 s. Needs the patched exe (patch_exe.py fix 10, in the native module). Not yet checked in a match.
