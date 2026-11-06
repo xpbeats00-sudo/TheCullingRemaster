@@ -281,6 +281,11 @@ static struct {
 
 static u16 message[256];
 
+/* The autotest (autotest.c, only with ?RemasterAutoTest= in the match URL). */
+static void at_message(const u16 *m, i32 n);
+static void at_match_end(char ended);
+static void at_gas(u8 *victim, u8 *by, const char *why);
+
 static u8 *base(void) { return (u8 *)&sd_self_rva - sd_self_rva; }
 
 static int is_a(u8 *obj, u64 class_rva)
@@ -390,6 +395,7 @@ static void send(u8 *pc, i32 n)
     FString s;
     i32 i;
     if (!pc) return;
+    at_message(message, n);
     hud = FIELD(pc, PC_HUD, u8 *);
     if (!is_a(hud, R_CLS_HUD)) return;
     s.data = 0;
@@ -907,11 +913,12 @@ u8 *sd_gas_instigator(u8 *wound)
     }
     if (i == C.n) return 0;
     by = weak(&C.list[i].by);
-    if (!by || FIELD(by, C_PAWN, u8 *) == victim) return 0;
+    if (!by || FIELD(by, C_PAWN, u8 *) == victim) { at_gas(victim, 0, "user"); return 0; }
     vc = FIELD(victim, P_CONTROLLER, u8 *);
-    if (vc == by) return 0;
+    if (vc == by) { at_gas(victim, 0, "user"); return 0; }
     t = team_of(by);
-    if (t > 0 && team_of(vc) == t) return 0;
+    if (t > 0 && team_of(vc) == t) { at_gas(victim, 0, "teammate"); return 0; }
+    at_gas(victim, by, "rival");
     return by;
 }
 
@@ -1022,7 +1029,18 @@ void sd_sides_probe(i32 *out)
     out[1] = S.placing;
 }
 
+static char should_end(u8 *gm);
+
 char sd_should_end(u8 *gm)
+{
+    char end;
+    B = base();
+    end = should_end(gm);
+    at_match_end(end);
+    return end;
+}
+
+static char should_end(u8 *gm)
 {
     u8 *world;
     Count n;
@@ -1119,3 +1137,5 @@ void *sd_spawn_with(u8 *pawn, void *out, float stat)
         return ((fn_spawn_with)AT(R_SPAWN_WITH))(S.kit_source, out, KIT_BITS);
     return ((fn_spawn_with)AT(R_SPAWN_WITH))(pawn, out, stat);
 }
+
+#include "autotest.c"           /* the in-game tests (sd_gm_tick, only with ?RemasterAutoTest=) */

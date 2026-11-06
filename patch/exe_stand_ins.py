@@ -52,6 +52,7 @@ def rounds_stand_in(path):
     for i in range(P.STOCK_NUM_SECTIONS):
         data[table + 40 * i:table + 40 * i + 8] = (".s%d" % i).encode().ljust(8, b"\0")
     struct.pack_into("<Q", data, P.FFA_SLOT_AT, P.FFA_SLOT)
+    struct.pack_into("<Q", data, P.TICK_SLOT_AT, P.TICK_SLOT)
     data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] = P.RAND_LEA
     data[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
     for _n, at, _va, stock_call, _e in P.MODULE_CALLS:

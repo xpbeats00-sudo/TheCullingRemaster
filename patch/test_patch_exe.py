@@ -58,6 +58,7 @@ def rounds_changes(stock):
     at = table + 40 * P.STOCK_NUM_SECTIONS
     return (set(range(pe + 6, pe + 8)) | set(range(pe + 24 + 56, pe + 24 + 60)) | set(range(at, at + 40))
             | set(range(P.FFA_SLOT_AT, P.FFA_SLOT_AT + 8)) | set(range(P.RAND_LEA_AT + 3, P.RAND_LEA_AT + 7))
+            | set(range(P.TICK_SLOT_AT, P.TICK_SLOT_AT + 8))
             | set(range(P.SPAWN_WITH_CALL_AT + 1, P.SPAWN_WITH_CALL_AT + 5))
             | {at + k for _n, at, _va, _s, _e in P.MODULE_CALLS for k in range(1, 5)})
 
@@ -69,6 +70,9 @@ def check_rounds(stock, data):
     assert P.SPAWN_WITH_CALL_VA + 5 + struct.unpack_from("<i", call, 1)[0] == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SPAWN_WITH
     assert data[P.FFA_SLOT_AT:P.FFA_SLOT_AT + 8] == struct.pack("<Q", slot)
     assert data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] == lea
+    # Fix 11: slot 125 (the per-frame tick) leads to sd_gm_tick, which runs the stock tick first.
+    assert stock[P.TICK_SLOT_AT:P.TICK_SLOT_AT + 8] == struct.pack("<Q", P.TICK_SLOT)
+    assert data[P.TICK_SLOT_AT:P.TICK_SLOT_AT + 8] == struct.pack("<Q", P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_GM_TICK)
     # The calls fixes 7/8 take over lead to their entry points.
     for name, at, va, stock_call, entry in P.MODULE_CALLS:
         cur = data[at:at + 5]
@@ -185,6 +189,28 @@ def check_rounds_alone(path):
         raise AssertionError("a foreign spawn-with call was accepted")
     except ValueError:
         pass
+    # ... also one from before fix 11 (slot 125 stock).
+    old = bytearray(data)
+    old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    struct.pack_into("<Q", old, P.TICK_SLOT_AT, P.TICK_SLOT)
+    assert P._rounds(old, path) is True and old == data
+    # A slot 125 pointing elsewhere: not ours, refused.
+    bad = bytearray(data)
+    struct.pack_into("<Q", bad, P.TICK_SLOT_AT, 0x140001000)
+    bad[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a foreign slot 125 was accepted")
+    except ValueError:
+        pass
+    # A stock exe with slot 125 changed: refused.
+    bad = bytearray(stock)
+    struct.pack_into("<Q", bad, P.TICK_SLOT_AT, 0x140001000)
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a different slot 125 was patched")
+    except ValueError:
+        pass
     # A different exe is refused.
     bad = bytearray(stock)
     struct.pack_into("<Q", bad, P.FFA_SLOT_AT, 0x140000000)
@@ -277,6 +303,8 @@ def real_checks(path):
     assert pe.get_offset_from_rva(P.RAND_LEA_VA - P.IMAGE_BASE) == P.RAND_LEA_AT
     relocs = {e.rva for b in pe.DIRECTORY_ENTRY_BASERELOC for e in b.entries if e.type == 10}
     assert slot_rva in relocs, "the vtable slot is relocated"
+    assert pe.get_offset_from_rva(0x25A7D00) == P.TICK_SLOT_AT and 0x25A7D00 in relocs, "slot 125 is relocated"
+    assert pe.get_qword_at_rva(0x25A7D00) == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_GM_TICK
     assert pe.get_qword_at_rva(slot_rva) == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SHOULD_END
     assert pe.OPTIONAL_HEADER.SizeOfImage == P.rounds_layout()[4]
     pe.close()
@@ -319,7 +347,8 @@ try:
     stand_in(fresh)
     before = open(fresh, "rb").read()
     none = {"cap": 16, "sha1": False, "slots": False, "duoteam": False, "rounds": False, "weather": False,
-            "scoreboard": False, "duowin": False, "chokening": False, "teams": False, "unstick": False}
+            "scoreboard": False, "duowin": False, "chokening": False, "teams": False, "unstick": False,
+            "autotest": False}
     assert P.check(fresh) == none, P.check(fresh)
     assert open(fresh, "rb").read() == before, "check() changed the file"
     try:

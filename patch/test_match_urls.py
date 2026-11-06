@@ -49,6 +49,31 @@ check('engine.call("StartTraining", REMASTER_TEAM_URLS[' in js, "Trios/Quads are
 check("teamdebug" not in js.lower() and not any("teamdebug" in u.lower() for n in make_duo.TEAM_SIZES
                                                  for u in make_duo.TEAM_URLS[n].values()),
       "a shipped match URL has ?TeamDebug= (the debug team summary)")
+# The module's autotest (autotest.c) runs only with ?RemasterAutoTest= in the match URL: no
+# shipped URL, page, generator or server answer may carry it. Only patch/autotest/ (the runner
+# and its HUD probe, never packed into a release) and the module itself name it.
+AUTOTEST = re.compile(r"remasterautotest", re.I)
+ROOT = os.path.dirname(HERE)
+shipped = []
+for base in (os.path.join(HERE, "src"), os.path.join(ROOT, "server"), os.path.join(ROOT, "launcher")):
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in ("node_modules", "test", "dist")]
+        for fn in filenames:
+            if fn.endswith((".js", ".html", ".ini", ".json", ".css")):
+                p = os.path.join(dirpath, fn)
+                try:
+                    if AUTOTEST.search(open(p, encoding="utf-8", errors="replace").read()):
+                        shipped.append(os.path.relpath(p, ROOT))
+                except OSError:
+                    pass
+check(not shipped, "?RemasterAutoTest= is named in shipped files: %s" % shipped)
+import make_weather  # noqa: E402
+import custom_match  # noqa: E402
+urls = ([make_showdown.URL] + list(make_showdown.TEAM_URLS.values()) + list(make_duo.URLS.values())
+        + [u for n in make_duo.TEAM_SIZES for u in make_duo.TEAM_URLS[n].values()]
+        + list(custom_match.URLS.values()) + list(make_weather.MAP_PATHS) + list(make_weather.MODE_GAMES.values()))
+check(not any(AUTOTEST.search(u) for u in urls), "a generator's match URL has ?RemasterAutoTest=")
+check(not AUTOTEST.search(js), "ClientWeb.js names ?RemasterAutoTest=")
 check('engine.call("StartTraining", REMASTER_DUO_URLS' in js, "Duo isn't started with StartTraining(url)")
 check('engine.call("StartTraining", showdownUrl)' in js and "var showdownUrl = RemasterShowdownURL(msg.gameServer);" in js,
       "Showdown isn't started with StartTraining(RemasterShowdownURL(...))")
