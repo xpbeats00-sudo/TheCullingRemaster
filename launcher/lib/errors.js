@@ -52,6 +52,13 @@ function friendly(e, ctx = {}) {
   if (DENIED.has(code) && kind !== "commit") {
     return "Windows refused access to the game folder. Choose another folder in Settings (one inside your user folder works best)." + detail(msg);
   }
+  // Chromium refuses some ports outright (6000, 6665-6669, ...): an address in
+  // the settings or the release, not the player's connection (seen in
+  // launcher.log as net::ERR_UNSAFE_PORT, which read as "check your internet").
+  if (/ERR_UNSAFE_PORT/.test(msg)) {
+    return "The update server's address uses a port the launcher isn't allowed to connect to. This is a server setup problem, " +
+      "not your connection: tell support." + detail(msg);
+  }
   const http = /HTTP (5\d\d)/.exec(msg);
   if (http && /manifest/.test(msg)) {
     return `The update server is having trouble right now (HTTP ${http[1]}). Try again in a few minutes.`;

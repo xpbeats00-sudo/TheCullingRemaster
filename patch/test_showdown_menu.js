@@ -71,8 +71,11 @@ test("other tiles go to the stock handler; SHOWDOWN opens the picker (nothing qu
   assert.deepStrictEqual(m.buttons().map((b) => b.textContent), ["1V1", "2V2", "3V3", "4V4", "PLAY", "BACK"]);
   assert.strictEqual(m.byText("1V1").className, "sd-on", "1v1 the first time");
   const o = m.overlays.pop();
-  assert.strictEqual(o.items.length, 6);
-  assert.strictEqual(o.items[o.initial].textContent, "PLAY", "the focus starts on PLAY");
+  // RemasterOverlay (Friends.js) calls items() for the parts showing now: an
+  // array there threw on every D-pad press and on Select (gamepad stuck).
+  assert.strictEqual(typeof o.items, "function", "items is a function, as RemasterOverlay calls it");
+  assert.strictEqual(o.items().length, 6);
+  assert.strictEqual(o.items()[o.initial].textContent, "PLAY", "the focus starts on PLAY");
 });
 
 test("each size queues its playlist; the pick is remembered", () => {
@@ -128,6 +131,9 @@ test("the end-of-series card: the series' size and team score; PLAY AGAIN the sa
     rounds: ["won", "lost", "won", "won", "lost", "won"], won: true, forfeit: false } });
   const text = m.root().textContent;
   assert.ok(/SHOWDOWN 3V3/.test(text) && /YOUR TEAM 4/.test(text) && /2 RIVALS/.test(text) && /Your team took 4/.test(text), text);
+  const card = m.overlays.pop();
+  assert.strictEqual(typeof card.items, "function", "the card's items, as RemasterOverlay calls them");
+  assert.deepStrictEqual(card.items().map((b) => b.textContent), ["CLOSE", "PLAY AGAIN"]);
   m.byText("PLAY AGAIN").click();
   assert.deepStrictEqual(m.queued, ["showdown_trio"]);
   const s = menu();

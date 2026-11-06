@@ -122,6 +122,13 @@ def main(src, out, allow_test_content=False):
             full = os.path.join(root, name)
             files.append((os.path.relpath(full, src).replace(os.sep, "/"), full))
     files.sort()
+    # Names are stored as ASCII (fstring); a name that isn't would stop the
+    # pack half way with a UnicodeEncodeError naming nothing. Refused up front,
+    # naming the files, before anything is written.
+    odd = [rel for rel, _ in files if any(ord(ch) > 126 or ord(ch) < 32 for ch in rel)]
+    if odd:
+        raise TestContentError("refusing to pack %d file(s) whose name isn't plain ASCII (the pak stores ASCII names):\n%s"
+                               % (len(odd), "\n".join("  " + ascii(rel) for rel in odd[:30])))
 
     body = bytearray()
     index = bytearray(fstring(MOUNT_POINT) + struct.pack("<i", len(files)))

@@ -1975,6 +1975,7 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("auth-response", function () {
     if (window.RemasterFriends) window.RemasterFriends.connected();
+    if (window.RemasterLeaderboard && window.RemasterLeaderboard.connected) window.RemasterLeaderboard.connected();
     if (window.RemasterRanked) window.RemasterRanked.refresh();   // RankedUI.js: no polling
   });
   // Remaster: after a match result the server sends the player's balance:

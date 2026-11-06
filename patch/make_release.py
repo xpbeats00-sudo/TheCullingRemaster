@@ -187,6 +187,19 @@ def link_game(game, release, files):
     return len(files)
 
 
+def step(label, argv, env=None):
+    """Runs one tool of the build; a failure (or a tool that isn't installed)
+    is a ReleaseError naming it, not a Python traceback: its own output above
+    says why, and nothing is published either way."""
+    try:
+        code = subprocess.call(argv, env=env)
+    except OSError as e:
+        raise ReleaseError("%s couldn't start (%s: %s)" % (label, argv[0], e))
+    if code:
+        raise ReleaseError("%s failed (exit %d, its output is above): the release is incomplete, don't publish it"
+                           % (label, code))
+
+
 def git_state():
     """(commit, branch, [changed paths]) of the repo the release is built from."""
     def run(*args):
@@ -318,8 +331,8 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_d
     os.makedirs(paks, exist_ok=True)
     try:
         make_server_config.main(base)
-        subprocess.check_call([sys.executable, "-I", os.path.join(HERE, "make_pak.py"),
-                               os.path.join(HERE, "src"), os.path.join(paks, PAK)])
+        step("make_pak.py", [sys.executable, "-I", os.path.join(HERE, "make_pak.py"),
+                             os.path.join(HERE, "src"), os.path.join(paks, PAK)])
     finally:
         make_server_config.main(LOCAL)
     # make_pak.py refused test content before packing; pak_report.py checks the
@@ -357,7 +370,7 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_d
     # changed since the last build are hashed (make_manifest.js).
     env = dict(os.environ)
     env.setdefault("CULLING_HASH_CACHE", os.path.join(os.path.dirname(os.path.abspath(out)), ".hashcache.json"))
-    subprocess.check_call(cmd, env=env)
+    step("make_manifest.js (hashing and signing the release)", cmd, env=env)
     # "Publish Release.bat" publishes the newest release built here unless told otherwise.
     if out == os.path.join(ROOT, "releases", version):
         with open(os.path.join(ROOT, "releases", "LATEST"), "w") as f:

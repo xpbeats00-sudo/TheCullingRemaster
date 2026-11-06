@@ -273,27 +273,67 @@
     if (window.RemasterOverlay) RemasterOverlay.open(panel, { close: close, items: items, page: page,
       initial: ORDER.indexOf(board) });
     render();
+    // Offline (ClientWeb.js doesn't reconnect by itself): opening the panel
+    // tries once; the boards follow the sign-in (connected()).
+    if (!(typeof socketConnection != "undefined" && socketConnection) && typeof ConnectWebsocketIfNeeded == "function") {
+      try { ConnectWebsocketIfNeeded(); } catch (e) { /* stays offline */ }
+    }
     ask();
   }
 
   function close() {
     if (panel) panel.className = "hidden";
     clearTimeout(retry);
+    // Its rows go with it: AnimatedCards.js animates every card row still on
+    // the page every 40 ms, hidden or not (they are drawn again on open).
+    if (panel) { panel.querySelector(".lb-scroll").textContent = ""; panel.querySelector(".lb-yours").textContent = ""; }
     if (window.RemasterOverlay) RemasterOverlay.close(panel);
   }
 
+  // The boards as draw() reads them: a server older or newer than this menu
+  // may leave a field out, and an exception in draw() would leave the panel
+  // on "Loading..." for good.
+  function boardsData(m) {
+    if (!m.season || typeof m.season != "object") m.season = { name: "" };
+    var boards = [];
+    if (m.boards && typeof m.boards.length == "number") {
+      for (var i = 0; i < m.boards.length; i++) {
+        var b = m.boards[i];
+        if (!b || typeof b != "object") continue;
+        var top = [];
+        if (b.top && typeof b.top.length == "number") {
+          for (var j = 0; j < b.top.length; j++) if (b.top[j] && typeof b.top[j] == "object") top.push(b.top[j]);
+        }
+        b.top = top;
+        if (typeof b.players != "number") b.players = top.length;
+        if (b.you && typeof b.you != "object") b.you = null;
+        boards.push(b);
+      }
+    }
+    m.boards = boards;
+    return m;
+  }
+
   function on(msg) {
-    msg = msg || {};
+    msg = msg && typeof msg == "object" ? msg : {};
     if (msg.error) {
-      // Asked too often: keep what is shown, and ask again shortly if nothing is.
+      // Asked too often: keep what is shown, and ask again shortly if nothing
+      // is (one retry at a time: two refusals in a row don't start two).
+      clearTimeout(retry);
       if (!current() && panel && panel.className !== "hidden") retry = setTimeout(ask, 2500);
       return;
     }
-    data = msg;
+    data = boardsData(msg);
     render();
   }
 
-  window.RemasterLeaderboard = { open: open, close: close, on: on, show: function (id) { if (BOARDS[id]) board = id; open(); } };
+  // Signed in again (ClientWeb.js auth-response): an open panel asks again.
+  function connected() {
+    if (panel && panel.className !== "hidden") ask();
+  }
+
+  window.RemasterLeaderboard = { open: open, close: close, on: on, connected: connected,
+    show: function (id) { if (BOARDS[id]) board = id; open(); } };
 
   // The main menu's LEADERBOARD item opens the panel.
   if (typeof BaseMenuScreen != "undefined") {
