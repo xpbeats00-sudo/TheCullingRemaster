@@ -81,6 +81,7 @@ const { Friends } = require('./friends');
 const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
 const custom = require('./custommatch');
+const backups = require('./backup');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -434,11 +435,14 @@ app.use((req, res, next) => {
   next();
 });
 
+// The request's fields: always an object (a body of JSON null, a number or a
+// string is no fields, never a TypeError in the route: SERVER_AUDIT_2 F7).
 function bodyObject(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   if (typeof req.body === 'string' && req.body.length) {
-    try { return JSON.parse(req.body); } catch (e) { /* fall through */ }
-    return Object.fromEntries(new URLSearchParams(req.body));
+    let parsed;
+    try { parsed = JSON.parse(req.body); } catch (e) { return Object.fromEntries(new URLSearchParams(req.body)); }
+    return parsed && typeof parsed === 'object' ? parsed : {};
   }
   return {};
 }
@@ -625,7 +629,10 @@ app.post('/api/matchresult', (req, res) => {
   s.totalDamage += Math.round(r.damage);
   s.minutesAlive += Math.round(r.timeAlive / 60);
   s.funcEarned += r.func;
-  const mode = claim.ticket.mode || (showdown ? SHOWDOWN.queue : 'ffa');
+  // Tickets saved by an older server have no mode: Solo. (This read a
+  // `showdown` variable that no longer exists here, so such a result was a 500
+  // after its ticket was taken and its XP and credits added: SERVER_AUDIT_2 F4.)
+  const mode = claim.ticket.mode || 'ffa';
   if (mode !== SHOWDOWN.queue) {
     if (!p.modes || typeof p.modes !== 'object') p.modes = {};
     const m = p.modes[mode] || (p.modes[mode] = { played: 0, wins: 0, kills: 0, damage: 0, minutesAlive: 0 });
@@ -1090,6 +1097,8 @@ function gauges() {
     profiles: Object.keys(profiles).length,
     sessionTokens: sessions.size,
     openMatchTickets: tickets.open.size,
+    presence: presence.size,
+    backups: { dir: BACKUP_DIR, everyMs: BACKUP_EVERY_MS, keep: BACKUP_KEEP, last: lastBackup },
     matchLobbies: lobbies.stats(),
     leaderboard: leaderboard.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
@@ -1202,7 +1211,8 @@ const lobbies = new MatchLobbies({
     s.emit('remaster-lobby', payload);
     s.emit('players-in-queue', { count: payload.players.length });
   },
-  start: (lobby) => allocateMatch(lobby)
+  start: (lobby) => allocateMatch(lobby),
+  onError: (e, lobby, where) => lobbyFailed(e, lobby, where)
 });
 
 // What other players see of someone in a lobby: no IDs, nothing private.
@@ -1295,6 +1305,12 @@ function partyQueued(party, userID) {
 // party, and the others are told: a party never waits on someone who has
 // gone, and is never led by someone who isn't there. Coming back in time
 // (the menu logs in again, e.g. after every match) keeps their place.
+// A timer's work: an exception is counted and logged, never uncaught (the
+// server exits on an uncaught exception).
+function guarded(what, fn) {
+  try { return fn(); } catch (e) { metrics.error('timer'); log(what, 'failed:', e && e.stack ? e.stack : e); }
+}
+
 const PARTY_OFFLINE_MS = parseInt(process.env.CULLING_PARTY_OFFLINE_MS || '120000', 10);
 const offlineTimers = new Map();     // userID -> timer
 function stopWatchingOffline(userID) {
@@ -1304,7 +1320,7 @@ function stopWatchingOffline(userID) {
 function watchPartyOffline(userID) {
   stopWatchingOffline(userID);
   if (!friends.party(userID)) return;
-  const timer = setTimeout(() => {
+  const timer = setTimeout(() => guarded('party offline check', () => {
     offlineTimers.delete(userID);
     if (liveSocket(userID)) return;
     if (presenceState(userID) === 'match') return watchPartyOffline(userID);   // playing: their menu comes back after
@@ -1325,7 +1341,7 @@ function watchPartyOffline(userID) {
       }
       sendFriends(id);
     }
-  }, PARTY_OFFLINE_MS);
+  }), PARTY_OFFLINE_MS);
   if (timer.unref) timer.unref();
   offlineTimers.set(userID, timer);
 }
@@ -1407,6 +1423,10 @@ const newMatchId = () => crypto.randomBytes(8).toString('hex');
 // Test hook: CULLING_FAULT_ALLOCATION=1 makes every lobby's match allocation
 // fail (test/party.test.js), so the failure path is exercised for real.
 const FAULT_ALLOCATION = process.env.CULLING_FAULT_ALLOCATION === '1';
+// CULLING_FAULT_ALLOCATION=throw: the allocation throws instead (test/audit2.test.js),
+// as a bug there would, from the lobby's countdown timer.
+const FAULT_ALLOCATION_THROWS = process.env.CULLING_FAULT_ALLOCATION === 'throw';
+const ALLOCATION_FAILED = 'The match could not be set up. Nobody was sent in: queue again.';
 
 // A lobby's countdown ended: its match. Every member gets the same match id
 // and lobby id (and their party's id), on their match-ready and their ticket.
@@ -1425,8 +1445,9 @@ function allocateMatch(lobby) {
   };
   if (FAULT_ALLOCATION) {
     log('lobby', lobby.id, 'allocation failed (CULLING_FAULT_ALLOCATION)');
-    return fail(members.map((m) => m.id), 'The match could not be set up. Nobody was sent in: queue again.');
+    return fail(members.map((m) => m.id), ALLOCATION_FAILED);
   }
+  if (FAULT_ALLOCATION_THROWS) throw new Error('allocation threw (CULLING_FAULT_ALLOCATION=throw)');
   const go = [];
   const byParty = new Map();
   for (const m of members) {
@@ -1445,7 +1466,33 @@ function allocateMatch(lobby) {
     go.push(...list);
   }
   log('lobby', lobby.id, lobby.queue, 'match', matchId, 'starting with', go.length, 'player(s)');
-  for (const m of go) launchMatch(memberSocket(m), lobby.queue, lobby.map, { matchId, lobbyId: lobby.id, partyId: m.party || null });
+  // One player's match failing to start never stops the others' (that player
+  // is told; nothing more was started for them).
+  for (const m of go) {
+    try {
+      launchMatch(memberSocket(m), lobby.queue, lobby.map, { matchId, lobbyId: lobby.id, partyId: m.party || null });
+    } catch (e) {
+      metrics.error('timer');
+      log('lobby', lobby.id, 'match for', m.id, 'failed to start:', e && e.stack ? e.stack : e);
+      fail([m.id], ALLOCATION_FAILED);
+    }
+  }
+}
+
+// A lobby's view or match set-up threw (from its timers: uncaught, that would
+// stop the server). Counted and logged; if the match set-up failed, nobody of
+// the lobby was sent in, and each member is told.
+function lobbyFailed(e, lobby, where) {
+  metrics.error('timer');
+  log('lobby', lobby ? lobby.id : '?', where, 'failed:', e && e.stack ? e.stack : e);
+  if (where !== 'start' || !lobby) return;
+  for (const id of lobby.members.keys()) {
+    try {
+      setPresence(id, 'menu');
+      const s = liveSocket(id);
+      if (s) s.emit('join-mm-fail', { reason: 'allocation-failed', message: ALLOCATION_FAILED, playlist: lobby.queue });
+    } catch (e2) { log('telling', id, 'failed:', e2.message); }
+  }
 }
 
 // The match starts for this player (against bots, on their PC). Ranked counts
@@ -1571,8 +1618,22 @@ function userIDForName(raw) {
 
 function presenceState(userID) { return statusOf(userID).state; }
 
+// Every 10 minutes: what is remembered of players with no menu connected and
+// no match running (a match never reported: a crash) is dropped.
+const presenceSweep = setInterval(() => guarded('presence sweep', () => {
+  for (const id of [...presence.keys()]) if (!liveSocket(id) && !tickets.peek({ userID: id })) presence.delete(id);
+}), 10 * 60 * 1000);
+if (presenceSweep.unref) presenceSweep.unref();
+
 function setPresence(userID, state, extra = {}) {
   const was = presence.get(userID);
+  // Back in the menu with no menu connected (the HUD's result after the game
+  // was closed): offline, nothing to remember. These entries used to stay
+  // for good (SERVER_AUDIT_2 F8).
+  if (state === 'menu' && !liveSocket(userID)) {
+    if (presence.delete(userID)) notifyFriends(userID);
+    return;
+  }
   const now = { state, mode: extra.mode || null, round: extra.round || null, since: Date.now() };
   if (was && was.state === now.state && was.mode === now.mode && was.round === now.round) return;
   presence.set(userID, now);
@@ -2095,6 +2156,42 @@ io.on('connection', (socket) => {
 
 // A stand-in for players with no profile (looked up, never stored).
 const BLANK_PROFILE = { stats: { wins: 0, kills: 0, level: 1, rank: 0 }, cardID: 0 };
+
+// ---------------------------------------------------------------- backups
+
+// A daily snapshot of the data folder (backup.js), in <data>/backups unless
+// CULLING_BACKUP_DIR says otherwise; the newest CULLING_BACKUP_KEEP are kept.
+// Everything held in memory is written first, so the snapshot is complete and
+// consistent; that blocks the event loop briefly once a day (backups.last.ms
+// in /metrics). CULLING_BACKUP_EVERY_MS=0 turns it off.
+const BACKUP_DIR = process.env.CULLING_BACKUP_DIR || path.join(DATA_DIR, 'backups');
+const BACKUP_EVERY_MS = parseInt(process.env.CULLING_BACKUP_EVERY_MS || String(24 * 3600 * 1000), 10);
+const BACKUP_KEEP = parseInt(process.env.CULLING_BACKUP_KEEP || '14', 10);
+let lastBackup = null;
+function dailyBackup() {
+  if (stopping || !(BACKUP_EVERY_MS > 0)) return;
+  try {
+    const newest = backups.latestAt(BACKUP_DIR, 'daily');
+    if (newest !== null && Date.now() - newest < BACKUP_EVERY_MS) return;
+    const t0 = performance.now();
+    flushAll('backup');
+    const r = backups.snapshot(DATA_DIR, BACKUP_DIR, 'daily', { keep: BACKUP_KEEP });
+    const ms = Math.round(performance.now() - t0);
+    lastBackup = { at: Date.now(), dir: r.dir, files: r.files, bytes: r.bytes, ms };
+    log('backup', r.dir, r.files, 'files', (r.bytes / 1048576).toFixed(1) + ' MB', ms + ' ms',
+      r.removed.length ? '(removed ' + r.removed.length + ' older)' : '');
+  } catch (e) {
+    metrics.error('backup');
+    lastBackup = { at: Date.now(), error: e.message };
+    log('backup failed:', e.message);
+  }
+}
+if (BACKUP_EVERY_MS > 0) {
+  const first = setTimeout(dailyBackup, parseInt(process.env.CULLING_BACKUP_FIRST_MS || '60000', 10));
+  const every = setInterval(dailyBackup, Math.min(BACKUP_EVERY_MS, 3600 * 1000));
+  if (first.unref) first.unref();
+  if (every.unref) every.unref();
+}
 
 // ---------------------------------------------------------------- start / stop
 

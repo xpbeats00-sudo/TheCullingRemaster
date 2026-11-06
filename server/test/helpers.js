@@ -95,7 +95,8 @@ function startServer(env = {}, legacyEnv) {
       socket.emit("login", { token });
       return (await ok) ? socket : (socket.close(), null);
     },
-    stop() { srv.proc.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+    // The killed server may still hold its files for a moment (Windows: EBUSY).
+    stop() { srv.proc.kill(); try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } catch { /* a temp folder left */ } }
   };
   return srv;
 }

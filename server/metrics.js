@@ -46,7 +46,7 @@ class Window {
     this.start = start;
     this.requests = 0;
     this.socketEvents = 0;
-    this.errors = { http5xx: 0, http4xx: 0, rateLimited: 0, socketHandler: 0, socketDropped: 0, process: 0, save: 0 };
+    this.errors = { http5xx: 0, http4xx: 0, rateLimited: 0, socketHandler: 0, socketDropped: 0, process: 0, save: 0, timer: 0, backup: 0 };
     this.routes = new Map();
     this.events = new Map();
   }

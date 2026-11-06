@@ -207,7 +207,7 @@ async function waitUp(port) {
   } finally {
     try { proc.kill(); } catch { /* gone */ }
     await sleep(300);
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 
   // ---- the menu logging in again closes a match that never reported
