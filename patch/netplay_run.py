@@ -491,7 +491,8 @@ def menu_chain(a):
             if joins >= a.clients:
                 break
             time.sleep(3)
-        result["steps"]["every menu joined the host"] = "PASS: %d" % joins if joins >= a.clients else "FAIL: %d joined" % joins
+        key = "both menus joined the host" if a.clients == 2 else "every menu joined the host"     # the old key for two
+        result["steps"][key] = ("PASS" if a.clients == 2 else "PASS: %d" % joins) if joins >= a.clients else "FAIL: %d joined" % joins
         log(result["steps"])
         if joins >= a.clients:
             time.sleep(a.after_join)
