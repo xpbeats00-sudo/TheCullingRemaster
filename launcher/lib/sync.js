@@ -75,6 +75,12 @@ const SAVE_EVERY_MS = 2000;
 const META_MIN = 1 << 20;
 // Kept free beyond what an update needs (logs, the file system's own needs).
 const SPACE_MARGIN = 512 * 1024 * 1024;
+// The most a manifest and its signature may be: a whole-game manifest is about
+// 1 MB, an Ed25519 signature in base64 is 88 bytes. Anything bigger is cut off
+// while it streams, as is a file download past its signed size, so a
+// misbehaving server can't fill the memory or the disk.
+const MANIFEST_MAX = 8 * 1024 * 1024;
+const SIG_MAX = 1024;
 // Windows device names can't be file names, with or without an extension.
 const DEVICE_RX = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³]) *(\..*)?$/i;
 // File errors that retrying can't fix.
@@ -176,11 +182,11 @@ function validateManifest(m) {
 // mismatch is tried once more before the release is refused.
 async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 1500) {
   const url = checkUrl(manifestUrl);
-  const get = async (u) => {
+  const get = async (u, max, label) => {
     // Generous: the manifest of a whole-game release is about 1 MB.
     const res = await fetchImpl(u.href, { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(60000) });
     if (!res.ok) throw new SyncError(`${u.pathname.split("/").pop()} request failed: HTTP ${res.status}`, "http");
-    return Buffer.from(await res.arrayBuffer());
+    return readCapped(res, max, u.pathname.split("/").pop() + " is larger than " + label + ": refusing it");
   };
   let body = null;
   let ok = false;
@@ -188,7 +194,7 @@ async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 150
     if (i) await sleep(retryMs);
     // The manifest and its signature at once: one round trip to the server
     // instead of two at every start (measured: docs/LOADING_TIME_OPTIMIZATION_REPORT.md).
-    const [b, s] = await Promise.all([get(url), get(new URL(url.href + ".sig"))]);
+    const [b, s] = await Promise.all([get(url, MANIFEST_MAX, "8 MB"), get(new URL(url.href + ".sig"), SIG_MAX, "1 KB")]);
     body = b;
     const sig = Buffer.from(s.toString("utf8").trim(), "base64");
     try { ok = crypto.verify(null, body, publicKey, sig); } catch { ok = false; }
@@ -199,6 +205,25 @@ async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 150
   const m = validateManifest(parsed);
   m.baseUrl = url.href;
   return m;
+}
+
+// A response body, read until it passes `max` bytes (then the request is
+// cancelled and the read refused): never more than that is held in memory.
+async function readCapped(res, max, message) {
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > max) { await res.body?.cancel(); throw new SyncError(message); }
+  if (!res.body) return Buffer.alloc(0);
+  const chunks = [];
+  let n = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { await reader.cancel().catch(() => {}); throw new SyncError(message); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, n);
 }
 
 function sha256File(file) {
@@ -357,7 +382,7 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
         state.staged[f.path] = recordOf(staged, f.sha256);
         isStaged = true;
       }
-      if (!isStaged) delete state.staged[f.path];
+      if (!isStaged) { delete state.staged[f.path]; dropOversizedPart(gameRoot, f); }
       else report.staged++;
       todo.push(Object.assign({}, f, { staged: isStaged }));
     }
@@ -373,6 +398,15 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
   keep();
   Object.defineProperty(todo, "report", { value: report, enumerable: false });
   return todo;
+}
+
+// A partial download bigger than its file (a server that sent too much, to
+// an older launcher) can only be wrong, and it takes up disk space the
+// disk-space check would count against the update: it goes.
+function dropOversizedPart(gameRoot, f) {
+  const part = stagedPath(gameRoot, f.path) + ".part";
+  const st = statOrNull(part);
+  if (st && st.size > f.size) for (const p of [part, part + ".json"]) fs.rmSync(p, { force: true });
 }
 
 // A staged file and its partial download (.part, .part.json).
@@ -481,13 +515,21 @@ async function attempt(url, f, part, onBytes, o) {
     // listener beside it: work done in such a listener (the launcher sends
     // progress to the window from there) could let later chunks reach the file
     // first, scrambling it. Each chunk re-arms the stall timer, and waits its
-    // turn under the bandwidth cap.
-    const count = () => new Transform({
-      transform(chunk, _enc, done) {
-        arm();
-        o.limit.take(chunk.length).then(() => { arm(); onBytes(chunk.length); done(null, chunk); }, done);
-      }
-    });
+    // turn under the bandwidth cap. Past `max` bytes (what is left of the file)
+    // the download stops: the chunk that would pass it is never written.
+    const tooBig = () => Object.assign(new SyncError(`${f.path}: the server sent more than the file's ${f.size} bytes`, "verify"), { oversize: true });
+    const count = (max) => {
+      let got = 0;
+      return new Transform({
+        transform(chunk, _enc, done) {
+          arm();
+          got += chunk.length;
+          if (got > max) { done(tooBig()); return; }
+          o.limit.take(chunk.length).then(() => { arm(); onBytes(chunk.length); done(null, chunk); }, done);
+        }
+      });
+    };
+    const declared = Number(res.headers.get("content-length"));
     const remember = () => {
       if (f.size >= META_MIN) writeJson(metaFile, { sha256: f.sha256, etag: res.headers.get("etag") || null });
     };
@@ -506,13 +548,16 @@ async function attempt(url, f, part, onBytes, o) {
         onBytes(-have);
         throw new SyncError(`${f.path}: unexpected Content-Range "${res.headers.get("content-range")}"; starting over`, "range");
       }
+      if (declared > f.size - have) { await res.body?.cancel(); throw tooBig(); }
       remember();
-      await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part, { flags: "a" }));
+      await pipeline(Readable.fromWeb(res.body), count(f.size - have), fs.createWriteStream(part, { flags: "a" }));
     } else if (res.ok && res.body) {
       // A whole file (no range support, or it changed): the partial data goes.
       if (have > 0) onBytes(-have);
+      have = 0;
+      if (declared > f.size) { await res.body?.cancel(); fs.rmSync(part, { force: true }); throw tooBig(); }
       remember();
-      await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part));
+      await pipeline(Readable.fromWeb(res.body), count(f.size), fs.createWriteStream(part));
     } else {
       await res.body?.cancel();
       throw Object.assign(new SyncError(`download failed for ${f.path}: HTTP ${res.status}`, "http"), { status: res.status });
@@ -567,6 +612,12 @@ async function download(manifest, f, gameRoot, onBytes, o) {
       throw new SyncError(`${f.path} failed verification (got ${size} bytes${digest ? ", " + digest.slice(0, 12) + "..." : ""})`, "verify");
     } catch (e) {
       if (e instanceof SyncPaused) throw e;      // the .part stays for the resume
+      // Cut off for sending too much: what it sent isn't trusted, the file starts over.
+      if (e.oversize) {
+        fs.rmSync(part, { force: true });
+        fs.rmSync(part + ".json", { force: true });
+        count(-counted);
+      }
       lastError = e;
       if (!retryable(e)) break;
       fails = counted > before && e.kind !== "verify" ? 0 : fails + 1;
@@ -807,6 +858,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
   fs.mkdirSync(gameRoot, { recursive: true });
   checkWritable(gameRoot);
   recover(gameRoot);
+  for (const f of todo) if (!f.staged) dropOversizedPart(gameRoot, f);
   checkSpace(gameRoot, totalBytes - partialBytes(todo, gameRoot));
   if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   const state = loadState(gameRoot);

@@ -540,6 +540,89 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.deepStrictEqual((await sync.plan(await get("v1"), r2)).length, 0, "the files are 1.0.0's");
     });
 
+    await test("a server sending more than a file's size is cut off, never filling the disk", async () => {
+      // The manifest says 1,000 bytes; the server streams 20 MB with no Content-Length.
+      const real = Buffer.alloc(1000, 3);
+      routes["/huge/o/big"] = (req, res) => {
+        let sent = 0;
+        res.writeHead(200);
+        const chunk = Buffer.alloc(64 * 1024, 3);
+        const pump = () => {
+          while (sent < 20 * 1048576) { sent += chunk.length; if (!res.write(chunk)) return res.once("drain", pump); }
+          res.end();
+        };
+        res.on("close", () => { sent = Infinity; });
+        pump();
+      };
+      const body = Buffer.from(JSON.stringify({ version: "1", files: [{ path: "Victory/big.pak", size: real.length, sha256: sha(real), url: "o/big" }] }));
+      routes["/huge/manifest.json"] = (req, res) => res.end(body);
+      routes["/huge/manifest.json.sig"] = (req, res) => res.end(crypto.sign(null, body, pair.privateKey).toString("base64"));
+      const r = path.join(tmp, "huge-game");
+      await assert.rejects(install("huge", r), /sent more than the file's 1000 bytes/);
+      const part = path.join(r, ".remaster", "staging", "Victory", "big.pak.part");
+      assert.ok(!fs.existsSync(part) || fs.statSync(part).size <= real.length, "no oversized .part left");
+    });
+
+    await test("a resumed download (206) that sends more than the rest of the file is cut off", async () => {
+      const real = Buffer.alloc(300000, 6);
+      routes["/huge206/o/f"] = (req, res) => {
+        const m = /^bytes=(\d+)-$/.exec(req.headers.range || "");
+        if (!m) { res.writeHead(200, { "Content-Length": real.length }); return res.end(real); }
+        const from = Number(m[1]);
+        // The right Content-Range, but far more data than it says.
+        res.writeHead(206, { "Content-Range": `bytes ${from}-${real.length - 1}/${real.length}` });
+        res.end(Buffer.alloc(4 * 1048576, 6));
+      };
+      const body = Buffer.from(JSON.stringify({ version: "1", files: [{ path: "Victory/f.pak", size: real.length, sha256: sha(real), url: "o/f" }] }));
+      routes["/huge206/manifest.json"] = (req, res) => res.end(body);
+      routes["/huge206/manifest.json.sig"] = (req, res) => res.end(crypto.sign(null, body, pair.privateKey).toString("base64"));
+      const r = path.join(tmp, "huge206-game");
+      const part = path.join(r, ".remaster", "staging", "Victory", "f.pak.part");
+      fs.mkdirSync(path.dirname(part), { recursive: true });
+      fs.writeFileSync(part, real.subarray(0, 1000));
+      const retries = [];
+      await install("huge206", r, { retryDelayMs: 1, log: (ev, d) => { if (ev === "retry") retries.push(d.file); } });
+      assert.ok(/sent more than the file's 300000 bytes/.test(retries[0] || ""), "the resume was cut off: " + retries.join("; "));
+      assert.ok(read(r, "Victory/f.pak").equals(real), "then the file started over and came whole");
+    });
+
+    await test("an oversized manifest or signature is refused while it streams", async () => {
+      const big = Buffer.alloc(9 * 1048576, 32);
+      routes["/bigman/manifest.json"] = (req, res) => { res.writeHead(200); res.end(big); };
+      routes["/bigman/manifest.json.sig"] = (req, res) => res.end("x");
+      await assert.rejects(get("bigman"), /manifest\.json is larger than 8 MB/);
+      const body = Buffer.from(JSON.stringify({ version: "1", files: [] }));
+      routes["/bigsig/manifest.json"] = (req, res) => res.end(body);
+      routes["/bigsig/manifest.json.sig"] = (req, res) => { res.writeHead(200); res.end(Buffer.alloc(4096, 65)); };
+      await assert.rejects(get("bigsig"), /manifest\.json\.sig is larger than 1 KB/);
+    });
+
+    await test("a .part bigger than its file is deleted before the disk-space check", async () => {
+      const f1 = Buffer.alloc(2000, 8);
+      release("oversized-part", "1", { "Victory/p.pak": f1 });
+      const r = path.join(tmp, "oversized-part-game");
+      const part = path.join(r, ".remaster", "staging", "Victory", "p.pak.part");
+      const plant = () => { fs.mkdirSync(path.dirname(part), { recursive: true }); fs.writeFileSync(part, Buffer.alloc(50000, 1)); };
+      plant();
+      const m = await get("oversized-part");
+      const todo = await sync.plan(m, r);
+      assert.ok(!fs.existsSync(part), "plan() drops it");
+      // Left again after the plan (an older launcher, a crash): apply() drops it before it checks the space,
+      // which here reports a full drive while the oversized .part is there.
+      plant();
+      const realStatfs = fs.statfsSync;
+      fs.statfsSync = function (d) {
+        const s = realStatfs.apply(this, arguments);
+        return fs.existsSync(part) ? Object.assign({}, s, { bavail: 0, bsize: s.bsize }) : s;
+      };
+      try {
+        await sync.apply(m, todo, r, () => {}, { retryDelayMs: 5 });
+      } finally {
+        fs.statfsSync = realStatfs;
+      }
+      assert.ok(read(r, "Victory/p.pak").equals(f1));
+    });
+
     console.log("all %d update tests passed", passed);
   } finally {
     server.close();
