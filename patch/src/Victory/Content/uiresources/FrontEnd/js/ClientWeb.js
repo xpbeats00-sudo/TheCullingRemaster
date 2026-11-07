@@ -742,6 +742,7 @@ function LoginWithTicket(ticket, userid) {
           console.log("Login got no answer from the server (HTTP " + (jqXHR && jqXHR.status) + ")");
           ClientwebData.AuthToken = null;
           SetFailedConnectionStatus();
+          CloseConnectingModal(false);
           return;
         }
         nextPromise = LoginResponseFromEngine(text, ProcessLoginFailure);
@@ -1059,13 +1060,15 @@ function RemasterReconnectStop() {
   RemasterReconnectNotice(null);
 }
 
-// Signed in: the next drop starts again at 5 s.
+// Signed in: the next drop starts again at 5 s, and a sign-in error still
+// open from an earlier try ("unable to login", a refusal) is out of date.
 function RemasterReconnected() {
   RemasterReconnect.delay = 0;
   RemasterReconnect.stopped = false;
   clearTimeout(RemasterReconnect.timer);
   RemasterReconnect.timer = null;
   RemasterReconnectNotice(null);
+  PopModalByID("Offline");
 }
 
 // The player pressed Retry: try now, and on our own again if that fails.

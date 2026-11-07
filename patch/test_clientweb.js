@@ -393,6 +393,15 @@ test("a refusal retrying can't help (account-required): no automatic tries; Retr
   assert.strictEqual(pending(), 1, "retryable again after Retry");
 });
 
+test("a refusal's modal still open when an automatic try signs in: closed (it's out of date)", () => {
+  loginRefused(503, { error: "server-full" });
+  serverUp();
+  advance(5000);
+  const s = last();
+  fire(s, "connect"); fire(s, "login_ready"); advance(3000); fire(s, "auth-response");
+  assert.strictEqual(modals.filter((m) => m.modalID == "Offline").length, 0);
+});
+
 test("a retryable refusal during an automatic try: the notice says why, no modal each time", () => {
   reset();
   const s = signIn();
