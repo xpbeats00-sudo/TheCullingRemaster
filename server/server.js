@@ -134,7 +134,6 @@ const isForSale = (i) => isCustom(i) && !i.rankedReward;
 const catalogByTid = new Map(catalog.map((i) => [i.tid, i]));
 
 // Short keys are what the game's native parser reads for each type.
-let inventoryTypesCache = null;
 function inventoryTypes() {
   return catalog.map((i) => ({
     tid: i.tid,
@@ -169,8 +168,10 @@ function ownedCamos(p) {
   return out;
 }
 
-function ownsItem(p, i, camos = ownedCamos(p)) {
-  return (p.owned || []).includes(i.tid) || camos.has(camoKey(i));
+// owned: the player's owned type IDs as a Set (ownedItems checks every
+// catalog item against it).
+function ownsItem(p, i, camos = ownedCamos(p), owned = null) {
+  return (owned ? owned.has(i.tid) : (p.owned || []).includes(i.tid)) || camos.has(camoKey(i));
 }
 
 // Items with an unlockLevel (the airdrops that start locked, from
@@ -179,7 +180,8 @@ const levelReached = (p, i) => !i.unlockLevel || ((p.stats && p.stats.level) || 
 
 function ownedItems(p) {
   const camos = ownedCamos(p);
-  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && levelReached(p, i) && (!isCustom(i) || ownsItem(p, i, camos)))
+  const owned = new Set(p.owned || []);
+  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && levelReached(p, i) && (!isCustom(i) || ownsItem(p, i, camos, owned)))
     .map((i) => ({ i: i.tid, q: 1 }));
 }
 const entitlements = (p) => ({ data: { items: ownedItems(p) } });
@@ -1946,6 +1948,22 @@ function playerCard(userID, viewer) {
   return card;
 }
 
+// The full item list (get-inventory-types with a stale version): about 800
+// KB, so it is built and encoded once (the catalog never changes while
+// running) and written to each socket as is, at most once a minute per socket
+// (FULL_AUDIT_2026-11-06 P1: a stale version re-sent it on every request).
+const INVENTORY_RESEND_MS = 60 * 1000;
+let inventoryTypesPacket = null;
+function sendInventoryTypes(socket) {
+  const payload = () => ({ data: { versionOK: false, currentVersion: CATALOG_VERSION, types: inventoryTypes() } });
+  if (!inventoryTypesPacket) {
+    io.encoder.encode({ type: io.parser.EVENT, nsp: '/', data: ['inventory-types-response', payload()] },
+      (encoded) => { inventoryTypesPacket = encoded; });
+  }
+  if (inventoryTypesPacket) socket.client.packet(inventoryTypesPacket, { preEncoded: true });
+  else socket.emit('inventory-types-response', payload());       // (the encoder answered later: never for text)
+}
+
 // A short string from a client message, or `fallback`.
 const shortString = (v, max, fallback) => (typeof v === 'string' && v.length <= max ? v : fallback);
 
@@ -2106,10 +2124,11 @@ io.on('connection', (socket) => {
   on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {
       socket.emit('inventory-types-response', { data: { versionOK: true, currentVersion: CATALOG_VERSION } });
+    } else if (socket.inventorySentAt && Date.now() - socket.inventorySentAt < INVENTORY_RESEND_MS) {
+      metrics.error('socketDropped');      // this socket has the list: not again so soon
     } else {
-      // The catalog never changes while running: build the list once.
-      if (!inventoryTypesCache) inventoryTypesCache = inventoryTypes();
-      socket.emit('inventory-types-response', { data: { versionOK: false, currentVersion: CATALOG_VERSION, types: inventoryTypesCache } });
+      socket.inventorySentAt = Date.now();
+      sendInventoryTypes(socket);
     }
     later(sendEntitlements, 1000);
   });
