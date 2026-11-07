@@ -211,8 +211,8 @@ def start_chain(a):
     be = LB.start(a.backend_repo, os.path.join(a.out, "backend-data"), a.backend_port, PORT, os.path.join(a.out, "backend.log"))
     procs.append(be)
     agent = subprocess.Popen(["node", os.path.join(GAMESERVER, "agent.js"), "--backend", url[:-4], "--id", LB.SERVER_ID,
-                              "--secret", LB.secret(), "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
-                              "--log", os.path.join(a.out, "agent.log")],
+                              "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
+                              "--log", os.path.join(a.out, "agent.log")], env=dict(os.environ, CULLING_GAMESERVER_SECRET=LB.secret()),
                              stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb"))
     procs.append(agent)
     time.sleep(2)
@@ -382,7 +382,7 @@ def menu_chain(a):
         procs.append(LB.start(a.backend_repo, os.path.join(a.out, "backend-data"), a.backend_port, PORT, os.path.join(a.out, "backend.log")))
         os.environ.pop("CULLING_TEST_HOOKS", None)
         agent_args = ["node", os.path.join(GAMESERVER, "agent.js"), "--backend", base, "--id", LB.SERVER_ID,
-                      "--secret", LB.secret(), "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
+                      "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
                       "--log", os.path.join(a.out, "agent.log")]
         if a.agent_host:
             # The agent starts the host from the assignment. Its test ID: the
@@ -395,7 +395,8 @@ def menu_chain(a):
                 agent_args += ["--victory-exe", host_dst]
             if a.headless_host:
                 agent_args.append("--headless")
-        procs.append(subprocess.Popen(agent_args, stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
+        procs.append(subprocess.Popen(agent_args, env=dict(os.environ, CULLING_GAMESERVER_SECRET=LB.secret()),
+                                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
         # 1. The two clients, at their menus, each with its own test ID.
         users = []
         for who, x in (("client", 970), ("client2", 485)):

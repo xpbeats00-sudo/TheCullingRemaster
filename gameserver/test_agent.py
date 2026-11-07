@@ -88,6 +88,9 @@ def sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+SECRET = "5ec7e7" * 10
+
+
 def agent_env(secret):
     """The agent's environment: the secret goes there, never on its command line."""
     return dict(os.environ, CULLING_GAMESERVER_SECRET=secret)
@@ -104,8 +107,8 @@ def real_backend(repo, port):
     try:
         procs.append(LB.start(repo, os.path.join(out, "backend-data"), port, log=os.path.join(out, "backend.log")))
         procs.append(subprocess.Popen(["node", os.path.join(HERE, "agent.js"), "--backend", url, "--id", LB.SERVER_ID,
-                                       "--secret", LB.secret(), "--control", ctl, "--log", os.path.join(out, "agent.log")],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                                       "--control", ctl, "--log", os.path.join(out, "agent.log")],
+                                      env=agent_env(LB.secret()), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         time.sleep(1.5)
         players = subprocess.Popen(["node", os.path.join(HERE, "test_players.js"), "--backend", url,
                                     "--server-dir", os.path.join(repo, "server"), "--out", out, "--count", "2",
@@ -301,10 +304,12 @@ class Agent:
     def __init__(self, out, backend, launcher, port, name="agent", extra=()):
         self.log = os.path.join(out, name + ".log")
         self.ctl = os.path.join(out, "control")
-        args = ["node", os.path.join(HERE, "agent.js"), "--backend", backend.url, "--id", "gs1", "--secret", "s" * 64,
+        args = ["node", os.path.join(HERE, "agent.js"), "--backend", backend.url, "--id", "gs1",
                 "--host", "127.0.0.1", "--port", str(port), "--control", self.ctl, "--log", self.log,
                 "--launcher", launcher, "--client-dll", "Func.Client.Test.dll", "--linger-ms", "1500"] + list(extra)
-        self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=open(os.path.join(out, name + ".err"), "wb"))
+        # The secret, a private variable and a test switch in the agent's environment.
+        env = dict(agent_env(SECRET), CANARY_PRIVATE="agent-only", CULLING_NETPLAY_END="1")
+        self.proc = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=open(os.path.join(out, name + ".err"), "wb"))
 
     def event(self, name, timeout=20, pred=lambda e: True):
         return wait_log(self.log, lambda e: e.get("event") == name and pred(e), timeout)
@@ -339,6 +344,20 @@ def scripted():
         assert saved["pid"] == started["pid"] and saved["exe"] == "Victory.exe" and running(saved["pid"])
         print("ok    the host runs with the match's own folder <control>/%s and an explicit port (%d); host.pid has its pid and exe"
               % (mid, port))
+        envtext = open(os.path.join(mdir, "env.txt"), encoding="utf-8").read()
+        assert SECRET not in envtext and "CULLING_GAMESERVER_SECRET" not in envtext, "the secret reached the host"
+        assert "CANARY_PRIVATE" not in env and env.get("CULLING_NETPLAY_END") == "1" and env.get("FUNC_CLIENT_DISABLE_PAK_MOUNT") == "1", env
+        assert env.get("SystemRoot") or env.get("SYSTEMROOT"), "Windows' own variables are kept"
+        assert SECRET not in cmd
+        agcmd = subprocess.run(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Process -Filter \"ProcessId=%d\").CommandLine"
+                                % ag.proc.pid], capture_output=True, text=True).stdout
+        assert "agent.js" in agcmd and SECRET not in agcmd, agcmd
+        print("ok    the host's environment is clean (no secret, no other agent variable; system, FUNC_ and CULLING_NETPLAY_ kept);"
+              " the secret isn't on the agent's command line")
+        bad = subprocess.run(["node", os.path.join(HERE, "agent.js"), "--backend", backend.url, "--id", "gs1", "--secret", SECRET,
+                              "--control", os.path.join(out, "x")], capture_output=True, text=True, env=dict(os.environ))
+        assert bad.returncode == 2 and "CULLING_GAMESERVER_SECRET" in bad.stderr, (bad.returncode, bad.stderr)
+        print("ok    --secret on the command line is refused")
         ag.event("ready", pred=lambda e: e.get("status") == 200)
         wait(os.path.join(mdir, "tickets.txt"))
         assert sorted(open(os.path.join(mdir, "tickets.txt")).read().splitlines()) == sorted(

@@ -45,12 +45,16 @@
 // result (the players' post-match screen), and a host that exits before its
 // result aborts the match.
 //
-// usage: node agent.js --backend http://127.0.0.1:8123 --id gs1 --secret <hex>
-//          --host 127.0.0.1 --port 7777 --control <dir> [--log <file>]
+// usage: CULLING_GAMESERVER_SECRET=<hex> node agent.js --backend http://127.0.0.1:8123 --id gs1
+//          --host 127.0.0.1 --port 7777 --control <dir> [--log <file>] [--secret-file <file>]
 //          [--launcher <Func.Launcher.exe> --client-dll <dll> [--headless]
 //           [--steam-settings <dir>] [--host-trace <file>] [--linger-ms 35000]
 //           [--victory-exe <the host exe, when the install's Victory.exe is a client's>]]
 // The secret is the per-server one: `node server/allocator.js secret gs1 [dataDir]`.
+// It is read from CULLING_GAMESERVER_SECRET (or a file, --secret-file), never
+// from the command line (anyone on the machine can list command lines), and
+// the host game never gets it: the host runs with a clean environment (the
+// system's own variables, FUNC_* and CULLING_NETPLAY_* only).
 "use strict";
 
 const { spawn, execFileSync, execFile } = require("child_process");
@@ -65,7 +69,7 @@ const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i
 const o = {
   backend: arg("backend", process.env.CULLING_BACKEND_URL),
   id: arg("id", process.env.CULLING_GAMESERVER_ID),
-  secret: arg("secret", process.env.CULLING_GAMESERVER_SECRET),
+  secret: process.env.CULLING_GAMESERVER_SECRET || (arg("secret-file") ? fs.readFileSync(arg("secret-file"), "utf8").trim() : ""),
   host: arg("host", "127.0.0.1"),
   port: parseInt(arg("port", "7777"), 10),
   control: arg("control"),
@@ -78,7 +82,12 @@ const o = {
   victoryExe: arg("victory-exe"),     // the host's own exe (the launcher's -FuncVictoryExe), when the install's Victory.exe is the client's
   lingerMs: parseInt(arg("linger-ms", "35000"), 10),
 };
-for (const k of ["backend", "id", "secret", "control"]) if (!o[k]) { console.error("missing --" + k); process.exit(2); }
+if (process.argv.includes("--secret")) {
+  console.error("the secret goes in CULLING_GAMESERVER_SECRET (or --secret-file), never on the command line");
+  process.exit(2);
+}
+for (const k of ["backend", "id", "control"]) if (!o[k]) { console.error("missing --" + k); process.exit(2); }
+if (!o.secret) { console.error("missing CULLING_GAMESERVER_SECRET (or --secret-file)"); process.exit(2); }
 fs.mkdirSync(o.control, { recursive: true });
 
 function log(event, fields = {}) {
@@ -232,6 +241,23 @@ function victoryChildOf(parent) {
 
 function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
+// The host's environment: Windows' own variables, and the launcher's and the
+// module's (FUNC_*, CULLING_NETPLAY_*: the test switches only the test build
+// reads), nothing else of the agent's: no secret, no token.
+const SYSTEM_ENV = new Set(["systemroot", "systemdrive", "windir", "temp", "tmp", "path", "pathext", "comspec", "userprofile",
+  "username", "userdomain", "homedrive", "homepath", "localappdata", "appdata", "programdata", "programfiles", "programfiles(x86)",
+  "programw6432", "commonprogramfiles", "commonprogramfiles(x86)", "commonprogramw6432", "public", "allusersprofile",
+  "computername", "number_of_processors", "processor_architecture", "processor_identifier", "processor_level",
+  "processor_revision", "os", "driverdata"]);
+function hostEnv() {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (/secret|token|password|passwd|key/i.test(k)) continue;
+    if (SYSTEM_ENV.has(k.toLowerCase()) || /^(FUNC_|CULLING_NETPLAY_)/i.test(k)) env[k] = v;
+  }
+  return env;
+}
+
 function startHost(a) {
   const url = hostUrl(a);
   if (!url) {
@@ -244,7 +270,7 @@ function startHost(a) {
   if (o.headless) args.push("-FuncHeadlessClient");
   if (o.victoryExe) args.push("-FuncVictoryExe=" + o.victoryExe);
   if (o.steamSettings) args.push("-FuncSteamSettingsDir=" + o.steamSettings);
-  const env = Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1", CULLING_NETPLAY_PREMATCH: String(a.players),
+  const env = Object.assign(hostEnv(), { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1", CULLING_NETPLAY_PREMATCH: String(a.players),
     CULLING_NETPLAY_CONTROL: matchDir, CULLING_NETPLAY_TEAMSIZE: String(a.teamSize || 1), CULLING_NETPLAY_PORT: String(o.port) });
   if (o.hostTrace) env.CULLING_NETPLAY_TRACE = o.hostTrace;
   const launcher = spawn(o.launcher, args, { cwd: path.dirname(o.launcher), env, stdio: "ignore" });
