@@ -2,6 +2,9 @@
 
 ## Game (next release)
 
+**Teams on a game server**
+- In a match hosted on a game server (shared matches, still in testing, not yet open to players), the game now keeps the teams the server sets. Before, it re-paired players by its own list order, so your teammate panel could show the wrong player. Local Duo, Trios and Quads pair as before. Checked in game: with 1.3.12 the panel showed the other player; with this build, your own teammate; a local Duo still pairs you with a bot.
+
 **Found by the in-game autotest (`patch/autotest/run.py`, results in [AUTOTEST_RESULTS.md](AUTOTEST_RESULTS.md))**
 - Fixed: in Duo, Trios and Quads two contestants of different teams could still share a pod (and one pod stayed empty). The game's start chooser puts teammates on their team's start, but the teams while everyone spawns aren't the final ones. Team matches now give every contestant a free pod of its own, as in Solo; teammates start apart. Needs the patched exe (fix 12).
 - Fixed: every ranked loss was scored as last place. The game never tells the HUD your place (its death data has no Rank), so the result posted 0. The patched exe now sends your place when you die (the contestants still alive, you included), and the HUD posts it; team modes turn it into the team's place.
