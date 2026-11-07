@@ -48,8 +48,16 @@
    and calls SetTeamNum(playerState, (index >> 1) + 1, true) so contestants
    pair up (0,1 -> team 1; 2,3 -> team 2; ...), then runs the original sort.
    It reasserts each refresh, so join order and timing don't matter.
-   This hook and stub are the ones 1.3.9 shipped and are kept as they are in
-   every build: they are what pairs Duo (see fix 9).
+   The stub is the one 1.3.9 shipped and is kept as it is in every build: it
+   is what pairs Duo (see fix 9). Since 1.3.13 the refresh calls a pre-stub
+   first (VA 0x14005ac70, in the same padding): it runs the stub only when the
+   GameState has authority (AActor::Role +0x118 == 3, a local match). On a
+   client connected to a server (Role 1) it only sorts, so the TeamNumber the
+   server replicated stands: in a shared match the client's PlayerArray order
+   isn't the server's teams, and pairing by it showed the other player as your
+   teammate when the server had put you on different teams (seen in game with
+   1.3.12; with the pre-stub the client showed the server's teams, and a local
+   Duo still paired a bot teammate).
 
 5. Showdown rounds (showdown_rounds.c, built by build_showdown_rounds.py into
    showdown_rounds_blob.py). A new section (.sdround, RVA 0x35b4000, after
