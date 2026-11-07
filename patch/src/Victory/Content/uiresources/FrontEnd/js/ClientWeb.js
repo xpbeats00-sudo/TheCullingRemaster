@@ -814,9 +814,11 @@ function ProcessLoginFailure(body) {
   SetFailedConnectionStatus();
   //return;
 
-  if (body != undefined && body.errorCode != undefined)
+  // Remaster: the server's refusals name the reason in errorCode or error.
+  var code = body == undefined ? undefined : body.errorCode != undefined ? body.errorCode : body.error;
+  if (code != undefined)
   {
-    switch (body.errorCode) {
+    switch (code) {
       case "missing_ticket":
         ShowGenericError(MISSING_TICKET);
         SetFailedConnectionStatusNoRetry();
@@ -860,8 +862,34 @@ function ProcessLoginFailure(body) {
         ShowGenericError(MAX_LOGINS_REACHED);
         SetFailedConnectionStatus();
         break;
+      // Remaster server (server/server.js /api/login and its request limits).
+      case "account-required":
+        ShowLoginRefused("Open the game from the launcher and sign in to play online.", false);
+        SetFailedConnectionStatusNoRetry();
+        break;
+      case "invalid-userid":
+        ShowLoginRefused("Steam didn't give the game a valid player ID. Restart Steam and the game, then try again.", false);
+        SetFailedConnectionStatusNoRetry();
+        break;
+      case "server-full":
+        ShowLoginRefused("The server is full right now. Please try again later.", true);
+        SetFailedConnectionStatus();
+        break;
+      case "too-many-new-players":
+        ShowLoginRefused("Too many new players are joining from your network right now. Please try again later.", true);
+        SetFailedConnectionStatus();
+        break;
+      case "rate-limited":
+      case "too-many-requests":
+        ShowLoginRefused("Too many requests from your network. Please wait a minute and try again.", true);
+        SetFailedConnectionStatus();
+        break;
+      case "stopping":
+        ShowLoginRefused("The server is restarting. Please try again in a minute.", true);
+        SetFailedConnectionStatus();
+        break;
       default:
-        console.error("Unhandled login rejection: " + body.errorCode);
+        console.error("Unhandled login rejection: " + code);
         ShowGenericError(UNDEFINED_ERROR);
         SetFailedConnectionStatus();
     }
@@ -893,6 +921,28 @@ function ShowOfflineError(errorCode){
     PushModal('Modal', modalArgs);
     //CloseConnectingModal(false);
 
+}
+
+// Remaster: a login refusal the server gave a reason for, in words. Retry only
+// when trying again can help (else the player is told what to do instead).
+function ShowLoginRefused(text, bCanRetry) {
+    PopModalByID("Offline");
+    PushModal('Modal', {
+      options: bCanRetry ? ["Retry", "Play Offline"] : ["Play Offline"],
+      title: text,
+      bSupportsBackButton: true,
+      modalID: "Offline",
+      callback: function(option){
+        if (option == "Retry") {
+          PopModal();
+          ConnectWebsocketIfNeeded();
+        }
+        else if (GetActiveScreen().ScreenName != "MainMenu") {
+          PushScreen("MainMenu");
+        }
+      }
+    });
+    CloseConnectingModal(false);
 }
 
 function ShowGenericError(errorCode) {
