@@ -214,7 +214,8 @@ def test_real_exe(path):
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "netplay.c"), encoding="utf-8").read()
     iat = _iat_names(data, sects)
     want = {"IAT_WRITEFILE": "WriteFile", "IAT_GETENVW": "GetEnvironmentVariableW",
-            "IAT_CREATEFILEW": "CreateFileW", "IAT_GETTICKCOUNT": "GetTickCount"}
+            "IAT_CREATEFILEW": "CreateFileW", "IAT_GETTICKCOUNT": "GetTickCount",
+            "IAT_SLEEP": "Sleep", "IAT_READFILE": "ReadFile", "IAT_CLOSEHANDLE": "CloseHandle"}
     import re as _re
     for macro, fn in want.items():
         slot = int(_re.search(r"#define %s\s+(0x[0-9a-f]+)" % macro, src).group(1), 16)
@@ -362,7 +363,8 @@ def test_real_exe(path):
         _verify_patched(copy)
         assert PN.patch(copy) is False
         print("real exe: pass (Listen stub, 3 notify slots with relocations, InternalGetNetMode, "
-              "2 inlined copies, GetNetMode (GIsClient at %#x), 4 kernel32 import slots re-derived; patched copy verified)" % gis)
+              "2 inlined copies, GetNetMode (GIsClient at %#x), %d kernel32 import slots re-derived; patched copy verified)"
+              % (gis, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "netplay.c"), encoding="utf-8").read().count("#define IAT_")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

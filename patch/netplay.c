@@ -200,6 +200,175 @@ typedef u8 (*init_listen_fn)(void *driver, void *notify, void *url, u8 reuse, vo
 /* An empty FString (TArray<TCHAR> {data, num, max}) for InitListen's out-Error. */
 struct fstring { void *data; i32 num; i32 max; };
 
+/* ---- the game-server agent's control folder ------------------------------
+ *
+ * CULLING_NETPLAY_CONTROL names a folder shared with the game-server agent
+ * (gameserver/agent.js), which speaks the backend's signed game-server API.
+ * The host and the agent talk through small files there:
+ *   listening            the host writes it once it listens (the agent posts ready)
+ *   verify-<n>.req/.ans  PreLogin: the player's ticket (?servernonce=), the
+ *                        agent's answer "ok <team>" or "deny <reason>"
+ *   result.txt + .done   at the end of the match: each joined player's result
+ * Without the variable nothing here runs. */
+#define IAT_SLEEP          0x253f220
+#define IAT_READFILE       0x253f260
+#define IAT_CLOSEHANDLE    0x253f330
+#define R_STRING_RESIZE    0x1a3420    /* TArray<TCHAR>::ResizeForCopy(NewMax, PrevMax) */
+typedef void (*sleep_fn)(u32 ms);
+typedef i32 (*readfile_fn)(void *h, void *buf, u32 n, u32 *got, void *ovl);
+typedef i32 (*closehandle_fn)(void *h);
+typedef void (*resize_fn)(struct fstring *s, i32 new_max, i32 prev_max);
+static const u16 ctl_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','C','O','N','T','R','O','L',0 };
+static u16 ctl_dir[200];
+static i32 ctl_state = 1;
+static u32 ctl_len;
+
+static i32 ctl_on(void)
+{
+    if (ctl_state == 1) {
+        ctl_len = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(ctl_var, ctl_dir, 180);
+        ctl_state = ctl_len > 0 && ctl_len < 180 ? 2 : 3;
+    }
+    return ctl_state == 2;
+}
+
+static void ctl_path(u16 *out, const char *name)
+{
+    u32 i, k = 0;
+    for (i = 0; i < ctl_len; i++)
+        out[k++] = ctl_dir[i];
+    out[k++] = '\\';
+    for (i = 0; name[i] && k < 258; i++)
+        out[k++] = (u16)(u8)name[i];
+    out[k] = 0;
+}
+
+static i32 ctl_write(const char *name, const char *text, u32 n)
+{
+    u16 path[260];
+    void *h;
+    u32 w = 0;
+    ctl_path(path, name);
+    /* GENERIC_WRITE, share read, CREATE_ALWAYS */
+    h = (*(createfilew_fn *)(image_base() + IAT_CREATEFILEW))(path, 0x40000000, 1, 0, 2, 0x80, 0);
+    if (h == INVALID_HANDLE)
+        return 0;
+    (*(writefile_fn *)(image_base() + IAT_WRITEFILE))(h, text, n, &w, 0);
+    (*(closehandle_fn *)(image_base() + IAT_CLOSEHANDLE))(h);
+    return w == n;
+}
+
+/* The file's text (NUL-terminated), its length, or -1 when it isn't there. */
+static i32 ctl_read(const char *name, char *buf, u32 max)
+{
+    u16 path[260];
+    void *h;
+    u32 got = 0;
+    ctl_path(path, name);
+    /* GENERIC_READ, share read|write|delete, OPEN_EXISTING */
+    h = (*(createfilew_fn *)(image_base() + IAT_CREATEFILEW))(path, 0x80000000, 7, 0, 3, 0x80, 0);
+    if (h == INVALID_HANDLE)
+        return -1;
+    (*(readfile_fn *)(image_base() + IAT_READFILE))(h, buf, max - 1, &got, 0);
+    (*(closehandle_fn *)(image_base() + IAT_CLOSEHANDLE))(h);
+    buf[got] = 0;
+    return (i32)got;
+}
+
+static char *put_dec(char *p, i32 v)
+{
+    char t[12];
+    i32 n = 0;
+    if (v < 0) { *p++ = '-'; v = -v; }
+    do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n)
+        *p++ = t[--n];
+    *p = 0;
+    return p;
+}
+
+static char *put_str(char *p, const char *s)
+{
+    while (*s)
+        *p++ = *s++;
+    *p = 0;
+    return p;
+}
+
+/* Sets an (empty) FString to msg, as the game's own refusals are. */
+static void set_fstring(struct fstring *e, const char *msg)
+{
+    i32 i, n = 0;
+    while (msg[n])
+        n++;
+    n++;
+    if (e->data || e->max)
+        return;
+    e->num = n;
+    FN(R_STRING_RESIZE, resize_fn)(e, n, 0);
+    if (!e->data)
+        return;
+    for (i = 0; i < n; i++)
+        ((u16 *)e->data)[i] = (u16)(u8)msg[i];
+}
+
+static i32 login_seq;               /* verify requests made */
+static i32 last_verified;           /* the request PreLogin just passed (0 none) */
+
+/* PreLogin with the agent: the ticket from ?servernonce= in the login
+ * options, checked by the backend through the agent (up to 8 s); a missing
+ * ticket, a refusal or no answer refuses the login. */
+static void ticket_check(struct fstring *options, struct fstring *error)
+{
+    const char *key = "servernonce=";
+    u16 *o = (u16 *)options->data;
+    char name[32], req[400], ans[200], *q;
+    i32 i, k, start = -1, len, n = options->num, waited;
+    last_verified = 0;
+    for (i = 0; o && i < n && start < 0; i++) {
+        for (k = 0; key[k] && i + k < n && o[i + k] == (u16)key[k]; k++)
+            ;
+        if (!key[k])
+            start = i + k;
+    }
+    if (start < 0) {
+        set_fstring(error, "No match ticket");
+        return;
+    }
+    for (len = 0; start + len < n && o[start + len] && o[start + len] != '?' && len < (i32)sizeof(req) - 2; len++)
+        req[len] = (char)o[start + len];
+    req[len] = 0;
+    login_seq++;
+    q = put_str(name, "verify-");
+    q = put_dec(q, login_seq);
+    put_str(q, ".req");
+    if (!ctl_write(name, req, (u32)len)) {
+        set_fstring(error, "Server error (ticket)");
+        return;
+    }
+    put_str(q, ".ans");
+    for (waited = 0; waited < 8000; waited += 20) {
+        if (ctl_read(name, ans, sizeof(ans)) > 0) {
+            if (ans[0] == 'o' && ans[1] == 'k') {
+                last_verified = login_seq;
+                return;
+            }
+            set_fstring(error, "Match ticket refused");
+            return;
+        }
+        (*(sleep_fn *)(image_base() + IAT_SLEEP))(20);
+    }
+    set_fstring(error, "Match ticket not checked in time");
+}
+
+/* Which verify request each joined connection passed with. Reached through
+ * a pointer: indexing a static array directly makes the compiler address it
+ * from __ImageBase, which this position-independent blob doesn't have. */
+#define MAX_JOINS          64
+struct join_table { void *conn[MAX_JOINS]; void *ps[MAX_JOINS]; i32 seq[MAX_JOINS]; u32 died[MAX_JOINS]; i32 n; u32 start; };
+static struct join_table join_store;
+__declspec(noinline) static struct join_table *join_table(void) { return &join_store; }
+
 static void *find_game_net_driver(void *engine, void *world)
 {
     u8 *wc = (u8 *)FN(R_GET_WORLDCTX, get_worldctx_fn)(engine, world);
@@ -270,6 +439,8 @@ u8 np_listen(void *world, void *url)
         init = FN(R_IP_INITLISTEN, init_listen_fn);
     }
     u8 ok = init(driver, (u8 *)world + O_WORLD_NOTIFY, url, 0, &error);
+    if (ok && ctl_on())
+        ctl_write("listening", "1", 1);
     if (trace_begin(&l, "listen-init")) {
         kv(&l, "ok", ok, 0);
         kv(&l, "steam_lan", steam, 0);
@@ -380,6 +551,16 @@ static i32 prematch_expected(void)
 void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
 {
     struct line l;
+    if (ctl_on()) {
+        ticket_check((struct fstring *)options, (struct fstring *)error);
+        if (((struct fstring *)error)->num) {
+            if (trace_begin(&l, "prelogin-refused")) {
+                kv(&l, "request", (u64)login_seq, 0);
+                trace_end(&l);
+            }
+            return;
+        }
+    }
     if (prematch_expected() > 0)
         FN(R_GAME_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
     else
@@ -387,6 +568,7 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
     if (trace_begin(&l, "prelogin")) {
         kv(&l, "error_len", (u64)((struct fstring *)error)->num, 0);
         kv(&l, "game_checks", prematch_expected() > 0, 0);
+        kv(&l, "ticket_request", (u64)last_verified, 0);
         trace_end(&l);
     }
 }
@@ -403,7 +585,14 @@ void np_notify_control(void *notify, void *conn, u8 type, void *bunch)
             kv(&l, "match_over", match_over(notify), 0);
         trace_end(&l);
     }
+    if (server && type == 5)
+        last_verified = 0;
     FN(R_NOTIFY_CONTROL, notify_control_fn)(notify, conn, type, bunch);
+    if (server && type == 5 && conn && last_verified && join_table()->n < MAX_JOINS) {
+        struct join_table *t = join_table();
+        t->conn[t->n] = conn;
+        t->seq[t->n++] = last_verified;
+    }
     if (trace_begin(&l, "control-done")) {
         kv(&l, "type", type, 0);
         kv(&l, "state", conn ? (u64)F(conn, O_CONN_STATE, i32) : 0, 0);
@@ -1206,6 +1395,124 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
     }
 }
 
+
+/* The match result for the agent (CULLING_NETPLAY_CONTROL), written once
+ * when the match reaches WaitingPostMatch: per joined player (by the verify
+ * request it passed with) its record's death order and placement, kills,
+ * damage and time alive. Placement = records + 1 - death order (the winner's
+ * order is the record count, the first to die 1). The player state is kept
+ * from the first tick after the join, so a player who left still counts. */
+#define REC_WINNER         0x29        /* bIsWinner (DetermineMatchWinner sets it; byte after bIsAlive) */
+static i32 result_done;
+#define SB_PLAYER_ID       0x10        /* FString */
+#define SB_DAMAGE          0x68        /* DamageDealt (int32: 100 after taking a player from 100 to 0, in game) */
+
+static u8 *scoreboard_entry(u8 *world, u8 *rec)
+{
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 *sb = gs ? F(gs, O_GS_SCOREBOARD, u8 *) : 0;
+    i32 i, k, num = gs ? F(gs, O_GS_SCOREBOARD + 8, i32) : 0, len = F(rec, 8, i32);
+    u16 *id = F(rec, 0, u16 *);
+    for (i = 0; sb && id && len > 1 && i < num; i++) {
+        u8 *e = sb + (u64)i * SB_SIZE;
+        u16 *eid = F(e, SB_PLAYER_ID, u16 *);
+        if (!eid || F(e, SB_PLAYER_ID + 8, i32) != len)
+            continue;
+        for (k = 0; k < len && eid[k] == id[k]; k++)
+            ;
+        if (k == len)
+            return e;
+    }
+    return 0;
+}
+
+static void ctl_track_joins(u8 *driver, u8 *world)
+{
+    struct join_table *t = join_table();
+    u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
+    i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), i, c;
+    u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+    /* Time alive is measured here: the record's own MinutesAlive (+0x44) is
+     * still 0 at the end of the match (in game). Damage comes from the
+     * scoreboard entry, whose DamageDealt is kept up during the match. */
+    if (!t->start && match_state(world) == 2)
+        t->start = now;
+    for (i = 0; i < t->n; i++) {
+        u8 *r = t->ps[i] ? record_of(world, (u8 *)t->ps[i]) : 0;
+        if (t->start && !t->died[i] && r && !F(r, REC_ALIVE, u8))
+            t->died[i] = now;
+    }
+    for (i = 0; i < t->n; i++) {
+        if (t->ps[i])
+            continue;
+        for (c = 0; conns && c < nconn; c++)
+            if (conns[c] == t->conn[i]) {
+                u8 *pc = F(conns[c], O_CONN_PC, u8 *);
+                t->ps[i] = pc ? F(pc, O_C_PLAYERSTATE, u8 *) : 0;
+            }
+    }
+}
+
+static void ctl_result(u8 *driver, u8 *world)
+{
+    struct join_table *t;
+    u8 *gs, *r;
+    char buf[3200], *q;
+    i32 i, num, order, placement;
+    struct line l;
+    if (!ctl_on())
+        return;
+    ctl_track_joins(driver, world);
+    if (result_done || match_state(world) != 3)
+        return;
+    result_done = 1;
+    t = join_table();
+    gs = F(world, O_W_GAMESTATE, u8 *);
+    num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0;
+    q = put_str(buf, "field=");
+    q = put_dec(q, num);
+    q = put_str(q, "\nelapsed=");
+    q = put_dec(q, gs ? F(gs, O_GS_ELAPSED, i32) : 0);
+    q = put_str(q, "\n");
+    for (i = 0; i < t->n && q - buf < (i32)sizeof(buf) - 200; i++) {
+        r = t->ps[i] ? record_of(world, (u8 *)t->ps[i]) : 0;
+        q = put_str(q, "player n=");
+        q = put_dec(q, t->seq[i]);
+        if (!r) {
+            q = put_str(q, " record=0\n");
+            continue;
+        }
+        order = F(r, REC_DEATH_ORDER, i32);
+        placement = order <= 0 || order > num ? 1 : num + 1 - order;
+        q = put_str(q, " placement=");
+        q = put_dec(q, placement);
+        q = put_str(q, " order=");
+        q = put_dec(q, order);
+        q = put_str(q, " kills=");
+        q = put_dec(q, F(r, REC_VICTIMS + 8, i32) + F(r, REC_BOT_VICTIMS, i32));
+        {
+            u8 *sb = scoreboard_entry(world, r);
+            u32 end = t->died[i] ? t->died[i] : (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+            q = put_str(q, " damage=");
+            q = put_dec(q, sb ? F(sb, SB_DAMAGE, i32) : 0);
+            q = put_str(q, " alive_s=");
+            q = put_dec(q, t->start ? (i32)((end - t->start) / 1000) : 0);
+        }
+        q = put_str(q, " winner=");
+        q = put_dec(q, F(r, REC_WINNER, u8));
+        q = put_str(q, " alive=");
+        q = put_dec(q, F(r, REC_ALIVE, u8));
+        q = put_str(q, "\n");
+    }
+    ctl_write("result.txt", buf, (u32)(q - buf));
+    ctl_write("result.done", "1", 1);
+    if (trace_begin(&l, "result-written")) {
+        kv(&l, "players", (u64)t->n, 0);
+        kv(&l, "bytes", (u64)(q - buf), 0);
+        trace_end(&l);
+    }
+}
+
 static u32 watch_next;
 
 static void host_watch(u8 *world, u8 **conns, i32 nconn, u32 now)
@@ -1707,6 +2014,8 @@ void np_tick_flush(void *driver, float dt)
         else if (gm && end_phase == 2 && F(gm, O_GM_NO_END, u8))
             F(gm, O_GM_NO_END, u8) = 0;             /* released once (CULLING_NETPLAY_END) */
         server_replicate((u8 *)driver);
+        if (world)
+            ctl_result((u8 *)driver, world);
     } else if (driver && F(driver, O_ND_SERVERCONN, void *)) {
         client_move((u8 *)driver);
         client_attack((u8 *)driver);

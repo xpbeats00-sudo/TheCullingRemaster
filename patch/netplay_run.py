@@ -148,10 +148,13 @@ def udp_owners(port):
     return pids, lines
 
 
+CLIENT_DLL = None    # None: the test copy's Func.Client.Local.dll; --backend-repo: a copy pointed at the local backend
+
+
 def launch(join, trace, flog):
     env = dict(os.environ, FUNC_CLIENT_DISABLE_PAK_MOUNT="1", CULLING_NETPLAY_TRACE=trace)
     return subprocess.Popen([os.path.join(WIN64, "Func.Launcher.exe"), "-FuncSkipUpdateCheck",
-                             "-FuncClientDll=" + os.path.join(WIN64, "Func.Client.Local.dll"),
+                             "-FuncClientDll=" + (CLIENT_DLL or os.path.join(WIN64, "Func.Client.Local.dll")),
                              "-FuncClientLog=" + flog, "-FuncJoin=" + join], cwd=WIN64, env=env)
 
 
@@ -173,6 +176,98 @@ def read(path):
         return ""
 
 
+# ---- --backend-repo: the whole shared-match chain, locally ------------------
+#
+# The backend (branch shared-match-backend, shared matches on, one pool server
+# gs1@127.0.0.1:7777), the game-server agent (gameserver/agent.js) next to the
+# host, and two test players (gameserver/test_players.js) who queue Solo
+# together. The backend sends the match to gs1 (the agent writes
+# assignment.json); the host starts with CULLING_NETPLAY_PREMATCH=<players>
+# and CULLING_NETPLAY_CONTROL=<control>; once it listens the agent posts
+# ready, the players get match-ready with their tickets, and the two game
+# clients join 127.0.0.1:7777?servernonce=<ticket>. Every game uses a copy of
+# the Func client DLL pointed at the local backend, never the live server.
+
+GAMESERVER = os.path.join(os.path.dirname(HERE), "gameserver")
+
+
+def start_chain(a):
+    sys.path.insert(0, GAMESERVER)
+    import local_backend as LB
+    import patch_client_dll as PCD
+    global CLIENT_DLL
+    ctl = os.path.join(a.out, "control")
+    shutil.rmtree(ctl, ignore_errors=True)
+    os.makedirs(ctl)
+    for f in ("tickets.json", "finished.json"):
+        if os.path.exists(os.path.join(a.out, f)):
+            os.remove(os.path.join(a.out, f))
+    url = "http://127.0.0.1:%d/api" % a.backend_port
+    CLIENT_DLL = os.path.join(a.out, "Func.Client.Test.dll")
+    PCD.main(os.path.join(WIN64, "Func.Client.dll"), CLIENT_DLL, url)
+    procs = []
+    be = LB.start(a.backend_repo, os.path.join(a.out, "backend-data"), a.backend_port, PORT, os.path.join(a.out, "backend.log"))
+    procs.append(be)
+    agent = subprocess.Popen(["node", os.path.join(GAMESERVER, "agent.js"), "--backend", url[:-4], "--id", LB.SERVER_ID,
+                              "--secret", LB.secret(), "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
+                              "--log", os.path.join(a.out, "agent.log")],
+                             stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb"))
+    procs.append(agent)
+    time.sleep(2)
+    players = subprocess.Popen(["node", os.path.join(GAMESERVER, "test_players.js"), "--backend", url[:-4],
+                                "--server-dir", os.path.join(a.backend_repo, "server"), "--out", a.out, "--count", str(a.clients)],
+                               stdout=open(os.path.join(a.out, "players.log"), "wb"), stderr=subprocess.STDOUT)
+    procs.append(players)
+    t0 = time.time()
+    while not os.path.exists(os.path.join(ctl, "assignment.json")):
+        if time.time() - t0 > 90:
+            raise RuntimeError("no assignment from the backend in 90 s (see agent.log, players.log)")
+        time.sleep(0.5)
+    assignment = json.load(open(os.path.join(ctl, "assignment.json")))
+    log("assignment", assignment["matchId"], "players", assignment["players"], "bots", assignment["bots"])
+    os.environ["CULLING_NETPLAY_PREMATCH"] = str(assignment["players"])
+    os.environ["CULLING_NETPLAY_CONTROL"] = ctl
+    return {"procs": procs, "players": players, "ctl": ctl, "assignment": assignment, "tickets": None, "bad": a.bad_ticket}
+
+
+def join_url(chain, i):
+    if not chain:
+        return "127.0.0.1:%d" % PORT
+    if chain["tickets"] is None:
+        t0 = time.time()
+        path = os.path.join(os.path.dirname(chain["ctl"]), "tickets.json")
+        while not os.path.exists(path):
+            if time.time() - t0 > 120:
+                raise RuntimeError("no match-ready for the test players in 120 s")
+            time.sleep(0.5)
+        time.sleep(0.5)
+        chain["tickets"] = json.load(open(path))
+        log("tickets", [(t["name"], t["gameServer"], t["netplay"]) for t in chain["tickets"]])
+    t = chain["tickets"][i]
+    nonce = t["serverNonce"]
+    if chain["bad"] and i == 1:
+        nonce = nonce[:-4] + ("AAAA" if not nonce.endswith("AAAA") else "BBBB")
+        log("tampered with the second client's ticket")
+    return "%s?servernonce=%s" % (t["gameServer"], nonce)
+
+
+def finish_chain(a, chain, result):
+    # Give the result time to reach the players (posted at WaitingPostMatch).
+    t0 = time.time()
+    while chain["players"].poll() is None and time.time() - t0 < 20:
+        time.sleep(1)
+    for name in ("assignment.json", "result.txt", "result.posted"):
+        src = os.path.join(chain["ctl"], name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(a.out, name))
+    finished = os.path.join(a.out, "finished.json")
+    result["chain"] = {"assignment": chain["assignment"]["matchId"],
+                       "verify": [l for l in read(os.path.join(a.out, "agent.log")).splitlines() if '"verify"' in l],
+                       "finished": json.load(open(finished)) if os.path.exists(finished) else None}
+    os.environ.pop("CULLING_NETPLAY_PREMATCH", None)
+    os.environ.pop("CULLING_NETPLAY_CONTROL", None)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(os.environ.get("TEMP", "."), "culling-netplay-run"))
@@ -182,9 +277,16 @@ def main():
     ap.add_argument("--after-join", type=int, default=45)
     ap.add_argument("--clients", type=int, default=1, choices=(1, 2))
     ap.add_argument("--shots", type=int, default=0, help="a desktop screenshot every N seconds after the joins")
+    ap.add_argument("--backend-repo", help="a checkout of branch shared-match-backend: run the whole shared-match chain"
+                    " locally (backend, game-server agent, two test players queueing; the clients join with their tickets)")
+    ap.add_argument("--backend-port", type=int, default=8123)
+    ap.add_argument("--bad-ticket", action="store_true", help="with --backend-repo: the second client's ticket is tampered with"
+                    " (its signature changed), so the host must refuse it at login")
     ap.add_argument("--distinct-ids", action="store_true", help="give each game its own test Steam ID and name")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    if a.backend_repo:
+        a.distinct_ids = True             # one PC: the host's records are found by Steam ID
     result = {"steps": {}, "evidence": {}}
 
     if victories():
@@ -204,6 +306,8 @@ def main():
     if not os.path.exists(keep):
         shutil.copy2(dst, keep)
     started = []
+    started_procs = []
+    chain = None
     settings_bytes = open(SETTINGS, "rb").read() if os.path.exists(SETTINGS) else None
     ids_bytes = read_ids() if a.distinct_ids else None
     log_mark = set(os.listdir(LOGS)) if os.path.isdir(LOGS) else set()
@@ -216,6 +320,9 @@ def main():
             if os.path.exists(f):
                 os.remove(f)
 
+        if a.backend_repo:
+            chain = start_chain(a)
+            started_procs.extend(chain["procs"])
         set_window(settings_bytes, 0)
         if ids_bytes is not None:
             write_ids("host")
@@ -249,7 +356,7 @@ def main():
             set_window(settings_bytes, 970)
             if ids_bytes is not None:
                 write_ids("client")
-            client_l = launch("127.0.0.1:%d" % PORT, client_trace, os.path.join(a.out, "client.func.log"))
+            client_l = launch(join_url(chain, 0), client_trace, os.path.join(a.out, "client.func.log"))
             client = None
             t0 = time.time()
             while time.time() - t0 < 90 and not client:
@@ -270,7 +377,7 @@ def main():
                     set_window(settings_bytes, 485)
                     if ids_bytes is not None:
                         write_ids("client2")
-                    client2_l = launch("127.0.0.1:%d" % PORT, client2_trace, os.path.join(a.out, "client2.func.log"))
+                    client2_l = launch(join_url(chain, 1), client2_trace, os.path.join(a.out, "client2.func.log"))
                     t2 = time.time()
                     while time.time() - t2 < 90 and not client2:
                         client2 = next((p for p, parent in victories().items() if parent == client2_l.pid), None)
@@ -313,6 +420,11 @@ def main():
         else:
             result["steps"]["M2 client"] = "NOT TESTED (the host didn't listen)" if not a.no_client else "NOT TESTED (--no-client)"
     finally:
+        if chain:
+            finish_chain(a, chain, result)
+        for pr in started_procs:
+            if pr.poll() is None:
+                pr.kill()
         for p in started:
             kill(p)
         time.sleep(5)
