@@ -152,10 +152,11 @@ CLIENT_DLL = None    # None: the test copy's Func.Client.Local.dll; --backend-re
 
 
 def launch(join, trace, flog):
+    """join None: the game starts at its menu, as PLAY does."""
     env = dict(os.environ, FUNC_CLIENT_DISABLE_PAK_MOUNT="1", CULLING_NETPLAY_TRACE=trace)
     return subprocess.Popen([os.path.join(WIN64, "Func.Launcher.exe"), "-FuncSkipUpdateCheck",
                              "-FuncClientDll=" + (CLIENT_DLL or os.path.join(WIN64, "Func.Client.Local.dll")),
-                             "-FuncClientLog=" + flog, "-FuncJoin=" + join], cwd=WIN64, env=env)
+                             "-FuncClientLog=" + flog] + (["-FuncJoin=" + join] if join else []), cwd=WIN64, env=env)
 
 
 def wait_game(launcher, timeout):
@@ -244,11 +245,11 @@ def join_url(chain, i):
         chain["tickets"] = json.load(open(path))
         log("tickets", [(t["name"], t["gameServer"], t["netplay"]) for t in chain["tickets"]])
     t = chain["tickets"][i]
-    nonce = t["serverNonce"]
+    nonce = t["nonce"]
     if chain["bad"] and i == 1:
         nonce = nonce[:-4] + ("AAAA" if not nonce.endswith("AAAA") else "BBBB")
         log("tampered with the second client's ticket")
-    return "%s?servernonce=%s" % (t["gameServer"], nonce)
+    return "%s?Nonce=%s" % (t["gameServer"], nonce)       # what the stock ConnectToServer opens
 
 
 def finish_chain(a, chain, result):
@@ -268,6 +269,234 @@ def finish_chain(a, chain, result):
     os.environ.pop("CULLING_NETPLAY_CONTROL", None)
 
 
+# ---- --menu: the real menu joins ---------------------------------------------
+#
+# The clients start at their menus (no -FuncJoin). The Remaster menu talks to
+# the server in js/RemasterServer.js (REMASTER_API, CustomMatchSettings.js's
+# GetClientwebRootURL), so a one-file override pak (removed after) points the
+# test games' menus at the local backend. Once both menus are logged in, the
+# backend's test hook (CULLING_TEST_HOOKS=1, POST /api/test/join-mm) queues
+# them as PLAY -> Solo would. The backend sends the match to gs1; the host
+# starts with ?servernonce=<the assignment's serverNonce>; on ready each menu
+# gets match-ready and its own ClientWeb.js calls ConnectToServer(gameServer,
+# nonce, serverNonce): the game opens "<server>?Nonce=<ticket>" and keeps the
+# server nonce, which the host's ClientCheckServerNonce must match.
+
+OVERRIDE_PAK = "zz_NetplayTest-WindowsClient_P.pak"   # mounts after the Remaster pak (name order), and the later one wins
+
+
+def http_json(method, url, body=None):
+    import urllib.request
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+def make_override_pak(a, api):
+    """RemasterServer.js pointed at api, plus the installed FrontEnd.html with
+    that script added (make_server_config.add_scripts): a local build's page
+    may not load it, and the menu then falls back to 127.0.0.1:8000."""
+    import make_pak as MP
+    import make_server_config as MSC
+    import pak_read as PR
+    src = os.path.join(a.out, "override-src")
+    shutil.rmtree(src, ignore_errors=True)
+    for folder in ("FrontEnd", "hud"):
+        d = os.path.join(src, "Victory", "Content", "uiresources", folder, "js")
+        os.makedirs(d)
+        with open(os.path.join(d, "RemasterServer.js"), "w", encoding="utf-8", newline="\n") as f:
+            f.write('// netplay_run.py --menu: the local test backend.\nvar REMASTER_API = "%s";\n' % api)
+    page = "Victory/Content/uiresources/FrontEnd/FrontEnd.html"
+    for name in sorted(os.listdir(os.path.join(GAME, "Victory", "Content", "Paks"))):
+        if not name.endswith("_P.pak") or name == OVERRIDE_PAK:
+            continue
+        f, mount, entries = PR.index(os.path.join(GAME, "Victory", "Content", "Paks", name))
+        hit = [e for e in entries if e[0] == page]
+        if hit:
+            html = PR.extract(f, hit[0]).decode("utf-8")
+            with open(os.path.join(src, *page.split("/")), "w", encoding="utf-8", newline="") as w:
+                w.write(MSC.add_scripts(html, "FrontEnd"))
+            log("override: FrontEnd.html from", name, "with RemasterServer.js")
+            break
+    out = os.path.join(a.out, OVERRIDE_PAK)
+    MP.main(src, out)
+    return out
+
+
+def menu_chain(a):
+    sys.path.insert(0, GAMESERVER)
+    import local_backend as LB
+    import patch_client_dll as PCD
+    global CLIENT_DLL
+    result = {"steps": {}, "evidence": {}}
+    if victories():
+        log("a Victory.exe is running (not started here): waiting for it to close")
+        while victories():
+            time.sleep(10)
+    ctl = os.path.join(a.out, "control")
+    shutil.rmtree(ctl, ignore_errors=True)
+    os.makedirs(ctl)
+    base = "http://127.0.0.1:%d" % a.backend_port
+    CLIENT_DLL = os.path.join(a.out, "Func.Client.Test.dll")
+    PCD.main(os.path.join(WIN64, "Func.Client.dll"), CLIENT_DLL, base + "/api")
+    pak = make_override_pak(a, base + "/api")
+    paks = os.path.join(GAME, "Victory", "Content", "Paks")
+    host_exe = os.path.join(a.out, "Victory.netplay.exe")
+    shutil.copyfile(STOCK_EXE, host_exe)
+    PN.patch(host_exe)
+    dst = os.path.join(WIN64, "Victory.exe")
+    keep = os.path.join(a.out, "Victory.exe.backup")
+    if not os.path.exists(keep):
+        shutil.copy2(dst, keep)
+    settings_bytes = open(SETTINGS, "rb").read() if os.path.exists(SETTINGS) else None
+    ids_bytes = read_ids()
+    save_originals(a.out, settings_bytes, ids_bytes)
+    procs, started = [], []
+    traces = {w: os.path.join(a.out, w + ".trace") for w in ("host", "client", "client2")}
+    for f in traces.values():
+        if os.path.exists(f):
+            os.remove(f)
+    try:
+        shutil.copyfile(host_exe, dst)
+        shutil.copyfile(pak, os.path.join(paks, OVERRIDE_PAK))
+        log("installed the host exe and", OVERRIDE_PAK, "into the test copy")
+        os.environ["CULLING_TEST_HOOKS"] = "1"
+        procs.append(LB.start(a.backend_repo, os.path.join(a.out, "backend-data"), a.backend_port, PORT, os.path.join(a.out, "backend.log")))
+        os.environ.pop("CULLING_TEST_HOOKS", None)
+        procs.append(subprocess.Popen(["node", os.path.join(GAMESERVER, "agent.js"), "--backend", base, "--id", LB.SERVER_ID,
+                                       "--secret", LB.secret(), "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
+                                       "--log", os.path.join(a.out, "agent.log")],
+                                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
+        # 1. The two clients, at their menus, each with its own test ID.
+        users = []
+        for who, x in (("client", 970), ("client2", 485)):
+            set_window(settings_bytes, x)
+            write_ids(who)
+            users.append("steam:" + TEST_IDS[who][0])
+            l = launch(None, traces[who], os.path.join(a.out, who + ".func.log"))
+            pid = wait_game(l, 90)
+            started += [pid] if pid else []
+            log(who, "Victory.exe pid", pid, "at its menu as", users[-1])
+            time.sleep(20)                 # let it read its ID before the next game overwrites it
+        # 2. Both menus logged in to the local backend.
+        t0 = time.time()
+        while time.time() - t0 < 180:
+            st, h = http_json("GET", base + "/health")
+            if h.get("users", 0) >= 2:
+                break
+            time.sleep(3)
+        result["steps"]["menus logged in"] = "PASS: %s users" % h.get("users") if h.get("users", 0) >= 2 else "FAIL: %s" % h
+        log(result["steps"])
+        if h.get("users", 0) < 2:
+            return result
+        # 3. Queue them (the PLAY -> Solo a player would press).
+        for u in users:
+            st, r = http_json("POST", base + "/api/test/join-mm", {"userID": u, "queueName": "ffa_jungle"})
+            log("queued", u, st, r)
+        t0 = time.time()
+        while not os.path.exists(os.path.join(ctl, "assignment.json")):
+            if time.time() - t0 > 60:
+                raise RuntimeError("no assignment in 60 s (see backend.log, agent.log)")
+            time.sleep(0.5)
+        time.sleep(0.3)
+        asg = json.load(open(os.path.join(ctl, "assignment.json")))
+        log("assignment", asg["matchId"], "players", asg["players"], "roster", [p["userID"] for t in asg["teams"] for p in t["players"]])
+        # 4. The host, from the assignment.
+        os.environ["CULLING_NETPLAY_PREMATCH"] = str(asg["players"])
+        os.environ["CULLING_NETPLAY_CONTROL"] = ctl
+        set_window(settings_bytes, 0)
+        write_ids("host")
+        hl = launch(HOST_URL + "?servernonce=" + asg["serverNonce"], traces["host"], os.path.join(a.out, "host.func.log"))
+        host = wait_game(hl, 90)
+        started += [host] if host else []
+        log("host Victory.exe pid", host)
+        # 5. Wait for both menus to join, then for the match to run.
+        t0 = time.time()
+        joins = 0
+        while time.time() - t0 < 240:
+            joins = len(re.findall(r"control server=1 type=9 ", read(traces["host"])))
+            if joins >= 2:
+                break
+            time.sleep(3)
+        result["steps"]["both menus joined the host"] = "PASS" if joins >= 2 else "FAIL: %d joined" % joins
+        log(result["steps"])
+        if joins >= 2:
+            time.sleep(a.after_join)
+        t0 = time.time()
+        while not os.path.exists(os.path.join(ctl, "result.posted")) and time.time() - t0 < 20:
+            time.sleep(1)
+        result["alive_at_end"] = {"host": host in victories(), "clients": [p in victories() for p in started[:2]]}
+    finally:
+        for p in started:
+            kill(p)
+        time.sleep(5)
+        for pr in procs:
+            if pr.poll() is None:
+                pr.kill()
+        shutil.copy2(keep, dst)
+        try:
+            os.remove(os.path.join(paks, OVERRIDE_PAK))
+        except OSError:
+            pass
+        if settings_bytes is not None:
+            open(SETTINGS, "wb").write(settings_bytes)
+        restore_ids(ids_bytes)
+        os.environ.pop("CULLING_NETPLAY_PREMATCH", None)
+        os.environ.pop("CULLING_NETPLAY_CONTROL", None)
+        log("restored the test copy's Victory.exe, GameUserSettings.ini and Steam ID files; removed", OVERRIDE_PAK)
+        for name in ("assignment.json", "result.txt", "result.posted"):
+            if os.path.exists(os.path.join(ctl, name)):
+                shutil.copy2(os.path.join(ctl, name), os.path.join(a.out, name))
+        result["agent"] = read(os.path.join(a.out, "agent.log")).splitlines()[-30:]
+        json.dump(result, open(os.path.join(a.out, "netplay_run.json"), "w"), indent=1)
+        log("wrote", os.path.join(a.out, "netplay_run.json"))
+    return result
+
+
+# ---- originals on disk, for an interrupted run -------------------------------
+#
+# Every file a run changes in the test copy is saved to <out>/originals first
+# (only if not saved already, so a rerun into the same folder keeps the true
+# originals). `netplay_run.py --restore <out>` puts them back and removes the
+# override pak, when a run was killed before its own cleanup.
+
+def save_originals(out, settings_bytes, ids_bytes):
+    d = os.path.join(out, "originals")
+    os.makedirs(d, exist_ok=True)
+    plan = {"GameUserSettings.ini": settings_bytes}
+    for name, data in (ids_bytes or {}).items():
+        plan[name] = data
+    for name, data in plan.items():
+        path = os.path.join(d, name)
+        if data is not None and not os.path.exists(path):
+            open(path, "wb").write(data)
+
+
+def restore_from(out):
+    d = os.path.join(out, "originals")
+    done = []
+    exe = os.path.join(out, "Victory.exe.backup")
+    if os.path.exists(exe):
+        shutil.copy2(exe, os.path.join(WIN64, "Victory.exe"))
+        done.append("Victory.exe")
+    if os.path.exists(os.path.join(d, "GameUserSettings.ini")):
+        shutil.copyfile(os.path.join(d, "GameUserSettings.ini"), SETTINGS)
+        done.append("GameUserSettings.ini")
+    for name in ID_FILES:
+        if os.path.exists(os.path.join(d, name)):
+            shutil.copyfile(os.path.join(d, name), os.path.join(STEAM_SETTINGS, name))
+            done.append(name)
+    pak = os.path.join(GAME, "Victory", "Content", "Paks", OVERRIDE_PAK)
+    if os.path.exists(pak):
+        os.remove(pak)
+        done.append("removed " + OVERRIDE_PAK)
+    log("restored from", out + ":", ", ".join(done) or "nothing to restore")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(os.environ.get("TEMP", "."), "culling-netplay-run"))
@@ -280,11 +509,18 @@ def main():
     ap.add_argument("--backend-repo", help="a checkout of branch shared-match-backend: run the whole shared-match chain"
                     " locally (backend, game-server agent, two test players queueing; the clients join with their tickets)")
     ap.add_argument("--backend-port", type=int, default=8123)
+    ap.add_argument("--restore", metavar="OUT", help="put back what an interrupted run into OUT changed, and exit")
+    ap.add_argument("--menu", action="store_true", help="with --backend-repo: the clients start at their menus, are queued"
+                    " through the backend's test hook, and join by the menu's own match-ready handling (ConnectToServer)")
     ap.add_argument("--bad-ticket", action="store_true", help="with --backend-repo: the second client's ticket is tampered with"
                     " (its signature changed), so the host must refuse it at login")
     ap.add_argument("--distinct-ids", action="store_true", help="give each game its own test Steam ID and name")
     a = ap.parse_args()
+    if a.restore:
+        return restore_from(a.restore)
     os.makedirs(a.out, exist_ok=True)
+    if a.menu:
+        return menu_chain(a)
     if a.backend_repo:
         a.distinct_ids = True             # one PC: the host's records are found by Steam ID
     result = {"steps": {}, "evidence": {}}
@@ -310,6 +546,7 @@ def main():
     chain = None
     settings_bytes = open(SETTINGS, "rb").read() if os.path.exists(SETTINGS) else None
     ids_bytes = read_ids() if a.distinct_ids else None
+    save_originals(a.out, settings_bytes, ids_bytes)
     log_mark = set(os.listdir(LOGS)) if os.path.isdir(LOGS) else set()
     try:
         shutil.copyfile(host_exe, dst)

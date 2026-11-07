@@ -64,23 +64,34 @@ Players who join after the pods opened stand in pods that never open; in a real 
 
   The host and the agent talk through files in a control folder (`CULLING_NETPLAY_CONTROL`):
   - `listening`: the host is up, so the agent posts ready;
-  - `verify-<n>.req/.ans`: the host's PreLogin reads `?servernonce=` from the login options, the agent asks the backend, and the host refuses on a "deny" (up to 8 s);
+  - `verify-<n>.req/.ans`: the host's PreLogin reads the ticket from `?Nonce=` in the login options, the agent asks the backend, and the host refuses on a "deny" (up to 8 s);
   - `result.txt`: written at WaitingPostMatch, then posted by the agent.
 
   Every game uses a copy of the Func client DLL pointed at the local backend, never the live server. `netplay_run.py --backend-repo <checkout>` runs it all. In game:
   - **allocation:** the backend sent the match to gs1 (2 players, 14 bots); the host started with the pre-match phase for 2 players;
   - **readiness:** once it listened, the agent posted ready and both test players got match-ready (`127.0.0.1:7777`, netplay, their tickets);
-  - **joining:** the two game clients joined `127.0.0.1:7777?servernonce=<ticket>`. Each ticket was checked by the backend at PreLogin (team 1, team 2), and the host waited for both, then started;
+  - **joining:** the two game clients joined `127.0.0.1:7777?Nonce=<ticket>`. Each ticket was checked by the backend at PreLogin (team 1, team 2), and the host waited for both, then started;
   - **the match:** Player One beat Player Two, the host cleared the rest, and the match ended;
   - **the result:** placement 1 with 1 kill, 100 damage and 33 s alive; placement 16 with 26 s alive. The backend paid it: 2,016 XP, 531 credits and a victory for Player One; 263 XP for Player Two. The players' `remaster-shared-match finished` messages carried it;
   - **a forged ticket** (`--bad-ticket`): the backend answered `bad-signature` and the host refused that login. The other player was in and every game stayed up.
 
   From the host's records: placement = records + 1 - death order. Damage is the scoreboard entry's DamageDealt (+0x68, an int32). Time alive is measured by the host from the start to the death, because the record's own MinutesAlive (+0x44) is still 0 at the end.
 
+  **The real menus join** (2026-11-06, twice). Read from the exe first: the stock `ConnectToServer(gameServer, nonce, serverNonce)` (0x1401dce90) runs `open <gameServer>?Nonce=<nonce>` and keeps `serverNonce` in the game singleton. The server, started with `?servernonce=`, sends its own in `ClientCheckServerNonce` (PC vtable +0xe38, 0x140283570), and a client whose stored one differs disconnects with `ServerNonceFailed`. So the backend (branch `shared-match-backend`, 70cc7dc) now sends the ticket as `nonce` and a per-match server nonce as `serverNonce`, also in the assignment for the host's URL. The host reads `?Nonce=`.
+
+  `netplay_run.py --menu` starts both clients at their menus (no `-FuncJoin`). The Remaster menu talks to the server in `js/RemasterServer.js` (`CustomMatchSettings.js` replaces `GetClientwebRootURL`), and this test copy's page doesn't load it, so the menu falls back to `127.0.0.1:8000`. A one-file override pak (`zz_…_P.pak`: `RemasterServer.js` plus the installed `FrontEnd.html` with the script tag) points the test menus at the local backend, and is removed after. The backend's test hook queues both menus as PLAY would. In game:
+  - both menus logged in, were queued and allocated;
+  - the host started with `?servernonce=<the match's>`;
+  - each menu got match-ready and joined through its own `ConnectToServer`, and its ticket from `?Nonce=` was checked by the backend (team 1, team 2);
+  - the server-nonce check passed (both stayed connected);
+  - the match was played and ended, and the result was paid (player 2 won: 1 kill, 99 damage, 2,021 XP; player 1: 326 XP).
+
+  The same again in a second run. The runner saves every file it changes in the test copy to `<out>/originals` first; `--restore <out>` puts them back after an interrupted run.
+
   `gameserver/test_agent.py` checks the agent against the real backend with the host played by files, no game needed: both tickets pass, a replayed one is `used`, a forged one `bad-signature`, the result is paid, and the agent goes idle.
 
   **Not done:**
-  - the real menu: the stock menu's `match-ready` handling (`ConnectToServer` with the ticket) isn't used yet; the test players stand in for it and the clients are launched with their tickets;
+  - clicking Play in the menu: the test queues the menus through the backend's test hook;
   - teams beyond Solo (Duos and up) were only checked in the agent's code, not in game;
   - the host is started by the test runner. A real game server starts it from the assignment (milestone 7);
   - the pair teleport and eliminations are still test switches. |
@@ -130,7 +141,7 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket.
+Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.

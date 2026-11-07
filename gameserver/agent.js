@@ -8,7 +8,7 @@
 //     starts the host game (patch/netplay_run.py in the test);
 //   - posts `ready` once the host game writes <control>/listening;
 //   - answers the host's PreLogin: <control>/verify-<n>.req holds a player's
-//     ticket (?servernonce=); the agent asks `verify-ticket` and writes
+//     ticket (?Nonce=, as the stock client sends it); the agent asks `verify-ticket` and writes
 //     verify-<n>.ans: "ok <team> <userID>" or "deny <reason>";
 //   - posts the one `result` once the host writes <control>/result.done
 //     (result.txt: each joined player's placement, kills, damage and time

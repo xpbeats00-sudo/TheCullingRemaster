@@ -64,10 +64,10 @@ def main():
         open(os.path.join(ctl, "listening"), "w").write("1")
         wait(os.path.join(out, "tickets.json"))
         tickets = json.load(open(os.path.join(out, "tickets.json")))
-        assert all(t["gameServer"] == "127.0.0.1:7777" and t["netplay"] and t["serverNonce"] for t in tickets), tickets
+        assert all(t["gameServer"] == "127.0.0.1:7777" and t["netplay"] and t["nonce"] for t in tickets), tickets
         print("ok    both players got match-ready for 127.0.0.1:7777 with a ticket")
-        want = [("ok 1", tickets[0]["serverNonce"]), ("ok 2", tickets[1]["serverNonce"]),
-                ("deny used", tickets[0]["serverNonce"]), ("deny bad-signature", tickets[1]["serverNonce"][:-4] + "AAAA")]
+        want = [("ok 1", tickets[0]["nonce"]), ("ok 2", tickets[1]["nonce"]),
+                ("deny used", tickets[0]["nonce"]), ("deny bad-signature", tickets[1]["nonce"][:-4] + "AAAA")]
         for n, (expect, ticket) in enumerate(want, 1):
             open(os.path.join(ctl, "verify-%d.req" % n), "w").write(ticket)
             wait(os.path.join(ctl, "verify-%d.ans" % n))

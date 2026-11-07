@@ -75,7 +75,8 @@ async function player(i) {
   log("queued", { queue, players: players.length });
   await Promise.all(readies);
   fs.writeFileSync(path.join(out, "tickets.json"), JSON.stringify(players.map((p) => ({ name: p.name, userID: p.userID,
-    gameServer: p.ready.gameServer, serverNonce: p.ready.serverNonce, matchId: p.ready.matchId, team: p.ready.team, netplay: p.ready.netplay })), null, 1));
+    gameServer: p.ready.gameServer, nonce: p.ready.nonce, serverNonce: p.ready.serverNonce, matchId: p.ready.matchId, team: p.ready.team,
+    netplay: p.ready.netplay })), null, 1));
   log("tickets-written");
   const timer = setTimeout(() => { log("timeout"); process.exit(3); }, waitMs);
   await Promise.all(finished);

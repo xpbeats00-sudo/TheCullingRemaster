@@ -206,7 +206,7 @@ struct fstring { void *data; i32 num; i32 max; };
  * (gameserver/agent.js), which speaks the backend's signed game-server API.
  * The host and the agent talk through small files there:
  *   listening            the host writes it once it listens (the agent posts ready)
- *   verify-<n>.req/.ans  PreLogin: the player's ticket (?servernonce=), the
+ *   verify-<n>.req/.ans  PreLogin: the player's ticket (?Nonce=), the
  *                        agent's answer "ok <team>" or "deny <reason>"
  *   result.txt + .done   at the end of the match: each joined player's result
  * Without the variable nothing here runs. */
@@ -315,18 +315,19 @@ static void set_fstring(struct fstring *e, const char *msg)
 static i32 login_seq;               /* verify requests made */
 static i32 last_verified;           /* the request PreLogin just passed (0 none) */
 
-/* PreLogin with the agent: the ticket from ?servernonce= in the login
- * options, checked by the backend through the agent (up to 8 s); a missing
- * ticket, a refusal or no answer refuses the login. */
+/* PreLogin with the agent: the ticket from ?Nonce= in the login options
+ * (the stock menu's ConnectToServer opens "<server>?Nonce=<nonce>", VA
+ * 0x1401dce90), checked by the backend through the agent (up to 8 s); a
+ * missing ticket, a refusal or no answer refuses the login. */
 static void ticket_check(struct fstring *options, struct fstring *error)
 {
-    const char *key = "servernonce=";
+    const char *key = "?nonce=";       /* matched case-insensitively */
     u16 *o = (u16 *)options->data;
     char name[32], req[400], ans[200], *q;
     i32 i, k, start = -1, len, n = options->num, waited;
     last_verified = 0;
     for (i = 0; o && i < n && start < 0; i++) {
-        for (k = 0; key[k] && i + k < n && o[i + k] == (u16)key[k]; k++)
+        for (k = 0; key[k] && i + k < n && (o[i + k] | (o[i + k] >= 'A' && o[i + k] <= 'Z' ? 0x20 : 0)) == (u16)key[k]; k++)
             ;
         if (!key[k])
             start = i + k;
@@ -555,7 +556,16 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
         ticket_check((struct fstring *)options, (struct fstring *)error);
         if (((struct fstring *)error)->num) {
             if (trace_begin(&l, "prelogin-refused")) {
+                /* The options as given (printable ASCII, the first 300
+                 * characters): where a client's ticket did or didn't land. */
+                struct fstring *o = (struct fstring *)options;
+                u16 *c = (u16 *)o->data;
+                i32 i;
                 kv(&l, "request", (u64)login_seq, 0);
+                kv(&l, "options_len", (u64)(o->num > 0 ? o->num : 0), 0);
+                put_s(&l, " options=");
+                for (i = 0; c && i < o->num && c[i] && i < 300 && l.n < sizeof(l.b) - 2; i++)
+                    l.b[l.n++] = c[i] >= 0x20 && c[i] < 0x7f ? (char)c[i] : '.';
                 trace_end(&l);
             }
             return;
