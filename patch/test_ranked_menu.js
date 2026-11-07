@@ -170,6 +170,17 @@ test("a double click on Play queues once (the queue answers later); the answer o
   assert.strictEqual(m.queued.length, 4);
 });
 
+test("no connection (the queue's promise rejected): says so, and Play works again", () => {
+  const m = menu(fixture);
+  m.ctx.QueueMatchmaking = (q) => { m.queued.push(q); return { then: (ok, bad) => bad() }; };
+  m.ctx.$.when = (v) => v;
+  m.click("trio");
+  m.play();
+  assert.ok(m.errors.length === 1 && /reach the server/.test(m.errors[0]), m.errors);
+  m.play();
+  assert.strictEqual(m.queued.length, 2, "not stuck on the first click");
+});
+
 test("a malformed /api/ranked answer (no tier, lists missing) neither throws nor draws garbage", () => {
   for (const bad of [null, {}, { tier: null }, { modes: { solo: { rating: 1000 } } },
     { tier: { name: "Hunter" }, rating: 1000, modes: { solo: { tier: { name: "Hunter" }, rating: 1000 } } }]) {

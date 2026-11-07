@@ -15,6 +15,9 @@
 //   is declined to the server (match-declined, with its nonce); a join that
 //   arrives after the leave was acked (join-mm-ack, remaster-lobby) leaves
 //   again, once per ack, so the pill doesn't stick on "Leaving...".
+// - a queue whose connection fails resets IsStartingMatchmaking (or every
+//   later queue was refused for good) and the TRIO/QUAD tiles (Teams.js, run
+//   here too) work again.
 // The functions are the shipped ones (the whole file is run).
 // usage: node test_clientweb.js
 "use strict";
@@ -175,6 +178,7 @@ const ctx = {
   engine, io: { connect },
   rivets: { bind: () => ({ update: noop, unbind: noop }), formatters: {}, binders: {}, adapters: {}, configure: noop },
   BaseMenuScreen: function () {}, VerticalMenuMixin: {}, HorizontalMenuMixin: {}, Screens: {},
+  PlayScreen: function () {}, hasClickButton: false,
   PushModal: function (kind, args) { modals.push(args); }, PopModal: function () { modals.pop(); },
   PopModalByID: function (id) { const i = modals.findIndex((m) => m.modalID == id); return i < 0 ? null : modals.splice(i, 1)[0]; },
   PopScreen: noop, PushScreen: noop, PopScreenToMainMenu: noop, GetActiveScreen: () => activeScreen, CheckMainMenuStartupModals: noop,
@@ -187,7 +191,9 @@ ctx.RemasterLobby = { show: (m) => lobbyShown.push(m), hide: noop, notice: noop,
 ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext("Array.prototype.containsString = function (s) { return this.indexOf(s) >= 0; };", ctx);
+ctx.PlayScreen.prototype.OnOptionElemSelected = function (elem) { ctx.stockTiles = (ctx.stockTiles || []).concat([elem.id]); };
 vm.runInContext(fs.readFileSync(path.join(JS, "ClientWeb.js"), "utf8"), ctx, { filename: "ClientWeb.js" });
+vm.runInContext(fs.readFileSync(path.join(JS, "Teams.js"), "utf8"), ctx, { filename: "Teams.js" });
 const run = (code) => vm.runInContext(code, ctx);
 
 let passed = 0;
@@ -197,7 +203,8 @@ function test(name, fn) { fn(); passed++; console.log("ok    " + name); }
 function reset() {
   run("if (socketConnection) OnSocketConnectionClosed(); ClientwebData.connectionStatus = CW_STATUS_UNKNOWN; bConnectAttemptProcessing = false;" +
       "buildOutOfDate = false; Matchmaking.LeaveRequested = false; Matchmaking.IsStartingMatchmaking = false; Matchmaking.IsMatchmaking = false;" +
-      "RemasterReconnect.timer = null; RemasterReconnect.delay = 0; RemasterReconnect.stopped = false; RemasterReconnect.auto = false;");
+      "RemasterReconnect.timer = null; RemasterReconnect.delay = 0; RemasterReconnect.stopped = false; RemasterReconnect.auto = false;" +
+      "bShowingErrorModal = false; pendingErrors = []; currentError = '';");
   timers = [];
   modals.length = 0;
   sockets.length = 0;
@@ -506,6 +513,31 @@ test("a new search (the party leader's join-mm-group) forgets the old leave", ()
   fire(s, "join-mm-ack");
   assert.strictEqual(emits(s, "leave-mm").length, 1);
   assert.strictEqual(run("Matchmaking.LeaveRequested"), false);
+});
+
+// ---------------------------------------------------------------- a queue without a connection
+test("a queue whose connection fails: IsStartingMatchmaking reset, the promise rejected, the next queue tries", () => {
+  reset();
+  serverDown();
+  let failed = 0;
+  run("QueueMatchmaking('ffa_jungle')").then(null, () => { failed++; });
+  assert.strictEqual(failed, 1, "the caller's fail handler runs");
+  assert.strictEqual(run("Matchmaking.IsStartingMatchmaking"), false);
+  const before = requests.length;
+  run("QueueMatchmaking('ffa_jungle')");
+  assert.strictEqual(requests.length, before + 1, "the next queue tries to connect (not refused as 'starting')");
+});
+test("TRIO with the server down: an error, and the tile works again (hasClickButton cleared)", () => {
+  reset();
+  serverDown();
+  run("hasClickButton = false");
+  modals.length = 0;
+  run("new PlayScreen().OnOptionElemSelected({ id: 'trio_play' })");
+  assert.strictEqual(run("hasClickButton"), false);
+  assert.ok(modals.some((m) => /reach the server/.test(m.title)), JSON.stringify(modals.map((m) => m.title)));
+  serverUp();
+  run("new PlayScreen().OnOptionElemSelected({ id: 'trio_play' })");
+  assert.ok(last(), "the second click connects");
 });
 
 console.log("all %d ClientWeb connection tests passed", passed);

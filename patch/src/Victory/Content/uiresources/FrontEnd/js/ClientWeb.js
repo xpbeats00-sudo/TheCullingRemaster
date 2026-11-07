@@ -2877,6 +2877,12 @@ function DoQueueMatchmaking(GameType, ticket, userid)
       else {
         Matchmaking.IsStartingMatchmaking = false;
       }
+    }, function () {
+      // Remaster: the connection failed (offline, the server down): not
+      // starting any more, or every later queue is refused for good. The
+      // promise stays rejected, so the caller's fail handler runs.
+      console.log("QueueMatchmaking: no connection");
+      Matchmaking.IsStartingMatchmaking = false;
     })).then(function(){
     return Matchmaking.IsMatchmaking;
   });

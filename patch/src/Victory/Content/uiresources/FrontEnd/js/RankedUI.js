@@ -289,6 +289,9 @@
       } else {
         ShowError("Failed to join the queue. Please try again.");
       }
+    }, function () {
+      queueing = false;                 // no connection: Play works again
+      ShowError("Couldn't reach the server. Please try again.");
     });
   };
 
