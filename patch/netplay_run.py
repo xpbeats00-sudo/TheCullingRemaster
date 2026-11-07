@@ -44,6 +44,38 @@ GAME = os.path.join(LOCAL, "TheCullingRemaster", "Game")
 WIN64 = os.path.join(GAME, "Victory", "Binaries", "Win64")
 LOGS = os.path.join(LOCAL, "TheCulling", "Saved", "Logs")
 SETTINGS = os.path.join(LOCAL, "TheCulling", "Saved", "Config", "WindowsClient", "GameUserSettings.ini")
+# The game's Steam layer (the Goldberg emulator) reads the player's ID and
+# name from these at start. All games on one PC share them, so the host's
+# player records (looked up by ID) would merge every player into one;
+# --distinct-ids gives each game its own test ID and name, written just
+# before it starts and restored byte for byte after.
+STEAM_SETTINGS = os.path.join(GAME, "Engine", "Binaries", "ThirdParty", "Steamworks", "Steamv136", "Win64", "steam_settings")
+ID_FILES = ("force_steamid.txt", "force_account_name.txt")
+TEST_IDS = {"host": ("76561197960266901", "NetHost"), "client": ("76561197960266902", "NetPlayerOne"),
+            "client2": ("76561197960266903", "NetPlayerTwo")}
+
+
+def read_ids():
+    return {f: (open(os.path.join(STEAM_SETTINGS, f), "rb").read() if os.path.exists(os.path.join(STEAM_SETTINGS, f)) else None)
+            for f in ID_FILES}
+
+
+def write_ids(which):
+    sid, name = TEST_IDS[which]
+    for f, v in zip(ID_FILES, (sid, name)):
+        open(os.path.join(STEAM_SETTINGS, f), "wb").write(v.encode())
+
+
+def restore_ids(original):
+    for f, v in original.items():
+        path = os.path.join(STEAM_SETTINGS, f)
+        if v is None:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            open(path, "wb").write(v)
+
+
 WINDOW = {"FullscreenMode": "2", "LastConfirmedFullscreenMode": "2", "PreferredFullscreenMode": "2",
           "ResolutionSizeX": "960", "ResolutionSizeY": "540", "LastUserConfirmedResolutionSizeX": "960",
           "LastUserConfirmedResolutionSizeY": "540", "MasterVolume": "0"}
@@ -139,6 +171,7 @@ def main():
     ap.add_argument("--no-client", action="store_true")
     ap.add_argument("--after-join", type=int, default=45)
     ap.add_argument("--clients", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--distinct-ids", action="store_true", help="give each game its own test Steam ID and name")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     result = {"steps": {}, "evidence": {}}
@@ -161,6 +194,7 @@ def main():
         shutil.copy2(dst, keep)
     started = []
     settings_bytes = open(SETTINGS, "rb").read() if os.path.exists(SETTINGS) else None
+    ids_bytes = read_ids() if a.distinct_ids else None
     log_mark = set(os.listdir(LOGS)) if os.path.isdir(LOGS) else set()
     try:
         shutil.copyfile(host_exe, dst)
@@ -172,6 +206,8 @@ def main():
                 os.remove(f)
 
         set_window(settings_bytes, 0)
+        if ids_bytes is not None:
+            write_ids("host")
         host_l = launch(HOST_URL, host_trace, os.path.join(a.out, "host.func.log"))
         host = wait_game(host_l, 90)
         started += [p for p in (host,) if p]
@@ -198,6 +234,8 @@ def main():
 
         if host and host in pids and not a.no_client:
             set_window(settings_bytes, 970)
+            if ids_bytes is not None:
+                write_ids("client")
             client_l = launch("127.0.0.1:%d" % PORT, client_trace, os.path.join(a.out, "client.func.log"))
             client = None
             t0 = time.time()
@@ -217,6 +255,8 @@ def main():
                 if a.clients > 1 and joins >= 1 and client2 is None:
                     # The second player: another client from the same folder, its own trace.
                     set_window(settings_bytes, 485)
+                    if ids_bytes is not None:
+                        write_ids("client2")
                     client2_l = launch("127.0.0.1:%d" % PORT, client2_trace, os.path.join(a.out, "client2.func.log"))
                     t2 = time.time()
                     while time.time() - t2 < 90 and not client2:
@@ -260,7 +300,10 @@ def main():
         shutil.copy2(keep, dst)
         if settings_bytes is not None:
             open(SETTINGS, "wb").write(settings_bytes)
-        log("restored the test copy's Victory.exe and GameUserSettings.ini (byte for byte)")
+        if ids_bytes is not None:
+            restore_ids(ids_bytes)
+        log("restored the test copy's Victory.exe, GameUserSettings.ini%s (byte for byte)"
+            % (" and the Steam ID files" if ids_bytes is not None else ""))
         new_logs = sorted(set(os.listdir(LOGS)) - log_mark) if os.path.isdir(LOGS) else []
         for name in ["Victory.log", "Victory_2.log"] + new_logs:
             src = os.path.join(LOGS, name)

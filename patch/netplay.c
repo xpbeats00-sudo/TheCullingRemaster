@@ -932,9 +932,145 @@ static void host_damage(u8 **conns, i32 nconn, u32 now)
     }
 }
 
+/* Kill credit and the scoreboard: the game state's player records
+ * (AVictoryGameState +0x468, 0x150 bytes each, the scoreboard's source; the
+ * Remaster module reads the same ones). Traced for the two joined players on
+ * the host and on each client, every 2 s while CULLING_NETPLAY_ATTACK is on. */
+#define O_W_GAMESTATE      0xf8        /* UWorld::GameState (set on clients too) */
+#define O_GS_RECORDS       0x468
+#define REC_SIZE           0x150
+#define REC_PS             0x10        /* the player state (the struct's own property list, VA 0x1404c6400 on) */
+#define REC_ALIVE          0x28        /* bIsAlive (the game's IsAlive-by-record reads this byte, VA 0x140240301) */
+#define REC_DEATH_ORDER    0x5c
+#define REC_KILLER_NAME    0x60        /* FString */
+#define REC_KILL_POINTS    0x84
+#define REC_VICTIMS        0xe0        /* TArray: players this one killed */
+#define REC_BOT_VICTIMS    0xf0
+#define REC_KILLERS        0xf8        /* TArray */
+#define O_C_PLAYERSTATE    0x420       /* AController::PlayerState */
+#define O_PAWN_PLAYERSTATE 0x420       /* APawn::PlayerState (registered at 0x420 like AController's; host_watch checks it) */
+
+static u8 *target_ps;               /* a client's first opponent (client_attack) */
+
+static void trace_records(u8 *world, const char *tag, u8 *ps_a, u8 *ps_b)
+{
+    u8 *gs = world ? F(world, O_W_GAMESTATE, u8 *) : 0;
+    u8 *recs = gs ? F(gs, O_GS_RECORDS, u8 *) : 0;
+    i32 i, num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0, alive = 0, kills = 0, dead = 0;
+    struct line l;
+    if (!trace_begin(&l, tag))
+        return;
+    kv(&l, "gs", (u64)gs, 1);
+    if (!recs || num <= 0) {
+        kv_s(&l, "records", num);
+        trace_end(&l);
+        return;
+    }
+    for (i = 0; i < num && i < 64; i++) {
+        u8 *r = recs + (u64)i * REC_SIZE;
+        if (F(r, REC_ALIVE, u8)) alive++; else dead++;
+        kills += F(r, REC_VICTIMS + 8, i32) + F(r, REC_BOT_VICTIMS, i32);
+    }
+    kv(&l, "records", (u64)num, 0);
+    kv(&l, "alive", (u64)alive, 0);
+    kv(&l, "dead", (u64)dead, 0);
+    kv_s(&l, "kills_total", kills);
+    for (i = 0; i < num && i < 64; i++) {
+        u8 *r = recs + (u64)i * REC_SIZE;
+        u8 *ps = F(r, REC_PS, u8 *);
+        u16 *kn = F(r, REC_KILLER_NAME, u16 *);
+        i32 a = ps == ps_a;
+        if (!ps || (ps != ps_a && ps != ps_b))
+            continue;
+        kv_s(&l, a ? "a_victims" : "b_victims", F(r, REC_VICTIMS + 8, i32));
+        kv_s(&l, a ? "a_bots" : "b_bots", F(r, REC_BOT_VICTIMS, i32));
+        kv_s(&l, a ? "a_killers" : "b_killers", F(r, REC_KILLERS + 8, i32));
+        kv_s(&l, a ? "a_alive" : "b_alive", F(r, REC_ALIVE, u8));
+        kv_s(&l, a ? "a_order" : "b_order", F(r, REC_DEATH_ORDER, i32));
+        kv_s(&l, a ? "a_kp" : "b_kp", F(r, REC_KILL_POINTS, i32));
+        kv_s(&l, a ? "a_kname_len" : "b_kname_len", F(r, REC_KILLER_NAME + 8, i32));
+        kv(&l, a ? "a_kname_c0" : "b_kname_c0", kn && F(r, REC_KILLER_NAME + 8, i32) > 0 ? kn[0] : 0, 0);
+    }
+    trace_end(&l);
+    if (!trace_begin(&l, "records-changed"))
+        return;
+    for (i = 0; i < num && i < 64; i++) {
+        u8 *r = recs + (u64)i * REC_SIZE;
+        u8 *ps = F(r, REC_PS, u8 *);
+        if (ps == ps_a || ps == ps_b) {
+            kv(&l, ps == ps_a ? "a_at" : "b_at", (u64)i, 0);
+            kv_s(&l, "id_len", F(r, 0x08, i32));    /* record +0: the player's id (FString) */
+            kv(&l, "id_c0", F(r, 0x08, i32) > 0 && F(r, 0, u16 *) ? F(r, 0, u16 *)[0] : 0, 0);
+        }
+        if (F(r, REC_ALIVE, u8) && !F(r, REC_VICTIMS + 8, i32) && !F(r, REC_BOT_VICTIMS, i32))
+            continue;
+        kv(&l, "rec", (u64)i, 0);
+        kv_s(&l, "alive", F(r, REC_ALIVE, u8));
+        kv_s(&l, "v", F(r, REC_VICTIMS + 8, i32) + F(r, REC_BOT_VICTIMS, i32));
+        kv_s(&l, "order", F(r, REC_DEATH_ORDER, i32));
+    }
+    trace_end(&l);
+}
+
+/* The scoreboard's own copy: AVictoryGameState::ScoreboardData (+0x498, a
+ * replicated TArray of 0xb0-byte FPlayerScoreboardData; its property list,
+ * VA 0x1404c3d00 on: PlayerId +0x10, PlayerTeam +0x20, Kills +0x24, bIsAlive
+ * +0x28, KilledBy +0x30, DeathOrder +0x64). BuildSortedScoreboard (VA
+ * 0x140243c80) walks it with that stride. Entries named NetHost/NetPlayerOne/
+ * NetPlayerTwo (netplay_run.py --distinct-ids) are traced one by one. */
+#define O_GS_SCOREBOARD    0x498
+#define SB_SIZE            0xb0
+#define SB_NAME            0x00        /* FString */
+#define SB_KILLS           0x24
+#define SB_ALIVE           0x28
+#define SB_KILLED_BY       0x30        /* FString */
+#define SB_DEATH_ORDER     0x64
+
+static u16 str_at(u8 *fstr, i32 i)
+{
+    u16 *d = F(fstr, 0, u16 *);
+    return d && i < F(fstr, 8, i32) ? d[i] : 0;
+}
+
+static void trace_scoreboard(u8 *world, const char *tag)
+{
+    u8 *gs = world ? F(world, O_W_GAMESTATE, u8 *) : 0;
+    u8 *sb = gs ? F(gs, O_GS_SCOREBOARD, u8 *) : 0;
+    i32 i, num = gs ? F(gs, O_GS_SCOREBOARD + 8, i32) : 0, alive = 0, kills = 0;
+    struct line l;
+    if (!trace_begin(&l, tag))
+        return;
+    for (i = 0; sb && i < num && i < 64; i++) {
+        u8 *e = sb + (u64)i * SB_SIZE;
+        alive += F(e, SB_ALIVE, u8) != 0;
+        kills += F(e, SB_KILLS, i32);
+    }
+    kv_s(&l, "entries", num);
+    kv_s(&l, "alive", alive);
+    kv_s(&l, "kills_total", kills);
+    for (i = 0; sb && i < num && i < 64; i++) {
+        u8 *e = sb + (u64)i * SB_SIZE;
+        char k[3];
+        if (str_at(e + SB_NAME, 0) != 'N' || str_at(e + SB_NAME, 1) != 'e' || str_at(e + SB_NAME, 2) != 't')
+            continue;
+        /* H(ost), O(ne), T(wo): the name's 4th letter, or the 10th for players */
+        k[0] = (char)(str_at(e + SB_NAME, 3) == 'H' ? 'H' : str_at(e + SB_NAME, 9));
+        k[1] = '_';
+        k[2] = 0;
+        kv(&l, "who", (u64)(u8)k[0], 0);
+        kv_s(&l, "kills", F(e, SB_KILLS, i32));
+        kv_s(&l, "alive", F(e, SB_ALIVE, u8));
+        kv_s(&l, "order", F(e, SB_DEATH_ORDER, i32));
+        kv(&l, "killed_by", (u64)(str_at(e + SB_KILLED_BY, 3) == 'H' ? 'H' : str_at(e + SB_KILLED_BY, 9)), 0);
+    }
+    if (sb && num > 0)
+        kv(&l, "first_name_c0", str_at(sb + SB_NAME, 0), 0);
+    trace_end(&l);
+}
+
 static u32 watch_next;
 
-static void host_watch(u8 **conns, i32 nconn, u32 now)
+static void host_watch(u8 *world, u8 **conns, i32 nconn, u32 now)
 {
     struct line l;
     i32 c;
@@ -950,8 +1086,15 @@ static void host_watch(u8 **conns, i32 nconn, u32 now)
         kv_s(&l, c ? "p1_health" : "p0_health", health_of(p));
         kv_s(&l, c ? "p1_x" : "p0_x", root ? (i32)F(root, O_SC_LOCATION, float) : 0);
         kv_s(&l, c ? "p1_yaw" : "p0_yaw", pc ? (i32)F(pc, O_PC_CONTROL_ROT + 4, float) : 0);
+        kv(&l, c ? "p1_ps_match" : "p0_ps_match", p && pc && F(p, O_PAWN_PLAYERSTATE, u8 *) == F(pc, O_C_PLAYERSTATE, u8 *), 0);
     }
     trace_end(&l);
+    if (((now / 1000) & 1) == 0) {
+        u8 *pc0 = nconn > 0 && conns[0] ? F(conns[0], O_CONN_PC, u8 *) : 0;
+        u8 *pc1 = nconn > 1 && conns[1] ? F(conns[1], O_CONN_PC, u8 *) : 0;
+        trace_records(world, "records", pc0 ? F(pc0, O_C_PLAYERSTATE, u8 *) : 0, pc1 ? F(pc1, O_C_PLAYERSTATE, u8 *) : 0);
+        trace_scoreboard(world, "scoreboard");
+    }
 }
 
 static void host_teleport(u8 *remote, u32 now)
@@ -1018,7 +1161,7 @@ static void server_replicate(u8 *driver)
         }
         host_teleport_pair(conns, nconn, now);
         host_damage(conns, nconn, now);
-        host_watch(conns, nconn, now);
+        host_watch(world, conns, nconn, now);
     }
     {
         u8 *gm1 = F(world, O_WORLD_AUTH_GM, u8 *);
@@ -1226,6 +1369,7 @@ static void client_trace(u8 *driver)
         kv(&l, "current", (u64)F(mine, O_CH_CURRENT, u8 *), 1);
     }
     trace_end(&l);
+    trace_scoreboard(world, "client-scoreboard");
     data = F(world + O_W_PAWNS, 0, u8 *);
     num = F(world + O_W_PAWNS, 8, i32);
     for (i = 0; data && i < num && i < 24; i++) {
@@ -1331,6 +1475,8 @@ static void client_attack(u8 *driver)
     F(pc, O_PC_CONTROL_ROT, float) = 0.0f;
     F(pc, O_PC_CONTROL_ROT + 4, float) = tx >= 0 ? 0.0f : 180.0f;
     F(pc, O_PC_CONTROL_ROT + 8, float) = 0.0f;
+    if (!target_ps)
+        target_ps = F(target, O_PAWN_PLAYERSTATE, u8 *);    /* the first opponent: traced to the end */
     FN(R_ON_START_PRIMARY, pawn_input_fn)(pawn);
     pressed_pawn = pawn;
     release_at = now + 300;
