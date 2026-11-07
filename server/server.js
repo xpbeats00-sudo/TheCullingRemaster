@@ -1210,9 +1210,41 @@ const server = http.createServer(app);
 // its upstream connections well within it).
 server.keepAliveTimeout = 65 * 1000;
 server.headersTimeout = 70 * 1000;
-// maxHttpBufferSize: engine.io 3 accepts 100 MB messages by default; nothing
-// the game sends is more than a few KB.
-const io = socketio(server, { pingInterval: 10000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: 1e6 });
+// The socket layer, before any login (performance review P1: four clients
+// uploading ~1 MB polling payloads kept a core busy: engine.io concatenates
+// the body chunk by chunk, and the binary payload is decoded byte by byte):
+// - maxHttpBufferSize: a message is at most 64 KB (engine.io 3's default is
+//   100 MB; nothing the game sends is more than a few KB);
+// - a polling upload whose Content-Length is over that is refused (413)
+//   before its body is read, and polling uploads are rate limited per address
+//   (as many as socket events: a client posts at most one batch per event);
+// - new sessions (handshakes, polling or websocket) are rate limited per
+//   address: a burst of 30, then one a second.
+const SOCKET_MAX_BYTES = intEnv('CULLING_SOCKET_MAX_BYTES', 64 * 1024);
+const allowSocketPost = rateLimiter(30, 90);
+const allowHandshake = rateLimiter(1, 30);
+const io = socketio(server, { pingInterval: 10000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: SOCKET_MAX_BYTES,
+  allowRequest: (req, fn) => {
+    const ok = allowHandshake(clientIp(req.connection.remoteAddress, req.headers['x-forwarded-for']));
+    if (!ok) metrics.error('handshakeRefused');
+    fn(ok ? null : 'too-many-sessions', ok);
+  } });
+// engine.io's request listener calls io.engine.handleRequest: polling uploads
+// are checked first, and a refused one never reaches engine.io.
+const engineHandleRequest = io.engine.handleRequest.bind(io.engine);
+io.engine.handleRequest = (req, res) => {
+  if (req.method === 'POST') {
+    const length = parseInt(req.headers['content-length'], 10);
+    const tooBig = Number.isFinite(length) && length > SOCKET_MAX_BYTES;
+    if (tooBig || !allowSocketPost(requestIp(req))) {
+      metrics.error(tooBig ? 'socketUploadTooBig' : 'socketDropped');
+      res.writeHead(tooBig ? 413 : 429, { 'Content-Type': 'text/plain', Connection: 'close' });
+      res.end();
+      return;
+    }
+  }
+  engineHandleRequest(req, res);
+};
 const socketsByUser = new Map();
 const socketsByIp = new Map();      // address -> open sockets
 let connectedSockets = 0;
@@ -1229,7 +1261,8 @@ function gauges() {
     matchLobbies: lobbies.stats(),
     leaderboard: leaderboard.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
-    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
+    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), socketPost: allowSocketPost.size(),
+      handshake: allowHandshake.size(), newProfile: allowNewProfile.size(),
       registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
       loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size(), playerCard: allowPlayerCard.size() },
     saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null,
