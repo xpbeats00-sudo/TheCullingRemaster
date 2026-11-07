@@ -79,6 +79,12 @@ const MODES = Object.keys(TEAM);
       assert.strictEqual(R.teamPlacement(m, reported, victory, TEAM[m].of24), want, m + " " + reported + " " + victory);
     }
     assert.strictEqual(R.teamPlacement("duo", 24, false, 8), 8, "Prison duos: 8 teams");
+    // The patched exe's place at your death ("PLC|<alive + 1>", hud.js) on the 16-contestant
+    // maps: the team slice it falls in, among 8 duos, 5 trios or 4 quads.
+    for (const [m, alive, teams, want] of [["duo", 14, 8, 7], ["duo", 3, 8, 2], ["duo", 16, 8, 8], ["trio", 13, 5, 5],
+      ["trio", 7, 5, 3], ["quad", 15, 4, 4], ["quad", 5, 4, 2]]) {
+      assert.strictEqual(R.teamPlacement(m, alive, false, teams), want, m + " " + alive + " alive of " + teams + " teams");
+    }
   });
 
   await test("a team match rejects a placement past its teams, and a result can't change its field", () => {

@@ -22,6 +22,7 @@ char sd_should_end(u8 *gm);
 void sd_rating(u8 *ps, void *activity, void *player, i32 value);
 u8 *sd_gas_instigator(u8 *wound);
 char sd_teams(u8 *gs);
+i32 sd_spawn_team(u8 *ps);
 void sd_sides_probe(i32 *out);
 void sd_spawn_bots(u8 *gm);
 
@@ -657,6 +658,36 @@ static char teleport(u8 *pawn, const float *at, const float *rot)
     return 1;
 }
 static void unpossess(u8 *c) { F(c, 0x408, u8 *) = 0; }
+static i32 get_team(u8 *ps) { return F(ps, 0x490, i32); }
+
+/* Your place at your death: "PLC|<alive + 1>" once, the second the records say you died. */
+static void test_place(void);
+
+/* The start chooser's team (fix 12): 0 in ClassicTeams (one free start each), the stock team otherwise. */
+static void test_spawn_team(void)
+{
+    u8 *ps = new_obj(cls_ps), *gm = new_obj(cls_gm), *old;
+    if (!world) world = new_obj(0);
+    old = F(world, 0xf0, u8 *);
+    F(world, 0xf0, u8 *) = gm;
+    F(ps, 0x490, i32) = 3;
+    F(gm, 0x4e0, u8) = 2;                              /* ClassicTeams: Duo, Trios, Quads */
+    CHECK(sd_spawn_team(ps) == 0);
+    F(gm, 0x4e0, u8) = 3;                              /* Lightning (team Showdown) */
+    CHECK(sd_spawn_team(ps) == 3);
+    F(gm, 0x4e0, u8) = 1;                              /* Solo */
+    CHECK(sd_spawn_team(ps) == 3);
+    F(ps, 0x490, i32) = 0;
+    CHECK(sd_spawn_team(ps) == 0);
+    F(world, 0xf0, u8 *) = 0;                          /* no GameMode: stock */
+    F(ps, 0x490, i32) = 5;
+    CHECK(sd_spawn_team(ps) == 5);
+    F(world, 0xf0, u8 *) = old;
+    printf("ok    start chooser's team: 0 in Duo/Trios/Quads (a free start each), the stock TeamNumber in Solo, Showdown, without a GameMode\n");
+}
+static int possessions;
+static void possess(u8 *c, u8 *p) { F(c, 0x408, u8 *) = p; F(p, 0x438, u8 *) = c; possessions++; }
+static char ch_alive(u8 *p) { (void)p; return 1; }
 static void destroy(u8 *a) { kill_obj(a); }
 
 /* You (a PlayerController) and n - 1 bots, in that order in PlayerArray. */
@@ -744,6 +775,27 @@ static void test_showdown(void)
     CHECK(sd_should_end(sgm) == 1);
     CHECK(!*last_message("TMS|"));
     printf("ok    Showdown 1v1: rounds, resets, first to 4 (unchanged)\n");
+
+    /* Your death, then the game's delayed spectating takes the pawn the reset
+       gave you: it is possessed again, and the round goes on. */
+    showdown_setup(2, 3, "?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C");
+    nmessages = 0;
+    CHECK(sd_should_end(sgm) == 0 && sd_should_end(sgm) == 0);
+    fdie(0);
+    CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|1|0|1|L"));
+    next_round(2);
+    {
+        u8 *mine = F(fc[0], 0x408, u8 *);
+        CHECK(mine);
+        F(fc[0], 0x408, u8 *) = 0;                    /* BeginSpectatingState's UnPossess */
+        F(mine, 0x438, u8 *) = 0;
+        possessions = 0;
+        for (i = 0; i < 4; i++) CHECK(sd_should_end(sgm) == 0);
+        CHECK(possessions == 1 && F(fc[0], 0x408, u8 *) == mine && series_msg("SDR|S|2|"));
+        fdie(1);
+        CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|2|1|1|W"));
+    }
+    printf("ok    Showdown: the pawn the reset gave you, taken by the delayed spectating after your death, is yours again\n");
 
     /* Team Showdown: N v N, sd_teams' teams (you and N - 1 bots, then N bots). */
     for (size = 2; size <= 4; size++) {
@@ -1129,6 +1181,55 @@ static void test_chokening(void)
     printf("ok    Chokening: gone user, new match and an Inert pylon end the credit\n");
 }
 
+/* Your place at your death (place_tick): you are tps[0], the player controller's. */
+static void test_place(void)
+{
+    static i32 list[2][2];
+    u8 *pc, *hud;
+    int i, n, count;
+    teams_setup(2, "?bEnableBots=true");               /* Duo, 24 contestants */
+    pc = new_obj(cls_pc);
+    hud = new_obj(cls_hud);
+    reg(pc);
+    F(pc, 0x420, u8 *) = tps[0];
+    F(pc, 0x490, u8 *) = hud;
+    weak_set(list[0], pc);
+    F(world, 0x178, i32 *) = &list[0][0];
+    F(world, 0x180, i32) = 1;
+    nmessages = 0;
+    CHECK(sd_should_end(tgm) == 0 && !*last_message("PLC|"));    /* alive: nothing */
+    for (i = 1; i <= 9; i++) team_die(i);                        /* 9 others down */
+    F(tps[20], 0x42c, unsigned) |= 1;                                 /* a spectator never counts */
+    F(tps[21], 0x800, u8) = 1;                                   /* nor one who left */
+    team_die(0);                                                  /* you: 24 - 10 dead - 2 = 12 others alive */
+    sd_should_end(tgm);
+    CHECK(!strcmp(last_message("PLC|"), "PLC|13"));
+    n = nmessages;
+    for (count = 0; count < 3; count++) sd_should_end(tgm);      /* once */
+    for (i = 0, count = 0; i < 64 && i < nmessages; i++) count += !strncmp(messages[i], "PLC|", 4);
+    CHECK(count == 1 && nmessages >= n);
+    /* Solo the same; Showdown never (its series is its own). */
+    teams_setup(1, "?bEnableBots=true");
+    F(pc, 0x420, u8 *) = tps[0];
+    F(world, 0x178, i32 *) = &list[0][0];
+    F(world, 0x180, i32) = 1;
+    nmessages = 0;
+    sd_should_end(tgm);
+    team_die(0);
+    sd_should_end(tgm);
+    CHECK(!strcmp(last_message("PLC|"), "PLC|24"));
+    teams_setup(3, "?bEnableBots=true");
+    F(pc, 0x420, u8 *) = tps[0];
+    F(world, 0x178, i32 *) = &list[0][0];
+    F(world, 0x180, i32) = 1;
+    nmessages = 0;
+    sd_should_end(tgm);
+    team_die(0);
+    sd_should_end(tgm);
+    CHECK(!*last_message("PLC|"));
+    printf("ok    your place at your death: \"PLC|<alive + 1>\" once (spectators and leavers not counted), Solo too, never in Showdown\n");
+}
+
 int main(void)
 {
     image = (u8 *)VirtualAlloc(0, 0x2600000, MEM_RESERVE, PAGE_NOACCESS);
@@ -1141,6 +1242,9 @@ int main(void)
     vtable[0x290 / 8] = (void *)destroy;
     vtable[0x650 / 8] = (void *)unpossess;
     vtable[0x700 / 8] = (void *)restart_player;
+    vtable[0x648 / 8] = (void *)possess;
+    hook(0x249320, (void *)get_team);
+    hook(0x26e0d0, (void *)ch_alive);
     hook(0x244d30, (void *)ffa_should_end);
     hook(0x249d20, (void *)ps_has_left);
     hook(0x249ca0, (void *)ps_is_alive);
@@ -1177,6 +1281,7 @@ int main(void)
     hook(0x111fae0, (void *)teleport);
     VirtualAlloc(image + 0x2567000, 0x1000, MEM_COMMIT, PAGE_READWRITE);   /* L"/Script/Victory" */
     sd_self_rva = (u64)&sd_self_rva - (u64)image;
+    test_spawn_team();
     test_duo();
     test_chokening();
     test_team_sizes();
@@ -1184,6 +1289,7 @@ int main(void)
     test_showdown();
     test_sides();
     test_team_hud();
+    test_place();
     printf("all native module tests passed\n");
     return 0;
 }
