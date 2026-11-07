@@ -18,11 +18,20 @@
 // The game talks to the agent only through those files (the host module is a
 // no-CRT blob with no network or crypto of its own).
 //
+// It can also start and stop the host game itself (--launcher): one host
+// per assignment, from the assignment's map, with ?servernonce= and the
+// pre-match player count; headless with --headless (-nullrhi -nosound). The
+// host is stopped --linger-ms after the result (the players' post-match
+// screen), and a host that exits before its result aborts the match.
+//
 // usage: node agent.js --backend http://127.0.0.1:8123 --id gs1 --secret <hex>
 //          --host 127.0.0.1 --port 7777 --control <dir> [--log <file>]
+//          [--launcher <Func.Launcher.exe> --client-dll <dll> [--headless]
+//           [--steam-settings <dir>] [--host-trace <file>] [--linger-ms 35000]]
 // The secret is the per-server one: `node server/allocator.js secret gs1 [dataDir]`.
 "use strict";
 
+const { spawn, execFileSync } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
@@ -39,6 +48,12 @@ const o = {
   port: parseInt(arg("port", "7777"), 10),
   control: arg("control"),
   log: arg("log"),
+  launcher: arg("launcher"),
+  clientDll: arg("client-dll"),
+  headless: process.argv.includes("--headless"),
+  steamSettings: arg("steam-settings"),
+  hostTrace: arg("host-trace"),
+  lingerMs: parseInt(arg("linger-ms", "35000"), 10),
 };
 for (const k of ["backend", "id", "secret", "control"]) if (!o[k]) { console.error("missing --" + k); process.exit(2); }
 fs.mkdirSync(o.control, { recursive: true });
@@ -79,6 +94,90 @@ let assignment = null;      // the match being run
 let readyPosted = false;
 let resultPosted = false;
 const verified = new Map(); // verify request n -> {userID, team}
+const pending = new Set();  // verify requests being answered
+
+// ---- the host game (with --launcher) -----------------------------------------
+
+const MODE = "/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C";
+const MAPS = { 0: "Jungle_P", 1: "Jungle2_P" };      // custom_match.py URLS: 0 Jungle, 1 Prison
+let host = null;                                     // { launcher, pid, matchId, stopAt }
+
+// The URL a route-B host opens for this assignment, or null (not supported).
+function hostUrl(a) {
+  const map = MAPS[a.mapIndex || 0];
+  if (!map || (a.teamSize || 1) !== 1) return null;  // Solo only, for now
+  return map + "?listen?bIsLanMatch?bEnableBots=true?game=" + MODE + "?servernonce=" + a.serverNonce;
+}
+
+function victoryChildOf(parent) {
+  try {
+    const out = execFileSync("powershell", ["-NoProfile", "-Command",
+      "(Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + parent + " and Name='Victory.exe'\").ProcessId"], { encoding: "utf8" });
+    const pid = parseInt(out.trim().split(/\s+/)[0], 10);
+    return pid > 0 ? pid : null;
+  } catch { return null; }
+}
+
+function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+
+function startHost(a) {
+  const url = hostUrl(a);
+  if (!url) {
+    log("host-unsupported", { matchId: a.matchId, mapIndex: a.mapIndex, teamSize: a.teamSize });
+    call("abort", { matchId: a.matchId, reason: "unsupported-mode" }).catch(() => {});
+    drop();
+    return;
+  }
+  const args = ["-FuncSkipUpdateCheck", "-FuncClientDll=" + o.clientDll, "-FuncClientLog=" + ctl("host.func.log"), "-FuncJoin=" + url];
+  if (o.headless) args.push("-FuncHeadlessClient");
+  if (o.steamSettings) args.push("-FuncSteamSettingsDir=" + o.steamSettings);
+  const env = Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1", CULLING_NETPLAY_PREMATCH: String(a.players),
+    CULLING_NETPLAY_CONTROL: o.control });
+  if (o.hostTrace) env.CULLING_NETPLAY_TRACE = o.hostTrace;
+  const launcher = spawn(o.launcher, args, { cwd: path.dirname(o.launcher), env, stdio: "ignore" });
+  host = { launcher: launcher.pid, pid: null, matchId: a.matchId, stopAt: 0, since: Date.now() };
+  log("host-launch", { matchId: a.matchId, url: url.replace(/servernonce=\w+/, "servernonce=…"), headless: o.headless, launcher: launcher.pid });
+}
+
+function stopHost(why) {
+  if (!host) return;
+  if (host.pid && alive(host.pid)) { try { process.kill(host.pid); } catch { /* gone */ } }
+  log("host-stopped", { matchId: host.matchId, pid: host.pid, why });
+  host = null;
+}
+
+// Every poll: find the host's Victory.exe, notice it dying, stop it after the post-match.
+async function watchHost() {
+  if (!host) return;
+  if (!host.pid) {
+    host.pid = victoryChildOf(host.launcher);
+    if (host.pid) { fs.writeFileSync(ctl("host.pid"), String(host.pid)); log("host-started", { pid: host.pid }); }
+    else if (Date.now() - host.since > 120000) {
+      log("host-never-started", { matchId: host.matchId });
+      if (assignment && assignment.matchId === host.matchId) { await call("abort", { matchId: host.matchId, reason: "host-not-started" }).catch(() => {}); drop(); }
+      host = null;
+    }
+    return;
+  }
+  if (host.stopAt && Date.now() >= host.stopAt) return stopHost("post-match over");
+  if (!alive(host.pid)) {
+    log("host-exited", { matchId: host.matchId, pid: host.pid });
+    if (assignment && assignment.matchId === host.matchId && !resultPosted) {
+      const r = await call("abort", { matchId: host.matchId, reason: "host-exited" }).catch((e) => ({ status: 0, json: { error: e.message } }));
+      log("abort", { status: r.status, json: r.json });
+      drop();
+    }
+    host = null;
+  }
+}
+
+// A fresh control folder for a new match: the host numbers its verify requests from 1.
+function clearControl() {
+  for (const f of fs.readdirSync(o.control))
+    if (/^(listening|verify-\d+\.(req|ans)|result\.(txt|done|posted)|host\.(pid|func\.log))$/.test(f)) {
+      try { fs.unlinkSync(ctl(f)); } catch { /* in use */ }
+    }
+}
 
 // The match is over for this server (its result was paid, or the backend
 // says it's no longer its own): report idle again.
@@ -99,9 +198,12 @@ function take(a) {
   readyPosted = false;
   resultPosted = false;
   verified.clear();
+  pending.clear();
+  if (o.launcher) { stopHost("new match"); clearControl(); }
   fs.writeFileSync(ctl("assignment.json"), JSON.stringify(a, null, 1));
   log("assignment", { matchId: a.matchId, playlist: a.playlist, players: a.players, bots: a.bots, field: a.field,
     roster: a.teams.flatMap((t) => t.players.map((p) => p.userID)) });
+  if (o.launcher) startHost(a);
 }
 
 async function heartbeat() {
@@ -126,7 +228,6 @@ async function postReady() {
   log("ready", { status: r.status, json: r.json });
 }
 
-const pending = new Set();
 async function answer(n) {
   pending.add(n);
   const ticket = fs.readFileSync(ctl("verify-" + n + ".req"), "utf8").trim();
@@ -182,6 +283,7 @@ async function postResult() {
   const r = await call("result", body);
   fs.writeFileSync(ctl("result.posted"), JSON.stringify({ status: r.status, answer: r.json, body }, null, 1));
   log("result", { status: r.status, answer: r.json, players: body.players });
+  if (host && host.matchId === body.matchId) host.stopAt = Date.now() + o.lingerMs;
   if (r.status === 200 || r.status === 409) drop();
 }
 
@@ -193,11 +295,13 @@ async function poll() {
       if (m && !pending.has(+m[1]) && !exists("verify-" + m[1] + ".ans")) answer(+m[1]).catch((e) => log("verify-error", { error: e.message }));
     }
     if (assignment && readyPosted && !resultPosted && exists("result.done")) await postResult();
+    if (o.launcher) await watchHost();
   } catch (e) { log("poll-error", { error: e.message }); }
   setTimeout(poll, 25);
 }
 
 (async () => {
+  if (o.launcher && !o.clientDll) { console.error("--launcher needs --client-dll"); process.exit(2); }
   const r = await call("register", { host: o.host, port: o.port, version: "route-b-agent-1" });
   log("register", { status: r.status, json: r.json });
   if (r.status !== 200) process.exit(1);

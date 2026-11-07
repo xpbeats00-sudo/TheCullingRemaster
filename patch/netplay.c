@@ -2008,9 +2008,23 @@ static void prematch_tick(u8 *driver, u8 *world, u8 *gm)
     }
 }
 
+/* The host is its own server: its local player never got a server nonce
+ * (that comes from ConnectToServer), and at the match start the game runs
+ * the client's nonce check for every player controller, the host's own too
+ * (VA 0x140283940: unless UVictoryGameSingleton +0x650 "matched" is set it
+ * sends "ServerNonceFailed" through an engine object that a headless
+ * -nullrhi game doesn't have, and crashed there in game). So the host marks
+ * its own nonce as matched. */
+#define R_GAME_SINGLETON   0x1f2de0    /* UVictoryGameSingleton getter */
+#define O_SG_NONCE_OK      0x650       /* the server nonce matched (ClientCheckServerNonce sets it) */
+typedef u8 *(*singleton_fn)(void);
+
 void np_tick_flush(void *driver, float dt)
 {
     if (driver && driver == listen_driver && !F(driver, O_ND_SERVERCONN, void *)) {
+        u8 *sg = FN(R_GAME_SINGLETON, singleton_fn)();
+        if (sg)
+            F(sg, O_SG_NONCE_OK, u8) = 1;
         /* Without CULLING_NETPLAY_PREMATCH: the host's match ended by itself
          * ~35 s after listening, with or without a client (in game: the
          * listen socket closed, the world left), so the test host holds it

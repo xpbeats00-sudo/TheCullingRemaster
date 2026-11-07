@@ -367,10 +367,19 @@ def menu_chain(a):
         os.environ["CULLING_TEST_HOOKS"] = "1"
         procs.append(LB.start(a.backend_repo, os.path.join(a.out, "backend-data"), a.backend_port, PORT, os.path.join(a.out, "backend.log")))
         os.environ.pop("CULLING_TEST_HOOKS", None)
-        procs.append(subprocess.Popen(["node", os.path.join(GAMESERVER, "agent.js"), "--backend", base, "--id", LB.SERVER_ID,
-                                       "--secret", LB.secret(), "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
-                                       "--log", os.path.join(a.out, "agent.log")],
-                                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
+        agent_args = ["node", os.path.join(GAMESERVER, "agent.js"), "--backend", base, "--id", LB.SERVER_ID,
+                      "--secret", LB.secret(), "--host", "127.0.0.1", "--port", str(PORT), "--control", ctl,
+                      "--log", os.path.join(a.out, "agent.log")]
+        if a.agent_host:
+            # The agent starts the host from the assignment. Its test ID: the
+            # shared steam_settings files, written for it once both clients
+            # have read theirs (step 2). The launcher's -FuncSteamSettingsDir
+            # didn't take in game: the host ran with the shared files' ID.
+            agent_args += ["--launcher", os.path.join(WIN64, "Func.Launcher.exe"), "--client-dll", CLIENT_DLL,
+                           "--host-trace", traces["host"], "--linger-ms", "15000"]
+            if a.headless_host:
+                agent_args.append("--headless")
+        procs.append(subprocess.Popen(agent_args, stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
         # 1. The two clients, at their menus, each with its own test ID.
         users = []
         for who, x in (("client", 970), ("client2", 485)):
@@ -393,6 +402,8 @@ def menu_chain(a):
         log(result["steps"])
         if h.get("users", 0) < 2:
             return result
+        if a.agent_host:
+            write_ids("host")              # the agent's host reads it when it starts
         # 3. Queue them (the PLAY -> Solo a player would press).
         for u in users:
             st, r = http_json("POST", base + "/api/test/join-mm", {"userID": u, "queueName": "ffa_jungle"})
@@ -405,13 +416,22 @@ def menu_chain(a):
         time.sleep(0.3)
         asg = json.load(open(os.path.join(ctl, "assignment.json")))
         log("assignment", asg["matchId"], "players", asg["players"], "roster", [p["userID"] for t in asg["teams"] for p in t["players"]])
-        # 4. The host, from the assignment.
-        os.environ["CULLING_NETPLAY_PREMATCH"] = str(asg["players"])
-        os.environ["CULLING_NETPLAY_CONTROL"] = ctl
-        set_window(settings_bytes, 0)
-        write_ids("host")
-        hl = launch(HOST_URL + "?servernonce=" + asg["serverNonce"], traces["host"], os.path.join(a.out, "host.func.log"))
-        host = wait_game(hl, 90)
+        # 4. The host, from the assignment (started by the agent with --agent-host).
+        if a.agent_host:
+            host = None
+            t0 = time.time()
+            while not host and time.time() - t0 < 150:
+                if os.path.exists(os.path.join(ctl, "host.pid")):
+                    host = int(open(os.path.join(ctl, "host.pid")).read().strip() or 0) or None
+                time.sleep(1)
+            result["steps"]["the agent started the host"] = "PASS: pid %s%s" % (host, " (headless)" if a.headless_host else "") if host else "FAIL"
+        else:
+            os.environ["CULLING_NETPLAY_PREMATCH"] = str(asg["players"])
+            os.environ["CULLING_NETPLAY_CONTROL"] = ctl
+            set_window(settings_bytes, 0)
+            write_ids("host")
+            hl = launch(HOST_URL + "?servernonce=" + asg["serverNonce"], traces["host"], os.path.join(a.out, "host.func.log"))
+            host = wait_game(hl, 90)
         started += [host] if host else []
         log("host Victory.exe pid", host)
         # 5. Wait for both menus to join, then for the match to run.
@@ -509,6 +529,8 @@ def main():
     ap.add_argument("--backend-repo", help="a checkout of branch shared-match-backend: run the whole shared-match chain"
                     " locally (backend, game-server agent, two test players queueing; the clients join with their tickets)")
     ap.add_argument("--backend-port", type=int, default=8123)
+    ap.add_argument("--agent-host", action="store_true", help="with --menu: the game-server agent starts (and stops) the host")
+    ap.add_argument("--headless-host", action="store_true", help="with --agent-host: the host runs headless (-nullrhi -nosound)")
     ap.add_argument("--restore", metavar="OUT", help="put back what an interrupted run into OUT changed, and exit")
     ap.add_argument("--menu", action="store_true", help="with --backend-repo: the clients start at their menus, are queued"
                     " through the backend's test hook, and join by the menu's own match-ready handling (ConnectToServer)")

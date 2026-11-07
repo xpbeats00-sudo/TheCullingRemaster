@@ -329,6 +329,14 @@ def test_real_exe(path):
     assert bytes.fromhex("ff83") + struct.pack("<I", mac("O_ND_REP_FRAME")) in rec, "inc dword [rbx+ReplicationFrame]"
     assert any(0x141305110 + i + 5 + struct.unpack_from("<i", rec, i + 1)[0] == 0x1412EE2E0
                for i in range(len(rec) - 5) if rec[i] == 0xE8), "the record step calls the per-actor template"
+    # 2g. The client's server-nonce check run at the match start (0x140283940): it asks the
+    # game singleton (R_GAME_SINGLETON) whether its nonce matched (0x1401f5360 reads
+    # O_SG_NONCE_OK), the flag the host sets for its own player.
+    chk = data[PN._off(0x140283940):PN._off(0x140283940) + 0x80]
+    calls = {0x140283940 + i + 5 + struct.unpack_from("<i", chk, i + 1)[0] for i in range(len(chk) - 5) if chk[i] == 0xE8}
+    assert 0x140000000 + mac("R_GAME_SINGLETON") in calls and 0x1401F5360 in calls, sorted(hex(c) for c in calls)
+    assert data[PN._off(0x1401F5360):PN._off(0x1401F5360) + 8] == bytes.fromhex("0fb681") + struct.pack("<I", mac("O_SG_NONCE_OK")) + b"\xc3", \
+        "the singleton's nonce-matched getter"
     # 3. InternalGetNetMode as the patch expects, and its demo path's GetNetMode call.
     o = PN._off(PN.NETMODE_VA)
     assert data[o:o + len(PN.NETMODE_STOCK)] == PN.NETMODE_STOCK

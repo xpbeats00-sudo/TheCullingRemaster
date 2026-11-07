@@ -95,7 +95,18 @@ Players who join after the pods opened stand in pods that never open; in a real 
   - teams beyond Solo (Duos and up) were only checked in the agent's code, not in game;
   - the host is started by the test runner. A real game server starts it from the assignment (milestone 7);
   - the pair teleport and eliminations are still test switches. |
-| 7 | A headless host on the VPS (`-nullrhi`) | BLOCKED on 3 | |
+| 7 | A headless host on the VPS (`-nullrhi`) | **PARTIAL: a headless host started by the agent runs a whole match, on this PC** (2026-11-06). Not on the VPS yet (see "On the VPS" below). | **The agent starts and stops the host.** With `--launcher`, the agent starts one host per assignment: the map from the assignment (0 `Jungle_P`, 1 `Jungle2_P`), `?servernonce=`, the pre-match player count, and `-FuncHeadlessClient` (`-nullrhi -nosound`) with `--headless`. It stops the host `--linger-ms` after the result (the players' post-match screen). A host that exits before its result aborts the match with the backend (`host-exited`, seen in game), and one that never starts does too. Team modes are refused for now (`unsupported-mode`), and the backend re-queues them. Each new match starts with a clean control folder.
+
+  **In game** (`netplay_run.py --menu --agent-host --headless-host`):
+  - **the start:** the headless host was ready 5 to 7 s after launch (about 25 s with graphics);
+  - **joining:** both menus joined it with their tickets;
+  - **the match:** played and ended, and the result was paid;
+  - **the stop:** the agent stopped the host 15 s after the result;
+  - **health:** no game crashed.
+
+  **Fixed on the way: the headless host crashed when the match started.** At the start the game runs the client's server-nonce check for every player controller, the host's own too (0x140283940). The host's player never got a nonce (that comes from ConnectToServer), so the check sends `ServerNonceFailed` through an engine object that a `-nullrhi` game doesn't have: a null read at `Victory+0x2839ae`. The host now marks its own nonce as matched (`UVictoryGameSingleton` +0x650). With graphics the same check ran harmlessly before. `test_netplay.py` checks the addresses.
+
+  **On one PC:** the host needs its own Steam ID, or the records merge (seen: two "NetPlayerTwo" entries). The launcher's `-FuncSteamSettingsDir` didn't take effect, so the runner writes the host's ID into the shared files once both clients have read theirs. |
 
 ## Milestone 3: how the host sends its world
 
@@ -130,6 +141,26 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 4. **The Steam driver's TickFlush slot** (0x142e0ac10): `np_tick_flush`, the loop above.
 5. **`UWorld::InternalGetNetMode`** (0x1416848f0) and its two inlined copies. This client build folded "has a NetDriver" into "is a client", so a hosting world would call itself a client. They now ask the driver: `UNetDriver::GetNetMode` is IsServer ? (GIsClient ? ListenServer : Dedicated) : Client. For every world a stock client has, the result is unchanged.
 
+## On the VPS (not done: needs the owner)
+
+Nothing below has been run on the VPS. It's the plan, and the list of what blocks real players.
+
+**Blockers before players use it:**
+1. **The host's own player is a contestant.** "NetHost" takes a pod, shows on the scoreboard and counts toward the field. A real host must have no player, or one that isn't a contestant.
+2. **Clients ran the netplay test exe in every test.** The test copy's exe was swapped for all three games. The released Remaster client (with `patch_exe.py`'s module) hasn't joined a host yet.
+3. **Solo only.** The agent refuses team modes; Duos and up need the team layout passed to the host.
+4. **Capacity unmeasured:** the CPU, memory and bandwidth of a headless host with 16 contestants.
+5. **The menu's server.** Released builds should point `RemasterServer.js` at the live backend, and their `FrontEnd.html` must load it. The test copy's page doesn't (it falls back to `127.0.0.1:8000`). Check this in the release pak.
+6. **The host's Steam ID:** a dedicated test ID, not a player's.
+
+**Steps, when it's time:**
+1. On the VPS, a game install for the host, for example `C:\culling\gameserver\TheCulling` (the Remaster content, about 6 GB). In its `Win64`, the host exe: `patch_netplay.py` applied to a copy of the stock `Victory.exe`.
+2. `Func.Client.dll` patched to the backend's local URL (`patch_client_dll.py`), and the install's `steam_settings` set to the host's own ID and name.
+3. Windows firewall: inbound UDP 7777 for that `Victory.exe`.
+4. The backend: `shared-match-backend` merged into the live server, then `CULLING_SHARED_MATCHES=1`, `CULLING_SHARED_PLAYLISTS=ffa`, `CULLING_GAMESERVER_SECRET=<master>` and `CULLING_GAMESERVER_POOL=gs1@<public IP>:7777`.
+5. The agent as a service, restarted by the watchdog: `node gameserver/agent.js --backend http://127.0.0.1:<port> --id gs1 --secret <node server/allocator.js secret gs1> --host <public IP> --port 7777 --control C:\culling\gameserver\control --launcher <Win64>\Func.Launcher.exe --client-dll <patched dll> --headless`.
+6. Two real PCs (not this one) join a Solo match before the setting is turned on for everyone.
+
 ## How to run it
 
 `python patch/netplay_run.py` (the test copy of the game, launched the way the launcher's PLAY does):
@@ -141,7 +172,7 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run.
+Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.
