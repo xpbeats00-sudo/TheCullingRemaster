@@ -224,6 +224,9 @@ function friendsWhen(socket, check, ms = 3000) {
     });
 
     await test("friends see searching, then in match, then back in the menu", async () => {
+      // (Past A's last panel push: one push per 300 ms, and "searching" lasts
+      // only the lobby's 300 ms gather here.)
+      await sleep(350);
       const searching = friendsWhen(A.socket, (f) => f.friends[0].status.state === "searching");
       B.socket.emit("join-mm", { queueName: "ffa_jungle" });
       assert.strictEqual((await searching).friends[0].status.label, "Searching · Solo");
@@ -340,6 +343,26 @@ function friendsWhen(socket, check, ms = 3000) {
       // test player connects from 127.0.0.1.)
       assert.ok(cards >= 1 && cards <= 11, "cards: " + cards);
       assert.ok(slow >= 1, "the rest refused: " + slow);
+    });
+
+    // Performance review P6: every status change of a friend pushed the whole
+    // panel at once; a burst of changes is now one push per 300 ms per panel.
+    await test("a burst of a friend's status changes reaches the panel as a few pushes, ending in the latest", async () => {
+      await sleep(400);
+      const pushes = [];
+      const onPush = (f) => pushes.push(f);
+      A.socket.on("remaster-friends", onPush);
+      for (let i = 0; i < 6; i++) {
+        B.socket.emit("join-mm", { queueName: "ffa_jungle" });
+        await sleep(15);
+        B.socket.emit("leave-mm");
+        await sleep(15);
+      }
+      await sleep(800);
+      A.socket.off("remaster-friends", onPush);
+      assert.ok(pushes.length >= 1 && pushes.length <= 4, "pushes for 12 changes in ~200 ms: " + pushes.length);
+      const bravo = pushes[pushes.length - 1].friends.find((f) => f.username === "bravo");
+      assert.strictEqual(bravo.status.state, "menu", "the latest state");
     });
 
     await test("going offline: friends see it, with when they were last seen", async () => {

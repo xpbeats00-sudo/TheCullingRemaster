@@ -1935,16 +1935,33 @@ const STATE_ORDER = { match: 0, lobby: 1, searching: 2, menu: 3, offline: 4 };
 // out once for all the panels that show it. Built and sent on the spot, one
 // status change of a player with 200 friends online built 40,000 entries and
 // blocked the event loop for ~85 ms (SERVER_AUDIT_2 P2, test/friends_load.js).
+// And a panel gets at most one push per FRIENDS_PUSH_MS (performance review
+// P6): the first change goes out right away, later ones in that window wait
+// for its end and go out together, with the state as it is then.
+const FRIENDS_PUSH_MS = intEnv('CULLING_FRIENDS_PUSH_MS', 300);
 const friendsDirty = new Set();
-let friendsFlush = null;
+const friendsPushedAt = new Map();      // userID -> when their panel was last pushed
+let friendsFlush = null, friendsLater = null;
 function sendFriends(userID) {
   friendsDirty.add(userID);
   if (!friendsFlush) friendsFlush = setImmediate(flushFriends);
 }
 function flushFriends() {
   friendsFlush = null;
-  const ids = [...friendsDirty];
-  friendsDirty.clear();
+  const now = Date.now();
+  const ids = [];
+  let nextDue = Infinity;
+  for (const id of friendsDirty) {
+    const due = (friendsPushedAt.get(id) || 0) + FRIENDS_PUSH_MS;
+    if (due <= now) { ids.push(id); friendsDirty.delete(id); friendsPushedAt.set(id, now); } else nextDue = Math.min(nextDue, due);
+  }
+  if (nextDue < Infinity && !friendsLater) {
+    friendsLater = setTimeout(() => { friendsLater = null; if (!friendsFlush) friendsFlush = setImmediate(flushFriends); }, nextDue - now);
+    if (friendsLater.unref) friendsLater.unref();
+  }
+  // Only recent pushes matter: the table stays small.
+  if (friendsPushedAt.size > 10000) for (const [id, at] of friendsPushedAt) if (now - at >= FRIENDS_PUSH_MS) friendsPushedAt.delete(id);
+  if (!ids.length) return;
   const cache = new Map();
   const entry = (id) => {
     let e = cache.get(id);
