@@ -320,6 +320,28 @@ def http_json(method, url, body=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
+CONSOLE_TRACE_JS = r"""(function () {
+  var orig = console.log;
+  function send(text) {
+    try {
+      var x = new XMLHttpRequest();
+      x.open("POST", REMASTER_API + "/uitrace", true);
+      x.setRequestHeader("Content-Type", "application/json");
+      x.send(JSON.stringify({ console: String(text).slice(0, 280) }));
+    } catch (e) {}
+  }
+  console.log = function () {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
+    send(parts.join(" "));
+    return orig.apply(console, arguments);
+  };
+  window.addEventListener("error", function (e) { send("SCRIPT ERROR " + e.message + " @" + e.filename + ":" + e.lineno); });
+  send("console trace on");
+})();
+"""
+
+
 def make_override_pak(a, api):
     """RemasterServer.js pointed at api, plus the installed FrontEnd.html with
     that script added (make_server_config.add_scripts): a local build's page
@@ -334,6 +356,10 @@ def make_override_pak(a, api):
         os.makedirs(d)
         with open(os.path.join(d, "RemasterServer.js"), "w", encoding="utf-8", newline="\n") as f:
             f.write('// netplay_run.py --menu: the local test backend.\nvar REMASTER_API = "%s";\n' % api)
+            if folder == "FrontEnd" and os.environ.get("NETPLAY_CONSOLE_TRACE"):
+                # Diagnostics: the menu's console.log lines and script errors go to the
+                # local backend's log (POST /api/uitrace), which a test can't see otherwise.
+                f.write(CONSOLE_TRACE_JS)
     page = "Victory/Content/uiresources/FrontEnd/FrontEnd.html"
     for name in sorted(os.listdir(os.path.join(GAME, "Victory", "Content", "Paks"))):
         if not name.endswith("_P.pak") or name == OVERRIDE_PAK:
