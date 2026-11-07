@@ -338,10 +338,10 @@ const finished = new Set(); // matches whose result the backend has: never taken
 
 // result.txt (written by the host at the end) -> result.pending, then posted.
 function startResult() {
-  resultPosted = true;
-  const body = resultBody(fs.readFileSync(ctl("result.txt"), "utf8"));
+  const body = resultBody(fs.readFileSync(ctl("result.txt"), "utf8"));   // not there yet: tried again next poll
   const file = ctl("result.pending");
   atomicWrite(file, JSON.stringify(body));
+  resultPosted = true;
   if (host && host.matchId === body.matchId) host.stopAt = Date.now() + o.lingerMs;
   results.set(body.matchId, { body, file, attempts: 0, nextAt: 0, busy: false });
 }
