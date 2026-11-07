@@ -687,7 +687,7 @@ static void test_spawn_team(void)
 }
 static int possessions;
 static void possess(u8 *c, u8 *p) { F(c, 0x408, u8 *) = p; F(p, 0x438, u8 *) = c; possessions++; }
-static char ch_alive(u8 *p) { (void)p; return 1; }
+static char ch_alive(u8 *p) { CHECK(F(p, 0x10, u8 *) == cls_char); return 1; }   /* AShooterCharacter::IsAlive: characters only */
 static void destroy(u8 *a) { kill_obj(a); }
 
 /* You (a PlayerController) and n - 1 bots, in that order in PlayerArray. */
@@ -796,6 +796,27 @@ static void test_showdown(void)
         CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|2|1|1|W"));
     }
     printf("ok    Showdown: the pawn the reset gave you, taken by the delayed spectating after your death, is yours again\n");
+
+    /* The same, but the pawn the controller had is not a character (a plain
+       APawn): it is never repossessed, and IsAlive is not called on it. */
+    showdown_setup(2, 3, "?bEnableBots=true?game=/Game/Blueprints/GameMode/VictoryGameMode_Lightning.VictoryGameMode_Lightning_C");
+    nmessages = 0;
+    CHECK(sd_should_end(sgm) == 0 && sd_should_end(sgm) == 0);
+    fdie(0);
+    CHECK(sd_should_end(sgm) == 0 && series_msg("SDR|E|1|0|1|L"));
+    next_round(2);
+    {
+        u8 *mine = F(fc[0], 0x408, u8 *);
+        CHECK(mine);
+        F(mine, 0x10, u8 *) = 0;                      /* not an AShooterCharacter */
+        F(fc[0], 0x408, u8 *) = 0;
+        F(mine, 0x438, u8 *) = 0;
+        possessions = 0;
+        CHECK(sd_should_end(sgm) == 0);
+        CHECK(possessions == 0 && !F(fc[0], 0x408, u8 *));
+        F(mine, 0x10, u8 *) = cls_char;
+    }
+    printf("ok    Showdown: a pawn that is not a character is never repossessed (no IsAlive on it)\n");
 
     /* Team Showdown: N v N, sd_teams' teams (you and N - 1 bots, then N bots). */
     for (size = 2; size <= 4; size++) {

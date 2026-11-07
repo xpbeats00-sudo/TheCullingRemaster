@@ -28,6 +28,10 @@
         hasClickButton = false;
         ShowError("Failed to join the queue. Please try again.");
       }
+    }, function () {
+      // No connection (QueueMatchmaking rejected): the tiles work again.
+      hasClickButton = false;
+      ShowError("Couldn't reach the server. Please try again.");
     });
   };
 

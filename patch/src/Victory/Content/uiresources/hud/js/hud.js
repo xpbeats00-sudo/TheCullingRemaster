@@ -1641,12 +1641,18 @@ function PulseElement(elem, color){
 
 var GameMessageTemplate = document.getElementById("cloned-elements").getElementsByClassName("game-message")[0];
 
-function AddGameMessage(message, duration){
+// bText: the message is plain text (it has a player's name in it): shown as
+// it is, never read as markup. The game's own messages stay HTML (stock).
+function AddGameMessage(message, duration, bText){
 	DebugLog("AddGameMessage: " + message);
 	var GameMessageContainer = document.getElementById("game-message-container");
 	var newGameMessage = GameMessageTemplate.cloneNode(true);
 	var text = newGameMessage.getElementsByClassName("game-message-text")[0];
-	text.innerHTML = message;
+	if (bText) {
+		text.textContent = String(message);
+	} else {
+		text.innerHTML = message;
+	}
 	//
 	if(GameMessageTemplate.firstChild){
 		//newGameMessage = GameMessageContainer.appendChild(newGameMessage);
@@ -1816,7 +1822,7 @@ function SwitchPausePane(option)
 			CreatePauseMenuModal("Quit",
 													"Return to Main Menu?",
 													[
-														{ text: "Quit", doesDismiss: true, callback: function(){ RemasterBeforeLeavingMatch(); engine.call("QuitToMainMenu"); } },
+														{ text: "Quit", doesDismiss: true, callback: function(){ RemasterLeaveMatch(function () { engine.call("QuitToMainMenu"); }); } },
 														{ text: "Cancel", doesDismiss: true }
 													]);
 			return;
@@ -1831,8 +1837,7 @@ function PauseMenuQuit(option)
 	if(option == 0){
 		PauseMenuPanes[4].classList.add("hidden");
 	} else {
-		RemasterBeforeLeavingMatch();
-		engine.call("JSE_QuitToMainMenu");
+		RemasterLeaveMatch(function () { engine.call("JSE_QuitToMainMenu"); });
 	}
 }
 
@@ -2451,7 +2456,7 @@ function RemasterTeamStatus(message)
 		if(p.bAlive) alive++;
 		if(p.bAlive && name && !remasterExtraMates.names[name]){
 			remasterExtraMates.names[name] = true;
-			AddGameMessage(name + " is your Teammate!");
+			AddGameMessage(name + " is your Teammate!", undefined, true);
 		}
 	}
 	for(; i < remasterExtraMates.panels.length; i++) remasterExtraMates.panels[i].bAlive = false;
@@ -2487,7 +2492,7 @@ function OnTeamMemberAdded(playername){
 	PartyBar.classList.remove('hidden');
 	document.getElementById("compass-teammember").classList.remove("hidden");
 	PartyMemberName.textContent = playername;
-	AddGameMessage(playername + " is your Teammate!");
+	AddGameMessage(playername + " is your Teammate!", undefined, true);
 }
 
 function OnTeamMemberDied(){
@@ -2908,8 +2913,7 @@ function ShowMatchOutcomeAgain()
 function OnReturnToMenuClicked()
 {
 	console.log("Quit to Main Menu");
-	RemasterBeforeLeavingMatch();
-	engine.call('QuitToMainMenu');
+	RemasterLeaveMatch(function () { engine.call('QuitToMainMenu'); });
 }
 
 function OnEOMItemMouseOver(item)
@@ -3277,8 +3281,17 @@ engine.on("ShowHideSprintIcon", function(display){
 var LOCAL_SERVER_URL = (typeof REMASTER_API != "undefined" ? REMASTER_API : "http://127.0.0.1:8000/api");
 var bLocalMatchResultSent = false;
 // A failed post (no answer, or the server erroring) is tried again after
-// these delays; a refusal (4xx: no match to pay, already paid) is not.
-var LOCAL_RESULT_RETRY_MS = [2000, 5000, 10000];
+// these delays (then every 60 s) for up to LOCAL_RESULT_RETRY_FOR_MS, so a
+// server restart or a short outage doesn't lose it; a refusal (4xx: no match
+// to pay) is not. A repeat of a post the server already paid gets the same
+// 200 answer (server.js repeatedResult): saved.
+var LOCAL_RESULT_RETRY_MS = [2000, 5000, 10000, 20000, 30000, 60000];
+var LOCAL_RESULT_RETRY_FOR_MS = 5 * 60000;
+// Leaving the match with a result not yet answered: one quick try, and the
+// menu comes back after at most this long.
+var LOCAL_RESULT_QUIT_MS = 2000;
+var localResultPost = null;                 // { result, data, since, timer, attempt }: posted, not answered yet
+var remasterLeaving = null;                 // { quit, timer, done }: leaving, waiting on the result's answer
 
 // One small line at the bottom of the end-of-match screens: how the result is doing.
 function ShowResultStatus(text, state)
@@ -3385,15 +3398,30 @@ function ReportLocalMatchResult(_deathData, bIsVictory)
 
 function PostLocalMatchResult(result, _deathData, attempt)
 {
+	var post = localResultPost;
+	if (!post || post.result !== result) {
+		post = localResultPost = { result: result, data: _deathData, since: new Date().getTime(), timer: null, attempt: 0 };
+	}
+	clearTimeout(post.timer);
+	post.timer = null;
+	post.attempt = attempt;
 	$.ajax({
 		type: "POST",
 		url: LOCAL_SERVER_URL + "/matchresult",
 		contentType: "application/json",
 		data: JSON.stringify(result),
-		timeout: 10000,
+		timeout: remasterLeaving ? LOCAL_RESULT_QUIT_MS : 10000,
 		success: function (body) {
+			if (localResultPost !== post) {
+				return;                          // answered already (an earlier try's late answer)
+			}
+			localResultPost = null;
 			var reply = typeof body == "string" ? JSON.parse(body) : body;
 			ShowResultStatus("Result saved", "ok");
+			RemasterResultAnswered();
+			if (!reply || !reply.stats) {
+				return;
+			}
 			var shownDeathData = $.extend({}, _deathData, { MatchStartXP: reply.startXP });
 			NotifyReceivedStatsUpdate(JSON.stringify({ data: reply.stats }), shownDeathData, true);
 			if (reply.ranked) {
@@ -3414,21 +3442,29 @@ function PostLocalMatchResult(result, _deathData, attempt)
 			});
 		},
 		error: function (jqXHR) {
+			if (localResultPost !== post || post.attempt !== attempt) {
+				return;                          // answered already, or a newer try is out
+			}
 			var status = jqXHR ? jqXHR.status : 0;
 			console.log("ReportLocalMatchResult failed (attempt " + (attempt + 1) + "): " + status);
 			if (status >= 400 && status < 500) {
 				// The server answered and won't take it (no open match for this
-				// player, or this match is already paid): trying again won't help.
+				// player): trying again won't help.
+				localResultPost = null;
 				ShowResultStatus("This match's result wasn't saved", "bad");
+				RemasterResultAnswered();
 				return;
 			}
-			if (attempt < LOCAL_RESULT_RETRY_MS.length) {
-				ShowResultStatus("Saving result...");
-				setTimeout(function () { PostLocalMatchResult(result, _deathData, attempt + 1); }, LOCAL_RESULT_RETRY_MS[attempt]);
+			if (!remasterLeaving && new Date().getTime() - post.since < LOCAL_RESULT_RETRY_FOR_MS) {
+				ShowResultStatus("Saving result... (the server isn't answering, trying again)");
+				post.timer = setTimeout(function () { PostLocalMatchResult(result, _deathData, attempt + 1); },
+					LOCAL_RESULT_RETRY_MS[Math.min(attempt, LOCAL_RESULT_RETRY_MS.length - 1)]);
 				return;
 			}
+			localResultPost = null;
 			ShowResultStatus("Couldn't reach the server", "bad");
 			bLocalMatchResultSent = false;
+			RemasterResultAnswered();
 		}
 	});
 }
@@ -3466,8 +3502,9 @@ function ShowRankedResult(ranked) {
 //   - your team wins (SetVictoryData): posted as a victory, with your stats;
 //   - your teammate dies too (OnTeamMemberDied): posted as the death;
 //   - you leave the match (Quit / Return to Main Menu) or the HUD unloads:
-//     posted at once, synchronously, as the death - never later than the
-//     menu coming back (the server closes a match left open by then);
+//     posted at once, as the death - the menu comes back when the server
+//     answered, or after 2 s at most (RemasterLeaveMatch; the server closes
+//     a match left open by then);
 //   - otherwise after 60 s, or, while your teammate is still alive, every
 //     60 s again up to 20 minutes.
 // Trios and Quads: a teammate is still alive while the game's panel's one or
@@ -3518,10 +3555,9 @@ function ArmTeamResultTimer(ms)
 	}, ms);
 }
 
-// The waiting death result, now: bSync when the HUD is going away (a
-// synchronous request finishes before the page does). outcome: the body's
-// teamOutcome.
-function PostPendingTeamResult(bSync, outcome)
+// The waiting death result, now. outcome: the body's teamOutcome ("left":
+// you are leaving the match).
+function PostPendingTeamResult(bLeaving, outcome)
 {
 	if (!pendingTeamResult) {
 		return;
@@ -3529,39 +3565,60 @@ function PostPendingTeamResult(bSync, outcome)
 	var data = pendingTeamResult.data;
 	clearTimeout(pendingTeamResult.timer);
 	pendingTeamResult = null;
-	remasterTeamOutcome = outcome || (bSync ? "left" : "out");
-	if (bSync) {
-		SendLocalMatchResultNow(data, false);
-	}
-	else {
-		ReportLocalMatchResult(data, false);
-	}
+	remasterTeamOutcome = outcome || (bLeaving ? "left" : "out");
+	ReportLocalMatchResult(data, false);
 }
 
-function SendLocalMatchResultNow(_deathData, bIsVictory)
+// A result still to be posted goes now: the team's waiting death (as left),
+// a death still waiting for its place, and a post waiting to be tried again.
+// Never a synchronous request: one to an unreachable server froze the game.
+function RemasterBeforeLeavingMatch()
 {
-	if (bLocalMatchResultSent) {
-		return;
+	PostPendingTeamResult(true, "left");
+	if (remasterRankWaiting && !remasterRankWaiting.done) {
+		RemasterRankArrived();
 	}
-	bLocalMatchResultSent = true;
-	var result = LocalMatchResultBody(_deathData, bIsVictory);
-	console.log("SendLocalMatchResultNow: " + JSON.stringify(result));
-	try {
-		var xhr = new XMLHttpRequest();
-		xhr.open("POST", LOCAL_SERVER_URL + "/matchresult", false);
-		xhr.setRequestHeader("Content-Type", "application/json");
-		xhr.send(JSON.stringify(result));
-		console.log("SendLocalMatchResultNow: " + xhr.status);
-	} catch (e) {
-		console.log("SendLocalMatchResultNow failed: " + e);
+	if (localResultPost && localResultPost.timer) {
+		PostLocalMatchResult(localResultPost.result, localResultPost.data, localResultPost.attempt + 1);
 	}
 }
 
 // Leaving the match (the pause menu's Quit, the end of match's Return to
-// Main Menu): a result still waiting goes first.
-function RemasterBeforeLeavingMatch()
+// Main Menu): the result first (RemasterBeforeLeavingMatch), then quit() once
+// the server answered it, or after LOCAL_RESULT_QUIT_MS at most. Nothing
+// unanswered: quit() at once. Asked again while waiting: at once.
+function RemasterLeaveMatch(quit)
 {
-	PostPendingTeamResult(true, "left");
+	if (remasterLeaving) {
+		RemasterQuitNow();
+		return;
+	}
+	remasterLeaving = { quit: quit, timer: null, done: false };
+	RemasterBeforeLeavingMatch();
+	if (!localResultPost) {
+		RemasterQuitNow();
+		return;
+	}
+	ShowResultStatus("Saving result...");
+	remasterLeaving.timer = setTimeout(RemasterQuitNow, LOCAL_RESULT_QUIT_MS);
+}
+
+function RemasterResultAnswered()
+{
+	if (remasterLeaving) {
+		RemasterQuitNow();
+	}
+}
+
+function RemasterQuitNow()
+{
+	var leaving = remasterLeaving;
+	if (!leaving || leaving.done) {
+		return;
+	}
+	leaving.done = true;
+	clearTimeout(leaving.timer);
+	leaving.quit();
 }
 
 window.addEventListener("beforeunload", RemasterBeforeLeavingMatch);

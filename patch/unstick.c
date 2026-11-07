@@ -189,6 +189,7 @@ static void unstick_tick(u8 *gm)
         if (c && is_a(c, R_CLS_PC)) pc = c;
     }
     if (pc) pawn = wx_live(FIELD(pc, C_PAWN, u8 *));
+    if (pawn && !is_a(pawn, R_CLS_CHARACTER)) pawn = 0; /* the class first: the fields below are ACharacter's */
     if (pawn && pawn != weak(&U.pawn)) {               /* a new pawn (respawn, the next round) */
         weak_set(&U.pawn, pawn);
         U.have_last = U.ngood = U.stuck = 0;
@@ -196,7 +197,7 @@ static void unstick_tick(u8 *gm)
     ps = pc ? FIELD(pc, C_PLAYERSTATE, u8 *) : 0;
     root = pawn ? wx_live(FIELD(pawn, WXA_ROOT, u8 *)) : 0;
     move = pawn ? wx_live(FIELD(pawn, USA_MOVEMENT, u8 *)) : 0;
-    if (!pawn || !root || !move || root != FIELD(pawn, USA_CAPSULE, u8 *) || !is_a(pawn, R_CLS_CHARACTER)
+    if (!pawn || !root || !move || root != FIELD(pawn, USA_CAPSULE, u8 *)
         || !is_a(ps, R_CLS_PS) || (FIELD(ps, PS_FLAGS, u32) & 3) || ((fn_bool)AT(R_PS_HAS_LEFT))(ps)
         || !((fn_bool)AT(R_PS_IS_ALIVE))(ps) || !((fn_bool)AT(US_CH_ALIVE))(pawn)) {
         U.have_last = U.stuck = 0;                     /* dead, spectating, between pawns: nothing */
