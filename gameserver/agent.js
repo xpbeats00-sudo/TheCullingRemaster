@@ -57,7 +57,7 @@
 // system's own variables, FUNC_* and CULLING_NETPLAY_* only).
 "use strict";
 
-const { spawn, execFileSync, execFile } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
@@ -228,15 +228,13 @@ function hostUrl(a) {
 }
 
 // The host game the launcher started: its child process named after the exe
-// it runs (Victory.exe, or the --victory-exe file).
-function victoryChildOf(parent) {
-  const name = o.victoryExe ? path.basename(o.victoryExe) : "Victory.exe";
-  try {
-    const out = execFileSync("powershell", ["-NoProfile", "-Command",
-      "(Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + parent + " and Name='" + name + "'\").ProcessId"], { encoding: "utf8" });
-    const pid = parseInt(out.trim().split(/\s+/)[0], 10);
-    return pid > 0 ? pid : null;
-  } catch { return null; }
+// it runs (Victory.exe, or the --victory-exe file). Asked without blocking
+// (a PowerShell start takes about a second; the poll loop runs every 25 ms).
+async function victoryChildOf(parent) {
+  const out = await run("powershell", ["-NoProfile", "-Command",
+    "(Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + parent + " and Name='" + hostExeName() + "'\").ProcessId"]);
+  const pid = parseInt(out.trim().split(/\s+/)[0], 10);
+  return pid > 0 ? pid : null;
 }
 
 function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -292,12 +290,19 @@ function stopHost(why) {
 async function watchHost() {
   if (!host) return;
   if (!host.pid) {
-    host.pid = victoryChildOf(host.launcher);
-    if (host.pid) {
-      fs.writeFileSync(root("host.pid"), JSON.stringify({ pid: host.pid, exe: hostExeName(), matchId: host.matchId }));
-      log("host-started", { pid: host.pid, matchId: host.matchId });
+    if (!host.looking && Date.now() >= (host.nextLook || 0)) {
+      const h = host;
+      h.looking = true;
+      victoryChildOf(h.launcher).then((pid) => {
+        h.looking = false;
+        h.nextLook = Date.now() + 500;
+        if (!pid || host !== h || h.pid) return;
+        h.pid = pid;
+        fs.writeFileSync(root("host.pid"), JSON.stringify({ pid, exe: hostExeName(), matchId: h.matchId }));
+        log("host-started", { pid, matchId: h.matchId });
+      });
     }
-    else if (Date.now() - host.since > 120000) {
+    if (Date.now() - host.since > 120000) {
       log("host-never-started", { matchId: host.matchId });
       if (assignment && assignment.matchId === host.matchId) { await call("abort", { matchId: host.matchId, reason: "host-not-started" }).catch(() => {}); drop(); }
       host = null;
@@ -422,11 +427,35 @@ function take(a) {
   if (o.launcher) startHost(a);
 }
 
+// Errors back off: a failing backend is asked less and less often (up to
+// 10 s apart for heartbeats, 5 s for the poll loop's own errors), and a
+// backend that doesn't know this server (restarted with a new pool) gets
+// a new register.
+let heartbeatErrors = 0, pollErrors = 0;
+const backoff = (base, errors, max) => Math.min(max, base * Math.pow(2, Math.min(8, errors)));
+
+async function register() {
+  for (let attempt = 0; ; attempt++) {
+    let r;
+    try { r = await call("register", { host: o.host, port: o.port, version: "route-b-agent-2" }); } catch (e) { r = { status: 0, json: { error: e.message } }; }
+    log("register", { status: r.status, json: r.json, attempt: attempt + 1 });
+    if (r.status === 200 && r.json) return r.json;
+    await new Promise((res) => setTimeout(res, backoff(1000, attempt, 30000)));
+  }
+}
+
 async function heartbeat() {
+  let ok = false;
   try {
     const r = await call("heartbeat", { matchId: assignment ? assignment.matchId : null,
       state: !assignment ? "idle" : readyPosted ? "running" : "loading", players: verified.size, bots: assignment ? assignment.bots : 0 });
-    if (r.status === 200 && r.json) {
+    if (r.status === 404 && r.json && r.json.error === "unknown-server") {
+      log("heartbeat-unknown", {});
+      const j = await register();
+      ok = true;
+      take(j.assignment);
+    } else if (r.status === 200 && r.json) {
+      ok = true;
       if (r.json.heartbeatMs) heartbeatMs = r.json.heartbeatMs;
       if (r.json.cancel) {
         // The backend gave the match up (cancelled, or no longer this server's):
@@ -437,9 +466,10 @@ async function heartbeat() {
         if (mine) drop();
       }
       take(r.json.assignment);
-    } else log("heartbeat-refused", { status: r.status, json: r.json });
-  } catch (e) { log("heartbeat-error", { error: e.message }); }
-  setTimeout(heartbeat, heartbeatMs);
+    } else log("heartbeat-refused", { status: r.status, json: r.json, errors: heartbeatErrors + 1 });
+  } catch (e) { log("heartbeat-error", { error: e.message, errors: heartbeatErrors + 1 }); }
+  heartbeatErrors = ok ? 0 : heartbeatErrors + 1;
+  setTimeout(heartbeat, ok ? heartbeatMs : backoff(heartbeatMs, heartbeatErrors, 10000));
 }
 
 // listening: "port=<n>", the port the host bound. Only --port is ours (the
@@ -547,19 +577,21 @@ async function poll() {
     if (assignment && readyPosted && !resultPosted && exists("result.done")) startResult();
     if (results.size) await postResults();
     if (o.launcher) await watchHost();
-  } catch (e) { log("poll-error", { error: e.message }); }
-  setTimeout(poll, 25);
+    pollErrors = 0;
+  } catch (e) {
+    pollErrors++;
+    if (pollErrors <= 3 || pollErrors % 50 === 0) log("poll-error", { error: e.message, errors: pollErrors });
+  }
+  setTimeout(poll, pollErrors ? backoff(25, pollErrors, 5000) : 25);
 }
 
 (async () => {
   if (o.launcher && !o.clientDll) { console.error("--launcher needs --client-dll"); process.exit(2); }
   if (o.launcher) await killOrphan();
   loadPending();
-  const r = await call("register", { host: o.host, port: o.port, version: "route-b-agent-1" });
-  log("register", { status: r.status, json: r.json });
-  if (r.status !== 200) process.exit(1);
-  if (r.json.heartbeatMs) heartbeatMs = r.json.heartbeatMs;
-  take(r.json.assignment);
+  const j = await register();
+  if (j.heartbeatMs) heartbeatMs = j.heartbeatMs;
+  take(j.assignment);
   heartbeat();
   poll();
 })().catch((e) => { log("fatal", { error: e.message }); process.exit(1); });

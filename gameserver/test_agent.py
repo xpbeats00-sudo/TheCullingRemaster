@@ -180,6 +180,7 @@ class Backend:
         self.assignment = None        # what register and heartbeats hand out
         self.cancel = None            # a matchId heartbeats cancel
         self.results = []             # statuses for the next result posts (then 200)
+        self.heartbeat_status = 200   # 503: the backend failing
         self.lock = threading.Lock()
         backend = self
 
@@ -209,6 +210,8 @@ class Backend:
             if action == "register":
                 return 200, {"ok": True, "heartbeatMs": 200, "assignment": a}
             if action == "heartbeat":
+                if self.heartbeat_status != 200:
+                    return self.heartbeat_status, {"error": "down"}
                 out = {"ok": True, "heartbeatMs": 200, "assignment": a}
                 if self.cancel:
                     out["cancel"] = self.cancel
@@ -318,6 +321,15 @@ class Agent:
         if self.proc.poll() is None:
             self.proc.kill()        # node only: what it started stays (as when the agent crashes)
             self.proc.wait()
+
+
+def test_no_blocking_calls():
+    # The agent never waits on a child process (PowerShell, tasklist) in its
+    # poll loop: no synchronous child-process call at all.
+    src = open(os.path.join(HERE, "agent.js"), encoding="utf-8").read()
+    for name in ("execFileSync", "execSync", "spawnSync"):
+        assert name not in src, "agent.js calls " + name
+    print("ok    no synchronous child-process call in the agent")
 
 
 def scripted():
@@ -472,6 +484,19 @@ def scripted():
         assert stopped["why"] == "cancelled", stopped
         backend.cancel = None
         print("ok    a cancelled match: its host stopped")
+
+        # A failing backend is asked less and less often (no 200 ms hammering), and again as usual once it answers.
+        backend.heartbeat_status = 503
+        t0 = time.time()
+        time.sleep(6)
+        beats = [c[2] for c in backend.of("heartbeat") if c[2] >= t0]
+        gaps = [b - a for a, b in zip(beats, beats[1:])]
+        assert len(beats) <= 8 and gaps and gaps[-1] >= 1.5 and gaps[-1] > gaps[0], gaps
+        backend.heartbeat_status = 200
+        t1 = time.time()
+        until(lambda: len([c for c in backend.of("heartbeat") if c[2] >= t1]) >= 3, 15, "heartbeats as usual")
+        print("ok    heartbeats back off while the backend fails (%d in 6 s, gaps %.1f s to %.1f s), then go on as usual"
+              % (len(beats), gaps[0], gaps[-1]))
     finally:
         for a in agents:
             a.kill()
@@ -495,6 +520,7 @@ def main():
     else:
         print("part 1: skipped (no --backend-repo)")
     print("part 2: a scripted backend, a fake launcher and host")
+    test_no_blocking_calls()
     scripted()
     print("OK")
 
