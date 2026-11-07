@@ -21,12 +21,33 @@ const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // Rename, retrying briefly: on Windows a reader (antivirus, backup, an editor)
-// holding the target open makes MoveFileEx fail for a moment.
+// holding the target open makes MoveFileEx fail for a moment. This one sleeps
+// on the main thread between tries (up to ~300 ms): only for the synchronous
+// writes (flushSync at shutdown, writeAtomicSync); the periodic write uses
+// renameRetry, which waits with timers.
 function renameSyncRetry(from, to) {
   for (let attempt = 0; ; attempt++) {
     try { return fs.renameSync(from, to); } catch (e) {
       if (!RENAME_RETRY_CODES.has(e.code) || attempt >= 5) throw e;
       sleepSync(20 * (attempt + 1));
+    }
+  }
+}
+
+// The same retries without blocking the event loop: a timer between tries.
+// Each try is still a synchronous rename (one metadata call), and `wanted()`
+// is asked before each, so a synchronous flush that wrote newer data during a
+// wait is never overwritten. Resolves with whether it renamed, and the time
+// spent in the tries themselves.
+async function renameRetry(from, to, wanted = () => true) {
+  let blockedMs = 0;
+  for (let attempt = 0; ; attempt++) {
+    if (!wanted()) return { renamed: false, blockedMs };
+    const t0 = performance.now();
+    try { fs.renameSync(from, to); return { renamed: true, blockedMs: blockedMs + performance.now() - t0 }; } catch (e) {
+      blockedMs += performance.now() - t0;
+      if (!RENAME_RETRY_CODES.has(e.code) || attempt >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
     }
   }
 }
@@ -107,6 +128,7 @@ class CoalescedJsonFile {
     this.dirty = false;             // changes from here on need another write
     this.lastWriteAt = this.now();
     const tmp = this.file + ".tmp";
+    // this.writing: the whole write, file I/O and rename (flush() waits on it).
     this.writing = (async () => {
       const fh = await fs.promises.open(tmp, "w");
       try {
@@ -115,20 +137,20 @@ class CoalescedJsonFile {
       } finally {
         await fh.close();
       }
-    })();
-    try {
-      await this.writing;
-      if (gen !== this.generation || this.closed) {
+      // Each rename try is synchronous, so a shutdown flush can never
+      // interleave with one; between tries (a reader holding the file) the
+      // event loop runs, and a flush that wrote newer data meanwhile wins.
+      const r = await renameRetry(tmp, this.file, () => gen === this.generation && !this.closed);
+      if (!r.renamed) {
         // A synchronous flush (shutdown) wrote newer data meanwhile: this
         // write is stale, don't rename it over the newer file.
         try { fs.unlinkSync(tmp); } catch { /* gone */ }
-      } else {
-        // Synchronous so a shutdown flush can never interleave with it.
-        const r0 = performance.now();
-        renameSyncRetry(tmp, this.file);
-        const r1 = performance.now();
-        this.recordWrite(text.length, t1 - t0, r1 - t0, (t1 - t0) + (r1 - r0));
+        return;
       }
+      this.recordWrite(text.length, t1 - t0, performance.now() - t0, (t1 - t0) + r.blockedMs);
+    })();
+    try {
+      await this.writing;
     } catch (e) {
       this.dirty = true;            // keep the change; try again next interval
       this.fail(e);
@@ -190,4 +212,4 @@ class CoalescedJsonFile {
   }
 }
 
-module.exports = { CoalescedJsonFile, writeAtomicSync, renameSyncRetry };
+module.exports = { CoalescedJsonFile, writeAtomicSync, renameSyncRetry, renameRetry };

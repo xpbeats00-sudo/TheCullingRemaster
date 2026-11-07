@@ -187,6 +187,33 @@ const read = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
       assert.strictEqual(p.ranked.history.length, ranked.CONFIG.historyLength);
     });
 
+    // Performance review P4: a reader holding the file open (antivirus,
+    // backup) made the rename retry with Atomics.wait, blocking the event
+    // loop up to ~340 ms. The periodic write now waits between retries.
+    await test("a periodic write whose rename is refused for a moment waits without blocking the event loop", async () => {
+      const file = path.join(dir, "locked.json");
+      const data = { n: 1 };
+      const store = new CoalescedJsonFile(file, () => JSON.stringify(data), { delayMs: 50 });
+      const rename = fs.renameSync;
+      let refused = 0;
+      fs.renameSync = (from, to) => {
+        if (to === file && refused < 4) { refused++; const e = new Error("busy"); e.code = "EBUSY"; throw e; }
+        return rename(from, to);
+      };
+      let maxGap = 0, last = performance.now();
+      const ticker = setInterval(() => { const t = performance.now(); maxGap = Math.max(maxGap, t - last); last = t; }, 5);
+      try {
+        store.markDirty();
+        await sleep(60);
+        await store.flush();
+        for (let i = 0; i < 50 && read(file).n !== 1; i++) await sleep(20);
+      } finally { fs.renameSync = rename; clearInterval(ticker); }
+      assert.strictEqual(refused, 4, "the rename was refused four times, then done");
+      assert.strictEqual(read(file).n, 1);
+      assert.ok(maxGap < 60, "the event loop never stalled for the retries (20+40+60+80 ms): longest gap " + maxGap.toFixed(1) + " ms");
+      assert.ok(store.stats.maxBlockingMs < 50, "blocking " + store.stats.maxBlockingMs);
+    });
+
     console.log("all %d store tests passed", passed);
   } catch (e) {
     console.error("FAIL", e.stack || e.message);
