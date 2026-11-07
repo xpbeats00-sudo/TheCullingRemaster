@@ -38,3 +38,7 @@ server/data/ip-hash-secret.txt
 # Keys and secrets (the release signing key lives outside the repo; never commit one)
 *.pem
 .env
+# Shared matches (server/sharedmatch.js): secrets and running matches
+server/data/gameserver-secret.txt
+server/data/ticket-secret.txt
+server/data/shared-matches.json

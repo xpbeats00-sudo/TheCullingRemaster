@@ -87,6 +87,8 @@ const { Activity } = require('./activity');
 const { Leaderboard } = require('./leaderboard');
 const custom = require('./custommatch');
 const backups = require('./backup');
+const { SharedMatches, config: sharedConfig } = require('./sharedmatch');
+const { payPlayer: paySharedPlayer } = require('./sharedresults');
 
 // How often changed profiles / sessions are written (at most once per this
 // many ms; a crash loses at most about this much, a graceful stop nothing).
@@ -678,6 +680,8 @@ app.post('/api/matchresult', (req, res) => {
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
+  // A shared match is paid from its game server's result, never the HUD's.
+  if (claim.ticket.shared && sharedMatches.allocator) { const out = sharedMatches.clientResult(claim); return res.status(out.status).json(out.json); }
   const send = (out) => { rememberResult(userID, ipHash, out); res.json(out); };
   if (claim.ticket.map === SHOWDOWN.map) {
     activity.match(userID);
@@ -932,6 +936,42 @@ app.get('/api/showdown', (req, res) => {
   const series = showdowns.current(ticket.userID);
   res.json(Object.assign({ active: Boolean(series) }, showdownState('round', series ? showdowns.view(series) : null)));
 });
+
+// ---------------------------------------------------------------- shared matches
+
+// Real shared matches on game servers (sharedmatch.js, allocator.js,
+// connticket.js, sharedresults.js; docs/PARTY_MATCHMAKING_REWORK.md). Off
+// unless CULLING_SHARED_MATCHES=1, then only for CULLING_SHARED_PLAYLISTS:
+// everything else is the local match as before.
+const sharedMatches = new SharedMatches({ cfg: sharedConfig(process.env), dataDir: DATA_DIR, deps: {
+  log,
+  playlist: (id) => playlists.PLAYLISTS[id] || null,
+  contestants: (map) => (map && FIELD_BY_MAP[map]) || Math.min(...Object.values(FIELD_BY_MAP)),
+  mapIndex: (map) => (Object.prototype.hasOwnProperty.call(MAPS, map) ? MAPS[map] : 0),
+  matchUrl: (playlist, map) => weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, TEAM_MODES[playlist] || null, null),
+  backendUrl: () => BASE,
+  liveSocket: (id) => liveSocket(id),
+  usernameOf: (id) => usernameOf(id),
+  setPresence: (id, state, extra) => setPresence(id, state, extra),
+  partyLeader: (partyId) => { const p = friends.parties.get(partyId); return p ? p.leader : null; },
+  launch: (socket, playlist, map, shared) => launchMatch(socket, playlist, map, shared),
+  requeue: (userID, playlist) => { const s = liveSocket(userID); if (!s) return false; startLocalMatch(s, playlist); return !!lobbies.lobbyOf(userID); },
+  fail: (ids, reason, message, playlist) => {
+    for (const id of ids) {
+      setPresence(id, 'menu');
+      const s = liveSocket(id);
+      if (s) s.emit('join-mm-fail', { reason, message, playlist });
+    }
+  },
+  voidRanked: (userID, mode, rankedId) => {
+    const rec = ranked.record(peekProfile(userID), mode);
+    if (rec && rec.pending && rec.pending.id === rankedId) { rec.pending = null; saveProfiles(); log('ranked match voided (shared match cancelled)', userID, mode, rankedId); }
+  },
+  pay: (userID, ctx) => paySharedPlayer({ getProfile, ranked, rankedGrant, matchXP, matchCredits, seasonXPCap, levelForXP,
+    maxLevel: SEASON.maxLevel, saveProfiles, log, liveSocket, sendPlayer, entitlements, setPresence,
+    activityMatch: (id) => activity.match(id) }, userID, ctx)
+} });
+sharedMatches.routes(app);
 
 // The HUD asks the game for the level matching the new XP and reports it back.
 app.post('/api/setlevel', (req, res) => {
@@ -1215,6 +1255,65 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
 
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
+// Test hook (CULLING_TEST_HOOKS=1; off by default and never set on the
+// VPS): queues a logged-in player's own menu socket as if they had pressed
+// PLAY, so a test can drive real game menus without clicking.
+// netplay2/patch/netplay_run.py --menu uses it for shared-match joins.
+// Only for a direct loopback caller (no proxy header: behind Caddy every
+// request comes from loopback; the operator check), and never with
+// NODE_ENV=production (the service), whatever the switch says.
+const testHooks = (req) => process.env.CULLING_TEST_HOOKS === '1' && process.env.NODE_ENV !== 'production' && operator(req);
+//
+// With `party: [userID, ...]` the leader (userID) and those players are made
+// one real party first, through the friends and party code a menu uses
+// (friends, invite, accept; anyone else in the leader's party leaves it), and
+// the leader's queue then takes the whole party, as PLAY does. `party: []`
+// queues the player alone (out of any party). netplay_run.py --party uses it.
+app.post('/api/test/join-mm', (req, res) => {
+  if (!testHooks(req)) return res.status(404).json({});
+  const body = req.body || {};
+  const socket = typeof body.userID === 'string' ? socketsByUser.get(body.userID) : null;
+  if (!socket) return res.status(409).json({ error: 'not-logged-in', users: [...socketsByUser.keys()] });
+  let party = null;
+  if (Array.isArray(body.party)) {
+    party = testParty(body.userID, body.party);
+    if (party.error) return res.status(409).json(party);
+  }
+  log('test hook: join-mm', body.userID, body.queueName, party ? 'party ' + party.members.length : '');
+  startLocalMatch(socket, body.queueName);
+  res.json(Object.assign({ ok: true }, party || {}));
+});
+
+// The test hook's party: exactly `leader` plus `members`, all logged in.
+function testParty(leader, list) {
+  const members = [...new Set(list.filter((id) => typeof id === 'string' && id !== leader))].slice(0, friends.limits.maxParty - 1);
+  for (const id of [leader].concat(members)) if (!liveSocket(id)) return { error: 'not-logged-in', userID: id };
+  const touched = new Set([leader].concat(members));
+  let p = friends.party(leader);
+  if (p && p.leader !== leader) { p.members.forEach((id) => touched.add(id)); friends.leave(leader); p = null; }
+  if (p) {
+    for (const id of p.members.slice()) if (id !== leader && !members.includes(id)) { touched.add(id); friends.leave(id); }
+  }
+  if (!members.length && friends.party(leader)) friends.leave(leader);
+  for (const id of members) {
+    const now = friends.party(leader);
+    if (now && now.members.includes(id)) continue;
+    const old = friends.party(id);
+    if (old) old.members.forEach((m) => touched.add(m));
+    if (!friends.areFriends(leader, id)) {
+      friends.request(leader, id);
+      friends.accept(id, leader);
+    }
+    const inv = friends.invite(leader, id);
+    if (inv.error) return { error: 'invite-' + inv.error, userID: id };
+    const acc = friends.acceptInvite(id, inv.partyId);
+    if (acc.error) return { error: 'accept-' + acc.error, userID: id };
+  }
+  for (const id of touched) notifyFriends(id);
+  const now = friends.party(leader);
+  return { partyId: now ? now.id : null, members: now ? now.members.slice() : [leader] };
+}
+
 app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: true, users: socketsByUser.size }, activity.summary())));
 
 app.get('/api/ranked', (req, res) => {
@@ -1317,6 +1416,7 @@ function gauges() {
     presence: presence.size,
     backups: { dir: BACKUP_DIR, everyMs: BACKUP_EVERY_MS, keep: BACKUP_KEEP, last: lastBackup },
     matchLobbies: lobbies.stats(),
+    sharedMatches: sharedMatches.stats(),
     leaderboard: leaderboard.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
     rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), socketPost: allowSocketPost.size(),
@@ -1402,7 +1502,8 @@ const queueName = playlists.queueName;
 // each other (matchlobby.js), then each starts the match. Gather and countdown
 // times are configurable (tests shorten them).
 const lobbies = new MatchLobbies({
-  options: {
+  // Shared playlists (when on): a lobby holds one match's teams (sharedmatch.js).
+  options: sharedMatches.lobbyOptions({
     gatherMs: parseInt(process.env.CULLING_LOBBY_GATHER_MS || '10000', 10),
     // The pregame lobby: long enough to see the match's roster and the map.
     countdownMs: parseInt(process.env.CULLING_LOBBY_COUNTDOWN_MS || '10000', 10),
@@ -1419,7 +1520,7 @@ const lobbies = new MatchLobbies({
     matchBotsByMap: Object.fromEntries(Object.entries(FIELD_BY_MAP).map(([m, n]) => [m, n - 1])),
     // No lobby note: menus never say the other contestants are bots.
     note: null
-  },
+  }),
   // In a ranked team lobby, each player's rank is their rank in that mode.
   describe: (m) => { const l = lobbies.lobbyOf(m.id); return lobbyCard(m.id, l ? l.queue : null); },
   send: (m, payload) => {
@@ -1600,6 +1701,9 @@ function startLocalMatch(socket, raw) {
   }
   const ok = playlists.checkParty(playlist, size);
   if (!ok.ok) return refuseQueue(socket, ok.error, ok.message, { playlist: mode });
+  const shareOk = sharedMatches.checkParty(playlist, size);
+  if (!shareOk.ok) return refuseQueue(socket, shareOk.error, shareOk.message, { playlist: mode });
+  if (sharedMatches.busy(userID)) return refuseQueue(socket, 'match-starting', 'Your match is being set up on a game server.');
 
   // Already queued for this playlist (with the whole party, if in one):
   // nothing changes (a repeated request).
@@ -1660,6 +1764,7 @@ const ALLOCATION_FAILED = 'The match could not be set up. Nobody was sent in: qu
 // countdown), none of that party is, and each is told why; nothing (ticket,
 // ranked match) has been started for them.
 function allocateMatch(lobby) {
+  if (sharedMatches.applies(lobby.queue)) return sharedMatches.start(lobby);
   const matchId = newMatchId();
   const members = [...lobby.members.values()];
   const fail = (ids, message) => {
@@ -1761,7 +1866,9 @@ function launchMatch(socket, queue, map, shared = {}) {
     rankedMode: rankedId ? rankedMode : null,
     matchId,
     lobbyId: shared.lobbyId || null,
-    partyId: shared.partyId || null
+    partyId: shared.partyId || null,
+    // A shared match: paid from its game server's result (sharedmatch.js).
+    ...(shared.gameServer ? { shared: true } : {})
   });
   if (!showdown) setPresence(socket.userID, 'match', { mode });
   else beginSeries(socket, sdPlaylist);
@@ -1771,10 +1878,20 @@ function launchMatch(socket, queue, map, shared = {}) {
   const sky = showdown ? null : weather.weatherFor(WEATHER, map);
   // Showdown: "showdown:1v1" (the arena URL), team Showdown "showdown:<N>"
   // (the arena URL with ?TeamSize=N; ClientWeb.js RemasterShowdownURL).
-  const answer = showdown ? 'showdown:' + (sdPlaylist.teamSize > 1 ? sdPlaylist.teamSize : SHOWDOWN.format)
+  const answer = shared.gameServer ? shared.gameServer
+    : showdown ? 'showdown:' + (sdPlaylist.teamSize > 1 ? sdPlaylist.teamSize : SHOWDOWN.format)
     : weather.gameServer(WEATHER, MAPS[map] === undefined ? 'jungle' : map, team, sky);
   log('match-ready ->', socket.userID, showdown ? 'showdown ' + sdPlaylist.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
+  // A shared match (sharedmatch.js): the game server's address, the
+  // connection ticket (nonce: the ticket, which the stock client sends as
+  // ?Nonce=; serverNonce: the match's server nonce; ticketId) and the team.
+  if (shared.gameServer) {
+    socket.emit('match-ready', { gameServer: answer, nonce: shared.nonce, serverNonce: shared.serverNonce, ticketId: shared.ticketId, matchId,
+      lobbyId: shared.lobbyId || null, partyId: shared.partyId || null, playlist: mode, ranked: rankedId ? rankedMode : null,
+      team: shared.team, ticketExpiresInMs: shared.ticketExpiresInMs, netplay: true });
+    return { rankedId, rankedMode: rankedId ? rankedMode : null };
+  }
   socket.emit('match-ready', {
     gameServer: answer,
     nonce,
@@ -2198,11 +2315,13 @@ io.on('connection', (socket) => {
     const dropped = tickets.abandon(userID, ABANDON_GRACE_MS);
     if (dropped) log('match ended without a result', userID, dropped.mode || '', Math.round((Date.now() - dropped.startedAt) / 1000) + ' s');
     notifyFriends(userID);
+    sharedMatches.deliverNotices(socket);
   });
 
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => {
     const me = socket.userID;
+    if (sharedMatches.leave(me, 'cancelled')) { socket.emit('leave-mm-ack'); return; }
     // Sent as the match-ready crossed it: the menu ignores that match.
     declineMatch(me, 'leave-mm');
     // A party queued together leaves together, whoever cancels: the others'
@@ -2480,6 +2599,7 @@ io.on('connection', (socket) => {
     clearTimeout(socket.loginTimer);
     if (socket.userID && socketsByUser.get(socket.userID) === socket) {
       const me = socket.userID;
+      sharedMatches.leave(me, 'disconnected');
       // Gone mid-search: the party's search stops for everyone, with the
       // reason (never a party sent on without one of its members).
       const p = friends.party(me);
@@ -2547,6 +2667,7 @@ function flushAll(why) {
   const wroteAccounts = accounts.flushSync();
   friends.flushSync();
   activity.flushSync();
+  sharedMatches.flushSync();
   if (wroteProfiles || wroteSessions || wroteAccounts) {
     log('saved on ' + why + ':', [wroteProfiles && 'profiles', wroteSessions && 'sessions', wroteAccounts && 'accounts']
       .filter(Boolean).join(', '));
