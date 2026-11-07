@@ -96,6 +96,21 @@ const A = "steam:76561190000000801";
     assert.strictEqual(sd.recordInMatch("u", 6, "W"), null, "nothing after the end");
   });
 
+  await test("in-match: a round sooner than minRoundMs after the start or the last round doesn't count", async () => {
+    let t = 0;
+    const sd = new ShowdownSeries({ now: () => t, minRoundMs: 20000 });
+    sd.startSeries("u");
+    t = 5000;
+    assert.strictEqual(sd.recordInMatch("u", 1, "W"), null, "5 s after the series started");
+    t = 21000;
+    assert.ok(sd.recordInMatch("u", 1, "W"), "21 s in");
+    t = 30000;
+    assert.strictEqual(sd.recordInMatch("u", 2, "D"), null, "9 s after the round before");
+    t = 41000;
+    const v = sd.recordInMatch("u", 2, "L");
+    assert.deepStrictEqual([v.wins, v.losses, v.round], [1, 1, 3]);
+  });
+
   await test("in-match: a draw is a round with no point", async () => {
     const sd = new ShowdownSeries();
     sd.startSeries("u");
@@ -241,8 +256,10 @@ const A = "steam:76561190000000801";
       assert.strictEqual(res.json.stats.kills, (before.stats.kills || 0) + 4, "a kill per round won at most");
       assert.ok(res.json.stats.totalDamage - (before.stats.totalDamage || 0) <= 5 * PAYOUT.damagePerRound);
       assert.deepStrictEqual(srv.profiles()[A].showdown, { won: 1, lost: 0 });
+      // The ticket was used: a repeat gets the same answer and pays nothing more.
       const again = await matchResult({ victory: true, showdownRound: 5 });
-      assert.notStrictEqual(again.status, 200, "the ticket was used");
+      assert.deepStrictEqual(again.json, res.json, "the stored answer");
+      assert.strictEqual(srv.profiles()[A].stats.gamesPlayed, res.json.stats.gamesPlayed, "paid once");
     });
 
     await test("the death that loses the series: the match result counts its round first", async () => {

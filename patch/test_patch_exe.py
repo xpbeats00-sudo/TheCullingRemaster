@@ -30,6 +30,7 @@ def check(path, rounds=False):
     # Fix 4: the refresh calls the pairing stub in every build (1.3.9's proven hook, which
     # pairs Duo in game); with the module only the stub's sort call leads to sd_teams (fix 9).
     assert data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] == P.DUO_HOOK_NEW
+    assert data[P.DUO_PRE_AT:P.DUO_PRE_AT + len(P.DUO_PRE)] == P.DUO_PRE
     stub = data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)]
     assert P._module_stub(stub) if rounds else stub == P.DUO_STUB
     assert data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] == P.SCORE_JG_NEW
@@ -37,6 +38,7 @@ def check(path, rounds=False):
     changed = [i for i in range(len(stock)) if stock[i] != data[i]]
     duo = set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))      # fix 4 in every build
     duo |= {P.DUO_STUB_AT + i for i in range(len(P.DUO_STUB)) if P.DUO_STUB[i] != 0xCC}
+    duo |= set(range(P.DUO_PRE_AT, P.DUO_PRE_AT + len(P.DUO_PRE)))
     duo |= {P.SCORE_JG_AT + 2, P.SCORE_JG_AT + 3, P.SCORE_JG_AT + 4, P.SCORE_JG_AT + 5}  # the retargeted disp32
     duo |= {P.SCORE_STUB_AT + i for i in range(len(P.SCORE_STUB)) if P.SCORE_STUB[i] != 0xCC}
     expected = set(range(gate, gate + 6)) | {P.TRAIN_JUMP_AT + 1} | set(range(P.TRAIN_STUB_AT, P.TRAIN_STUB_AT + 5)) | duo
@@ -58,6 +60,7 @@ def rounds_changes(stock):
     at = table + 40 * P.STOCK_NUM_SECTIONS
     return (set(range(pe + 6, pe + 8)) | set(range(pe + 24 + 56, pe + 24 + 60)) | set(range(at, at + 40))
             | set(range(P.FFA_SLOT_AT, P.FFA_SLOT_AT + 8)) | set(range(P.RAND_LEA_AT + 3, P.RAND_LEA_AT + 7))
+            | set(range(P.TICK_SLOT_AT, P.TICK_SLOT_AT + 8))
             | set(range(P.SPAWN_WITH_CALL_AT + 1, P.SPAWN_WITH_CALL_AT + 5))
             | {at + k for _n, at, _va, _s, _e in P.MODULE_CALLS for k in range(1, 5)})
 
@@ -69,6 +72,9 @@ def check_rounds(stock, data):
     assert P.SPAWN_WITH_CALL_VA + 5 + struct.unpack_from("<i", call, 1)[0] == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SPAWN_WITH
     assert data[P.FFA_SLOT_AT:P.FFA_SLOT_AT + 8] == struct.pack("<Q", slot)
     assert data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] == lea
+    # Fix 11: slot 125 (the per-frame tick) leads to sd_gm_tick, which runs the stock tick first.
+    assert stock[P.TICK_SLOT_AT:P.TICK_SLOT_AT + 8] == struct.pack("<Q", P.TICK_SLOT)
+    assert data[P.TICK_SLOT_AT:P.TICK_SLOT_AT + 8] == struct.pack("<Q", P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_GM_TICK)
     # The calls fixes 7/8 take over lead to their entry points.
     for name, at, va, stock_call, entry in P.MODULE_CALLS:
         cur = data[at:at + 5]
@@ -94,6 +100,7 @@ def other_fixes():
             | set(range(P.TRAIN_STUB_AT, P.TRAIN_STUB_AT + 5))
             | set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
             | set(range(P.DUO_STUB_AT, P.DUO_STUB_AT + len(P.DUO_STUB)))
+            | set(range(P.DUO_PRE_AT, P.DUO_PRE_AT + len(P.DUO_PRE)))
             | set(range(P.SCORE_JG_AT, P.SCORE_JG_AT + len(P.SCORE_JG)))
             | set(range(P.SCORE_STUB_AT, P.SCORE_STUB_AT + len(P.SCORE_STUB))))
 
@@ -185,6 +192,28 @@ def check_rounds_alone(path):
         raise AssertionError("a foreign spawn-with call was accepted")
     except ValueError:
         pass
+    # ... also one from before fix 11 (slot 125 stock).
+    old = bytearray(data)
+    old[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    struct.pack_into("<Q", old, P.TICK_SLOT_AT, P.TICK_SLOT)
+    assert P._rounds(old, path) is True and old == data
+    # A slot 125 pointing elsewhere: not ours, refused.
+    bad = bytearray(data)
+    struct.pack_into("<Q", bad, P.TICK_SLOT_AT, 0x140001000)
+    bad[P.STOCK_FILE_SIZE + 0x10] ^= 0xFF
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a foreign slot 125 was accepted")
+    except ValueError:
+        pass
+    # A stock exe with slot 125 changed: refused.
+    bad = bytearray(stock)
+    struct.pack_into("<Q", bad, P.TICK_SLOT_AT, 0x140001000)
+    try:
+        P._rounds(bad, path)
+        raise AssertionError("a different slot 125 was patched")
+    except ValueError:
+        pass
     # A different exe is refused.
     bad = bytearray(stock)
     struct.pack_into("<Q", bad, P.FFA_SLOT_AT, 0x140000000)
@@ -212,10 +241,17 @@ def check_team_hook(path):
     new = open(path, "rb").read()
     sect = P.IMAGE_BASE + ROUNDS.SECTION_RVA
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
-    # The refresh: exactly fix 4's call of the stub at fix 4's site, as 1.3.9 shipped it.
-    assert P.DUO_HOOK_AT == 0x20313A and new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] == P.DUO_HOOK_NEW == bytes.fromhex("e8c470e5ff909090")
+    # The refresh: fix 4's site calls the pre-stub, which runs the stub (1.3.9's) only when the
+    # GameState has authority (Role +0x118 == 3: a local match) and on a network client only
+    # sorts, keeping the server's teams. 1.3.9-1.3.12 called the stub directly.
+    assert P.DUO_HOOK_AT == 0x20313A and new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] == P.DUO_HOOK_NEW
+    assert P.DUO_HOOK_STUB == bytes.fromhex("e8c470e5ff909090")
     ins = next(md.disasm(new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 5], 0x140203B3A))
-    assert (ins.mnemonic, int(ins.op_str, 16)) == ("call", 0x14005AC03), (ins.mnemonic, ins.op_str)
+    assert (ins.mnemonic, int(ins.op_str, 16)) == ("call", P.DUO_PRE_VA), (ins.mnemonic, ins.op_str)
+    pre = [(i.mnemonic, i.op_str) for i in md.disasm(new[P.DUO_PRE_AT:P.DUO_PRE_AT + len(P.DUO_PRE)], P.DUO_PRE_VA)]
+    assert pre == [("cmp", "byte ptr [rdi + 0x118], 3"), ("je", "0x14005ac03"), ("mov", "rcx, rdi"), ("jmp", "0x140243c80")], pre
+    assert P.DUO_PRE_AT - P.DUO_STUB_AT == P.DUO_PRE_VA - 0x14005AC03 and P.DUO_PRE_AT >= P.DUO_STUB_AT + len(P.DUO_STUB)
+
     # The stub: 1.3.9's bytes, pairing (shr edx, 1; inc edx; SetTeamNum), its sort call to sd_teams.
     stub = new[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)]
     assert P.DUO_STUB_AT == 0x5A203 and stub[:P.STUB_SORT] == P.DUO_STUB[:P.STUB_SORT]
@@ -272,11 +308,17 @@ def real_checks(path):
     s = pe.sections[-1]
     assert s.Name.rstrip(b"\0") == P.ROUNDS_NAME and s.VirtualAddress == ROUNDS.SECTION_RVA
     assert pe.get_data(ROUNDS.SECTION_RVA, len(ROUNDS.BLOB)) == ROUNDS.BLOB
+    # Fix 4's hook site has the GameState in rdi (mov rdi, rax just before), as the pre-stub
+    # (and 1.3.9's stub) read it, and rdi survives the sort (callee-saved).
+    site = pe.get_data(0x203B3A - 8, 8)
+    assert bytes.fromhex("488bf8") in site, site.hex()
     slot_rva = 0x25A81E8
     assert pe.get_offset_from_rva(slot_rva) == P.FFA_SLOT_AT
     assert pe.get_offset_from_rva(P.RAND_LEA_VA - P.IMAGE_BASE) == P.RAND_LEA_AT
     relocs = {e.rva for b in pe.DIRECTORY_ENTRY_BASERELOC for e in b.entries if e.type == 10}
     assert slot_rva in relocs, "the vtable slot is relocated"
+    assert pe.get_offset_from_rva(0x25A7D00) == P.TICK_SLOT_AT and 0x25A7D00 in relocs, "slot 125 is relocated"
+    assert pe.get_qword_at_rva(0x25A7D00) == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_GM_TICK
     assert pe.get_qword_at_rva(slot_rva) == P.IMAGE_BASE + ROUNDS.SECTION_RVA + ROUNDS.SD_SHOULD_END
     assert pe.OPTIONAL_HEADER.SizeOfImage == P.rounds_layout()[4]
     pe.close()
@@ -319,7 +361,8 @@ try:
     stand_in(fresh)
     before = open(fresh, "rb").read()
     none = {"cap": 16, "sha1": False, "slots": False, "duoteam": False, "rounds": False, "weather": False,
-            "scoreboard": False, "duowin": False, "chokening": False, "teams": False, "unstick": False}
+            "scoreboard": False, "duowin": False, "chokening": False, "teams": False, "unstick": False,
+            "autotest": False}
     assert P.check(fresh) == none, P.check(fresh)
     assert open(fresh, "rb").read() == before, "check() changed the file"
     try:

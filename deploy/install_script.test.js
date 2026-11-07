@@ -62,4 +62,22 @@ test("a new code that doesn't answer /health is rolled back, and the result is s
   assert.match(INSTALL, /Start-Transcript -Path \$log/);
 });
 
+test("the Node.js swap's message names the folder on one line", () => {
+  at("$outcome = \"Node.js was being replaced (the service is stopped): check $Root\\node and start the service\"");
+});
+
+test("the new Caddy site file is validated before it replaces the live one, and put back if Caddy refuses it", () => {
+  const write = at("| Set-Content -Encoding UTF8 $siteNew");
+  const alone = at("Invoke-Native 'caddy validate (the new site file on its own)' { & $caddyExe validate --config $siteNew --adapter caddyfile }");
+  const inPlace = at("Move-Item $siteNew $site -Force\n        try {");
+  const full = at("Invoke-Native 'caddy validate' { & $caddyExe validate --config $caddyfile --adapter caddyfile }");
+  const restore = at("if (Test-Path $sitePrevious) { Move-Item $sitePrevious $site -Force } else { Remove-Item $site -Force }");
+  const reload = at("Invoke-Native 'caddy reload'");
+  assert.ok(write < alone && alone < inPlace && inPlace < full && full < restore && restore < reload, "write aside, check, swap in, check, reload");
+  // Never written straight into the folder Caddy imports.
+  assert.doesNotMatch(INSTALL, /Set-Content -Encoding UTF8 \(Join-Path \$sites 'culling\.caddy'\)/);
+  const siteNewDef = /\$siteNew = Join-Path \$Root 'downloads\\culling\.caddy\.new'/;
+  assert.match(INSTALL, siteNewDef, "the new file is kept outside sites\\ (which Caddy imports as sites/*.caddy)");
+});
+
 console.log("all %d install script checks passed", passed);

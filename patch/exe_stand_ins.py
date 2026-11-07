@@ -33,6 +33,7 @@ def stock_bytes(data):
     data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
     data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] = P.DUO_HOOK
     data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
+    data[P.DUO_PRE_AT:P.DUO_PRE_AT + len(P.DUO_PRE)] = P.DUO_PRE_PAD
     data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] = P.SCORE_JG
     data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] = P.SCORE_PAD
 
@@ -52,6 +53,7 @@ def rounds_stand_in(path):
     for i in range(P.STOCK_NUM_SECTIONS):
         data[table + 40 * i:table + 40 * i + 8] = (".s%d" % i).encode().ljust(8, b"\0")
     struct.pack_into("<Q", data, P.FFA_SLOT_AT, P.FFA_SLOT)
+    struct.pack_into("<Q", data, P.TICK_SLOT_AT, P.TICK_SLOT)
     data[P.RAND_LEA_AT:P.RAND_LEA_AT + 7] = P.RAND_LEA
     data[P.SPAWN_WITH_CALL_AT:P.SPAWN_WITH_CALL_AT + 5] = P.SPAWN_WITH_CALL
     for _n, at, _va, stock_call, _e in P.MODULE_CALLS:
@@ -69,6 +71,7 @@ def full_stand_in(path):
     os.remove(small)
     for at, n in ((P.CAP_AT, 5), (P.SHA_GATE_AT, 13), (P.TRAIN_JUMP_AT, 2), (P.TRAIN_CALL_AT, len(P.TRAIN_CALL)),
                   (P.TRAIN_STUB_AT, 13), (P.DUO_HOOK_AT, len(P.DUO_HOOK)), (P.DUO_STUB_AT, len(P.DUO_STUB)),
+                  (P.DUO_PRE_AT, len(P.DUO_PRE)),
                   (P.SCORE_JG_AT, len(P.SCORE_JG)), (P.SCORE_STUB_AT, len(P.SCORE_STUB))):
         data[at:at + n] = part[at:at + n]
     open(path, "wb").write(data)

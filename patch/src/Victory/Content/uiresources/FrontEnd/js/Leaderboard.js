@@ -67,6 +67,11 @@
   var board = "ranked";       // the tab shown
   var panel = null, styled = false;
   var retry = null;
+  // An ask the server never answers (it drops events over its limits, or the
+  // socket isn't signed in yet): after LB_WAIT_MS the panel says so instead of
+  // "Loading..." for good.
+  var LB_WAIT_MS = 10000;
+  var waiting = null, stalled = false;
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -194,7 +199,8 @@
     var sub = panel.querySelector(".lb-sub");
     if (!b) {
       sub.textContent = data && data.season ? data.season.name : "";
-      box.appendChild(el("div", "lb-hint", data && data.error ? "The leaderboard is unavailable right now." : "Loading..."));
+      box.appendChild(el("div", "lb-hint", data && data.error ? "The leaderboard is unavailable right now."
+        : stalled ? "The leaderboard isn't answering right now. Close it and open it again to retry." : "Loading..."));
       panel.querySelector(".lb-foot").textContent = "";
       return;
     }
@@ -262,10 +268,19 @@
 
   function ask() {
     clearTimeout(retry);
+    clearTimeout(waiting);
+    stalled = false;
     if (!emit("remaster-leaderboard-get")) {
       data = data || { error: "offline" };
       render();
+      return;
     }
+    waiting = setTimeout(function () {
+      waiting = null;
+      if (current()) return;
+      stalled = true;
+      render();
+    }, LB_WAIT_MS);
   }
 
   function open() {
@@ -284,6 +299,8 @@
   function close() {
     if (panel) panel.className = "hidden";
     clearTimeout(retry);
+    clearTimeout(waiting);
+    stalled = false;
     // Its rows go with it: AnimatedCards.js animates every card row still on
     // the page every 40 ms, hidden or not (they are drawn again on open).
     if (panel) { panel.querySelector(".lb-scroll").textContent = ""; panel.querySelector(".lb-yours").textContent = ""; }
@@ -323,6 +340,8 @@
       if (!current() && panel && panel.className !== "hidden") retry = setTimeout(ask, 2500);
       return;
     }
+    clearTimeout(waiting);
+    stalled = false;
     data = boardsData(msg);
     render();
   }

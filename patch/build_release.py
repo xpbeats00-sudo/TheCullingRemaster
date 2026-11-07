@@ -155,6 +155,7 @@ def tests(a, stage):
         p("test_vfx_camos.py", stage),
         p("test_custom_match.py", stage), n("test_showdown_hud.js"), n("test_team_hud.js"), n("test_hud_layout.js"),
         n("test_ranked_hud.js"), n("test_ranked_menu.js"), n("test_showdown_menu.js"), n("test_remaster_panels.js"),
+        n("test_clientweb.js"),
         # Coherent UI runs ES5 (and the stock scripts' const): one ES2015 line
         # stops a whole menu or HUD script, so every shipped UI script is linted.
         p("lint_es5.py", "--release"), p("test_lint_es5.py"), p("test_build_release.py"),
@@ -162,10 +163,10 @@ def tests(a, stage):
         p("test_patch_assets.py", stage),
         p("test_weather.py", stage), p("test_tree_collision.py", stage), p("test_measure_loading.py"),
         p("test_netplay_check.py", exe), p("test_netplay.py", exe),
-        # The native module (fixes 5, 7-10 and the weather) compiled and run against fake game
+        # The native module (fixes 5, 7-11 and the weather) compiled and run against fake game
         # objects: these need the Visual Studio C++ tools, as build_showdown_rounds.py does.
         p("build_showdown_rounds.py", "--check"), p("test_native_module.py"), p("test_weather_native.py", exe),
-        p("test_unstick_native.py", exe),
+        p("test_unstick_native.py", exe), p("test_autotest_native.py", exe),
         d("stage_objects.test.js"), d("publish.test.js"), d("make_manifest.test.js"),
         ("launcher: npm test", [NPM, "test"], os.path.join(ROOT, "launcher")),
     ]

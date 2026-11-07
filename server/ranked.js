@@ -49,8 +49,12 @@ const CONFIG = {
   // no tier above Hunter can be reached or rewarded yet. Raise as the season
   // matures (and botMaxRating with it).
   maxRating: 1399,
-  historyLength: 50,
-  processedLength: 100,    // match IDs remembered against duplicate results
+  // Kept per mode on the profile, which is serialized whole on every save
+  // (performance review P5): the last 20 matches (the Ranked screen shows 10)
+  // and the last 20 scored match IDs (a result can only be for the pending
+  // match, so a few are plenty against duplicates).
+  historyLength: 20,
+  processedLength: 20,     // match IDs remembered against duplicate results
   // Season 1; the seasons after it follow back to back with the same length
   // (seasonAt). CONFIG.season is always the current one.
   firstSeason: { id: 'S1', name: 'Season 1', start: '2026-11-01T00:00:00Z', end: '2027-02-01T00:00:00Z' },
@@ -198,7 +202,7 @@ function blank() {
     peakRating: CONFIG.startRating,
     peakTier: tierFor(CONFIG.startRating).name,
     pending: null,
-    processed: {},
+    processed: [],
     history: [],
     tiersReached: {}
   };
@@ -219,7 +223,12 @@ function record(profile, mode = 'solo') {
 // season. Profiles from before the team modes have no rankedTeams: it is
 // added, with only the modes played, when a team mode is first used; Solo's
 // record (profile.ranked) is never touched by another mode.
-function ensure(profile, now = Date.now(), mode = 'solo') {
+// A match still pending from the season that ended is scored into that season
+// as last place before the new one starts (it used to be dropped, penalty and
+// all); `grant` gives the old season's tier rewards it may complete.
+// opts.keepSeason: leave the record in its season (finishMatch scoring a
+// result that started last season, then rolling over itself).
+function ensure(profile, now = Date.now(), mode = 'solo', grant = null, opts = {}) {
   const id = modeId(mode);
   let r;
   if (id === 'solo') {
@@ -231,9 +240,12 @@ function ensure(profile, now = Date.now(), mode = 'solo') {
     r = profile.rankedTeams[id];
   }
   // Fields a hand-edited or imported record may lack.
-  if (!isRecord(r.processed)) r.processed = {};
+  // The scored match IDs, oldest first: one bounded list (records saved
+  // before kept an object of ID -> when; its most recent IDs are kept).
+  if (!Array.isArray(r.processed)) r.processed = isRecord(r.processed) ? Object.keys(r.processed).slice(-CONFIG.processedLength) : [];
   if (!isRecord(r.tiersReached)) r.tiersReached = {};
   if (!Array.isArray(r.history)) r.history = [];
+  if (r.history.length > CONFIG.historyLength) r.history.length = CONFIG.historyLength;
   if (!Number.isFinite(r.rating)) r.rating = CONFIG.startRating;
   if (!Number.isFinite(r.mmr)) r.mmr = r.rating;
   if (!Number.isInteger(r.matches) || r.matches < 0) r.matches = 0;
@@ -241,7 +253,10 @@ function ensure(profile, now = Date.now(), mode = 'solo') {
   if (!Number.isFinite(r.peakRating)) { r.peakRating = r.rating; r.peakTier = tierFor(r.rating).name; }
   if (r.pending !== null && !isRecord(r.pending)) r.pending = null;
   const season = seasonAt(now);
-  if (r.season !== season.id) rollover(r, season);
+  if (r.season !== season.id && !opts.keepSeason) {
+    if (isRecord(r.pending)) apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant, id);
+    rollover(r, season);
+  }
   // Profiles from before the season caps (or imported): brought within them.
   if (r.rating > CONFIG.maxRating) r.rating = CONFIG.maxRating;
   if (r.mmr > CONFIG.maxRating) r.mmr = CONFIG.maxRating;
@@ -258,10 +273,12 @@ function apply(r, match, result, now, grant, mode = 'solo') {
   const order = opponentsFor(match.id, match.mmr, match.field);
   const k = isPlacement(r) ? CONFIG.kProvisional : CONFIG.kEstablished;
   const before = r.rating;
-  const delta = Math.round(ratingChange(before, result.placement, order, k));
+  const change = Math.round(ratingChange(before, result.placement, order, k));
   const mmrDelta = ratingChange(r.mmr, result.placement, order, CONFIG.kMMR);
   const tierBefore = tierFor(before).name;
-  r.rating = Math.min(CONFIG.maxRating, Math.max(0, before + delta));
+  r.rating = Math.min(CONFIG.maxRating, Math.max(0, before + change));
+  // What was really applied (a win at the cap or a loss near 0 moves less).
+  const delta = r.rating - before;
   r.mmr = Math.min(CONFIG.maxRating, Math.max(0, r.mmr + mmrDelta));
   r.matches += 1;
   if (result.placement === 1) r.wins += 1;
@@ -299,17 +316,13 @@ function apply(r, match, result, now, grant, mode = 'solo') {
     timeAlive: result.timeAlive || 0,
     rewards
   };
-  // Processed match IDs -> when. Only the ID matters (the entry itself is in
+  // The scored match IDs: only the ID matters (the entry itself is in
   // history); profiles from before stored a full copy of every entry here,
   // forever, which made a ranked veteran's profile ~75 KB and every save of
   // profiles.json slower. Only recent IDs need remembering: a result can only
   // be for the pending match.
-  r.processed[match.id] = now;
-  const ids = Object.keys(r.processed);
-  for (let i = 0; i < ids.length; i++) {
-    if (i < ids.length - CONFIG.processedLength) delete r.processed[ids[i]];
-    else if (typeof r.processed[ids[i]] === 'object') r.processed[ids[i]] = r.processed[ids[i]].at || now;
-  }
+  r.processed.push(match.id);
+  if (r.processed.length > CONFIG.processedLength) r.processed.splice(0, r.processed.length - CONFIG.processedLength);
   r.history.unshift(entry);
   r.history.length = Math.min(r.history.length, CONFIG.historyLength);
   return entry;
@@ -321,7 +334,7 @@ function apply(r, match, result, now, grant, mode = 'solo') {
 // (teamField); Solo starts at the stock 16 and the result may say more.
 function startMatch(profile, now = Date.now(), grant, opts = {}) {
   const mode = modeId(opts.mode);
-  const r = ensure(profile, now, mode);
+  const r = ensure(profile, now, mode, grant);
   let abandoned = null;
   if (r.pending) {
     abandoned = apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant, mode);
@@ -343,10 +356,22 @@ function startMatch(profile, now = Date.now(), grant, opts = {}) {
 // first result stands. Invalid results are rejected without changing anything.
 // A team match's placement is the team's, 1..its number of teams; its field is
 // the one it started with (a result can't change it).
+// A result for a match that started last season (pending at the rollover) is
+// scored into that season, then the new season starts.
 function finishMatch(profile, result, now = Date.now(), grant, mode = 'solo') {
   mode = modeId(mode);
-  const r = ensure(profile, now, mode);
-  if (result.matchId && Object.prototype.hasOwnProperty.call(r.processed, result.matchId)) {
+  const stored = record(profile, mode);
+  const season = seasonAt(now);
+  const late = Boolean(stored && isRecord(stored.pending) && stored.season !== season.id
+    && (!result.matchId || result.matchId === stored.pending.id));
+  const r = ensure(profile, now, mode, grant, { keepSeason: late });
+  const out = finishPending(r, result, now, grant, mode);
+  if (late && r.season !== season.id) rollover(r, season);
+  return out;
+}
+
+function finishPending(r, result, now, grant, mode) {
+  if (result.matchId && r.processed.includes(result.matchId)) {
     const entry = r.history.find((h) => h.matchId === result.matchId) || { matchId: result.matchId };
     return { entry, duplicate: true };
   }
@@ -360,6 +385,16 @@ function finishMatch(profile, result, now = Date.now(), grant, mode = 'solo') {
   if (!Number.isInteger(placement) || placement < 1 || placement > field) return { error: 'invalid-placement' };
   r.pending = null;
   return { entry: apply(r, Object.assign({}, match, { field }), Object.assign({}, result, { placement }), now, grant, mode) };
+}
+
+// Drops the pending match of `mode` without scoring it: the player never went
+// in (the menu turned down the match it was sent). Only the match named by
+// `matchId` (the ticket's); returns whether one was dropped.
+function cancelMatch(profile, mode = 'solo', matchId = null) {
+  const r = record(profile, mode);
+  if (!r || !r.pending || (matchId && r.pending.id !== matchId)) return false;
+  r.pending = null;
+  return true;
 }
 
 // A team match's placement from the HUD's report: 1 for the team's win (the
@@ -414,4 +449,4 @@ function summaries(profile, now = Date.now()) {
 }
 
 module.exports = { CONFIG, TIERS, MODES, MODE_IDS, TEAM_MODE_IDS, modeId, modeForPlaylist, teamField, teamPlacement, record,
-  tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, summary, summaries, seasonAt };
+  tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, cancelMatch, summary, summaries, seasonAt };

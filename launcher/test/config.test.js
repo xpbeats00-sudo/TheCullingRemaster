@@ -59,6 +59,29 @@ try {
     assert.strictEqual(config.sanitize({ manifestUrl: "http://localhost:8080/manifest.json" }).manifestUrl, "http://localhost:8080/manifest.json");
   });
 
+  test("the installed launcher refuses plain http to this PC; a dev run allows it", () => {
+    const localhttp = require("../lib/localhttp");
+    const sync = require("../lib/sync");
+    const clientdll = require("../lib/clientdll");
+    const local = ["http://localhost:8080/m.json", "http://127.0.0.1:8000/api"];
+    assert.strictEqual(localhttp.allowed(), true, "a dev run (and these tests) by default");
+    localhttp.allow(false);                                // what main.js does when app.isPackaged
+    try {
+      for (const u of local) {
+        assert.strictEqual(config.validUrl(u), false, u);
+        assert.throws(() => sync.checkUrl(u), /non-https/, u);
+        assert.throws(() => clientdll.ensure(tmp, u), /https/, u);
+      }
+      assert.strictEqual(config.sanitize({ manifestUrl: local[0] }).manifestUrl, config.DEFAULTS.manifestUrl);
+      assert.deepStrictEqual(config.sanitize({ servers: [{ id: "l", name: "L", api: local[1] }] }).servers, config.DEFAULTS.servers);
+      assert.throws(() => sync.validateManifest({ version: "1", files: [], servers: [{ id: "l", name: "L", api: local[1] }] }), /non-https/);
+      assert.strictEqual(config.validUrl("https://localhost:8443/api"), true, "https is fine anywhere");
+    } finally {
+      localhttp.allow(true);
+    }
+    for (const u of local) { assert.strictEqual(config.validUrl(u), true, u); sync.checkUrl(u); }
+  });
+
   test("game folder check finds Victory.exe, Func launcher and the client DLL", () => {
     const root = path.join(tmp, "TheCulling");
     const win64 = path.join(root, "Victory", "Binaries", "Win64");

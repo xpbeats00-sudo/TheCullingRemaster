@@ -63,8 +63,9 @@ static u8 *new_class(void)
     F(c, 0x90, i32) = 0;
     return c;
 }
-static u8 *cls_pc;
+static u8 *cls_pc, *cls_char;
 static u8 *ret_pc(void) { return cls_pc; }
+static u8 *ret_char(void) { return cls_char; }   /* AShooterCharacter: the pawn here isn't one (unstick leaves it alone) */
 
 static u8 *objs[256];
 static int alive_obj[256], nobjs;
@@ -383,6 +384,7 @@ int main(int argc, char **argv)
     image = (u8 *)VirtualAlloc(0, 0x2600000, MEM_RESERVE, PAGE_NOACCESS);
     CHECK(image);
     cls_pc = new_class();
+    cls_char = new_class();
     ps_class = new_obj(0);
     for (i = 0; i < 3; i++) tmpl[i] = new_template(i + 1);
     fog = new_obj(0); sun = new_obj(0); sky = new_obj(0); mid = new_obj(0);
@@ -394,6 +396,7 @@ int main(int argc, char **argv)
     hook(0x69c470, (void *)weak_get);
     hook(0x69c2a0, (void *)weak_set);
     hook(0x303820, (void *)ret_pc);
+    hook(0x302cc0, (void *)ret_char);
     hook(0x6942a0, (void *)find_object);
     hook(0x695470, (void *)load_object);
     hook(0x5b0e60, (void *)make_name);

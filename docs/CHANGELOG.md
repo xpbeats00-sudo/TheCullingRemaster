@@ -8,8 +8,62 @@
 - Kills count up to 1 per 20 s of match (`CULLING_SECONDS_PER_KILL`) and damage up to 10 per second (`CULLING_DAMAGE_PER_SECOND`). The time includes loading and the pod countdown, so real matches stay well inside both.
 - Match credits and XP stop at 8,000 credits and 40,000 XP a day, UTC (`CULLING_DAILY_MATCH_CREDITS`, `CULLING_DAILY_MATCH_XP`). Showdown series pay counts toward the same cap. Games still count past the cap; set a limit to 0 to turn it off.
 - A normal match pays exactly as before. Tests: `server/test/matchpay.test.js`.
+- A custom match (from the CUSTOM screen, with your own settings) pays half the credits and XP of the same result in a normal match, still within the limits above.
+- Fixed: Showdown results skipped all of the above. Instant "W" rounds paid the daily cap in about 15 seconds and added unlimited wins and kills to the leaderboards (FULL_AUDIT_2026-11-06 round 2). A Showdown series now follows the same rules: a series shorter than the minimum match pays nothing and isn't counted, kills and damage are bounded by how long it ran, and the daily cap applies. A forfeit with no round played pays nothing. A round reported less than 20 s after the series started or after the round before doesn't count (`CULLING_SHOWDOWN_MIN_ROUND_SECONDS`).
+- `xpEarned` in the result is the XP really added. Near the season XP cap it used to show what the match was worth.
+
+**Results, cancels and logins**
+- A result the HUD posts twice (it retries when the first answer is slow) now gets the same answer again instead of an error that read as "your result wasn't saved". This holds for 10 minutes, for the same player only, and nothing is paid twice.
+- Cancelling a search just as the match was found no longer leaves the match open on the server. Before, Ranked counted it as last place later, and friends saw you "In match" for up to 45 minutes. If you leave within 15 s of the match being sent and no result has come in, the match is closed, a ranked match is dropped without penalty, and you are back in the menu. The menu can also say it ignored a match (`match-declined`, with the match's nonce). That only works inside the same 15 s, so a match being played can't be declined to dodge a ranked loss.
+- Every refused game login now says why (`errorCode`: `invalid-userid`, `account-required`, `server-full`, `too-many-new-players`, `rate-limited`, `stopping`), so the menu can show the reason instead of staying offline without a word.
+- A party member who starts a custom match while the party is searching now stops the party's search. The others are told why, instead of the leader going on alone.
+
+**Ranked**
+- The rating change shown for a match is the change really applied. At the season cap (1399), a win showed "+14" that wasn't added.
+- A ranked match still running when a season ends is scored in the old season, with its result if it comes in, or as last place otherwise. Before, it was dropped, and an abandoned match escaped its penalty.
+- Player cards, lobby cards and the leaderboard show only this season's Solo rank, as the team modes already did. Last season's rank was shown until your first ranked match of the new season.
+
+**Privacy**
+- Your live status (in menu, searching, in match) and when you were last seen are shown only to your friends and your party, not on a stranger's player card or in friend requests.
+- Player cards are rate limited (one a second, bursts of 10), so names can't be looked up in bulk.
+- Match tickets keep your address hashed, as accounts already did, never raw in `tickets.json` or its backups. Tickets saved raw by the old server are converted when it starts.
+- Refused logins no longer write the Steam ID to the log, and the login log keeps only short plain `authType` / `appid` / `build` values. A client could send up to 1 MB with newlines in those fields, forging log lines and pushing the real ones out.
+- `.gitignore` now covers the player data files, the IP-hash secret, `*.pem` keys and `.env`.
+
+**Performance and load (performance review, measured on this PC)**
+- Socket messages are capped at 64 KB (was 1 MB). A polling upload over the cap is refused before it is read, and uploads and new connections are rate limited per address. Before, four clients that never logged in could keep a core busy uploading 1 MB payloads (server at 110% of a core, players' requests waiting 139 ms). Now those uploads are refused at once (server under 1% CPU, 3 ms).
+- The item list (~800 KB) is built and encoded once, and goes to a menu at most once a minute.
+- Your owned items are worked out once per change instead of three times per menu login, and sent once: 3 pushes (134 KB) became 1 (45 KB), and the server time per request went from 1.06 to 0.46 ms.
+- Polling frames (what the game's menu receives) are built natively, with exactly the same bytes as before: 16 times faster for the owned-items list.
+- Saving no longer freezes the server for up to a third of a second when another program (antivirus, backup) holds the data file open: the longest stall went from 339 ms to 17 ms.
+- Ranked keeps the last 20 matches per mode (the screen shows 10), and the match IDs kept against double results are a short list. A ranked veteran's profile went from 70 KB to 27 KB, so every save of `profiles.json` is smaller.
+- A game login no longer rewrites `accounts.json` every time. The play grant's extension is saved at most once a minute.
+- When `profiles.json` gets slow to save (over 50 ms), it is saved every 5 s instead of every second. Past 200 MB, the log warns loudly (`CULLING_PROFILES_WARN_BYTES`). The real fix is moving profiles to a database, left for later.
+- A friends panel gets at most one update per 300 ms, with the latest state. A panel you ask for (opening Friends) is still answered at once. With 100 friends online, 40 status changes went from 4,040 panel pushes to 2,121, and from 823 ms to 233 ms of server time.
+- Password hashing leaves one CPU thread free, and connections are pinged every 25 s instead of 10 s. A menu that vanished without closing its connection is now noticed after up to 55 s instead of 40 s.
 
 ## Game (next release)
+
+**Connection, results and menus (FULL_AUDIT_2026-11-06, client items)**
+- The menu reconnects on its own after the connection drops (a server update, a network blip) or a sign-in fails: it tries again after 5 s, then 10, 20, 40 and 60 s at most, with a small "Offline — reconnecting" note bottom left. Before, it stayed offline until you queued or opened Friends. A refusal that retrying can't fix (no account, banned, out of date) doesn't retry until you press Retry. When the server no longer knows your session, the menu signs in again from scratch.
+- Sign-in refusals now say why: "Open the game from the launcher and sign in" (no account), the server is full, too many new players or requests from your network, the server is restarting (try again in a minute), or an invalid Steam ID. Before, most of them left the menu offline without a word, and a missing account showed "Error code: 7".
+- If you cancel a search just as its match is found, the menu now tells the server it declined the match (needs the server update), so it doesn't stay on your record as a ranked last place or show you "In match" to friends. If the search reaches the server after your cancel, the menu leaves it again, so the search pill no longer sticks on "Leaving...".
+- Match results are retried for up to 5 minutes when the server doesn't answer (before: three tries in 10 s). Quitting while a result is still unsaved sends it first and returns to the menu as soon as the server answers, or after 2 s at most. Before, a team result was sent with a request that could freeze the game when the server was unreachable.
+- A failed search start (no connection) no longer blocks every later search. The TRIO, QUAD, Showdown and Ranked tiles work again after the error.
+- Ranked and the leaderboard no longer sit on "Loading..." forever: Ranked says "Ranked unavailable — retry" (click to retry) or that you are offline, and the leaderboard says when the server isn't answering.
+- A failed purchase says why (not enough credits, a ranked reward, an item that can't be bought).
+- Friends: the buttons wait for the server's answer, so a double click no longer gives two contradictory messages. The result of Join on an invite (or a player card's buttons) now shows even when the Friends panel is closed.
+- Safety: the match URL from the server only accepts the weather and team-size options, so a bad answer can't turn on a test mode. Teammates' names, and the server's text on the Ranked screen, are shown as text, never as markup. The Steam login ticket and your session token are no longer written to the menu's log. Login errors no longer appear in the build-version line. The stuck-player safety net and Showdown's repossess check that the pawn is a character before reading it. Needs the patched exe.
+- Tests: `patch/test_clientweb.js` (new: the real ClientWeb.js on stand-ins for the engine, jQuery, socket.io and the server), `test_match_urls.py`, `test_ranked_hud.js`, `test_team_hud.js`, `test_ranked_menu.js`, `test_remaster_panels.js`, `test_showdown_menu.js`, `test_custom_menu.js`, `test_unstick_native.py`, `test_native_module.py`. Not yet checked in game.
+
+**Teams on a game server**
+- In a match hosted on a game server (shared matches, still in testing, not yet open to players), the game now keeps the teams the server sets. Before, it re-paired players by its own list order, so your teammate panel could show the wrong player. Local Duo, Trios and Quads pair as before. Checked in game: with 1.3.12 the panel showed the other player; with this build, your own teammate; a local Duo still pairs you with a bot.
+
+**Found by the in-game autotest (`patch/autotest/run.py`, results in [AUTOTEST_RESULTS.md](AUTOTEST_RESULTS.md))**
+- Fixed: in Duo, Trios and Quads two contestants of different teams could still share a pod (and one pod stayed empty). The game's start chooser puts teammates on their team's start, but the teams while everyone spawns aren't the final ones. Team matches now give every contestant a free pod of its own, as in Solo; teammates start apart. Needs the patched exe (fix 12).
+- Fixed: every ranked loss was scored as last place. The game never tells the HUD your place (its death data has no Rank), so the result posted 0. The patched exe now sends your place when you die (the contestants still alive, you included), and the HUD posts it; team modes turn it into the team's place.
+- Fixed: a win posted placement 0 (the game's victory data has no Rank); it posts 1.
+- Showdown: after losing a round by your own death, the game's delayed spectating could take the pawn the next round gave you, losing that round a second in. The pawn is possessed again. Unit tested only; Showdown testing is paused.
 
 **Pods: one contestant each, and nobody starts armed**
 - Fixed: when the pods opened, other contestants could be standing in your pod, already holding weapons. Since 1.3.x's 24-contestant matches, Solo, Duo, Trios and Quads put 24 contestants on maps with 16 pods (Jungle and Prison). The game gives each contestant a free pod first, then puts the rest in pods that are already taken, so 8 contestants shared someone's pod. Matches now have one contestant per pod: 16 in Solo, Duo and Quads, 15 in Trios (5 full teams), and Showdown is unchanged. Needs the patched exe (the native module caps the bots at the mode's start points).
@@ -76,6 +130,13 @@
 - Downloads left over from an older release are deleted, and no longer show as "Download paused" offline.
 - A game folder at the root of a drive (D:\) works.
 
+**Hardening (FULL_AUDIT_2026-11-06)**
+- Downloads stop as soon as the server sends more than the file's signed size, and the file starts over; the release manifest is read up to 8 MB and its signature up to 1 KB. A partial download bigger than its file is deleted before the disk-space check, so it can no longer leave Game Sync stuck on "not enough disk space".
+- The launcher remembers the newest release it has accepted (in its own AppData folder) and refuses an older one, or an earlier build of the same version, even for a fresh install or a newly chosen game folder.
+- A finished download that an antivirus keeps locked is retried for up to 30 s (without freezing the launcher). If it stays locked, Game Sync says a file is locked, probably by an antivirus, and Resume continues from the finished download; the other files are not stopped, and it no longer asks to choose another game folder.
+- A damaged or planted update journal can't move game files outside the launcher's own `.remaster` folder: a journal naming any other backup folder is dropped, and "Restore previous version" refuses such a record.
+- The installed launcher accepts only https addresses (settings, release, servers, the client's server address). Plain http to localhost or 127.0.0.1 works only in a dev run.
+
 **Start-up and offline**
 - Offline at start-up, the launcher keeps trying to reach the update server by itself (5 s, growing to once a minute), with a Retry button next to Offline. Server ping and player count refresh every 45 s.
 - A start-up check that fails finishes the start-up screen with the error instead of hanging it.
@@ -140,6 +201,14 @@
 
 - Releases publish each file by content hash (`objects/<sha256>`). Publishing a new release uploads only the files that changed; republishing 1.1.0 this way uploads nothing.
 - The publish script checks every upload against its hash, and never overwrites a published object.
+- Publishing stages exactly the manifest it verified: every `stage_objects.js` step reads the TEMP copy whose signature was checked (`--manifest`/`--sig`), not the release folder's, which a rebuild could replace mid-publish (FULL_AUDIT_2026-11-06, P0 #4).
+- The website's setup and `launcher.json` change only after the new manifest is live, so a publish that fails earlier leaves the website as it was; a failure there reads `PUBLISH FAILED AFTER GOING LIVE`.
+- Only one publish runs at a time (`C:\culling\publish.lock`).
+- A release built from a git tree with uncommitted changes (`build.dirty`) is refused unless `-AllowDirty`, and one without a build record unless `-AllowUnbuilt`. `Publish Release.bat` doesn't pass these; run `deploy\publish_release.ps1` directly for them.
+- `make_release.py --ship-dead-weight` ships the dead weight (`LoadingBar.mp4`, `generate_interfaces_file.exe`, the loose `Content/Paks/Victory/` extraction, `*.original`) for a release published over one that still lists it. 1.3.13 did this by editing `FULL_EXCLUDE` by hand, which left the build dirty; the flag builds it from a clean tree and records `build.deadWeight`. The Steam ID files, the Func client DLLs, `InstallScript.vdf` and the patch pak stay excluded either way.
+- Full releases never ship `Victory/Saved/`, `*.log`, `*.dmp`, or anything in `steam_settings` but its README.
+- `install_vps.ps1`: the Caddy site file is validated before it replaces the live one (and the previous one is put back if Caddy refuses the result); the Node.js swap's failure message is one line again. Node stays pinned at 22.11.0 until a newer 22.x and its SHA-256 are checked.
+- `.gitignore` covers `*.pem` and `.env`.
 
 ## Account server (branch `server-hardening`, not deployed)
 

@@ -117,17 +117,40 @@ try:
             mr.MIN_FULL_FILES, mr.SHIPPED, mr.MIN_FULL_BYTES = saved
         assert not os.path.exists(out), "the out folder was written"
 
+    DEAD = {"Victory/Content/Paks/Victory/Content/WwiseAudio/Windows/1.wem",
+            "Victory/Content/Paks/Victory/Config/DefaultEngine.ini.original",
+            "Victory/Config/DefaultGame.ini.original"} | mr.DEAD_WEIGHT
+    # Personal to this PC or made by the game: never shipped, whatever the flags.
+    PERSONAL = {"Victory/Saved/Logs/Victory.log", "Victory/Saved/Config/WindowsNoEditor/GameUserSettings.ini",
+                "Victory/Saved/SaveGames/profile.sav", "victory/saved/Crashes/x/minidump.dmp",
+                mr.STEAM_SETTINGS + "/steam_appid.txt", mr.STEAM_SETTINGS + "/settings/user_steam_id.txt",
+                "Engine/Binaries/Win64/crash.dmp", "Victory/Binaries/Win64/Func.log", "launcher.LOG"}
+
     @test
     def excluded():
         """excluded files don't count towards a full release"""
-        for rel in mr.FULL_EXCLUDE | {"Victory/Content/Paks/Victory/Content/WwiseAudio/Windows/1.wem",
-                                      "Victory/Content/Paks/Victory/Config/DefaultEngine.ini.original",
-                                      "Victory/Config/DefaultGame.ini.original"}:
+        for rel in mr.FULL_EXCLUDE | DEAD | PERSONAL | {mr.SETTINGS_README_PATH}:
             touch(game, rel)
         files = mr.game_files(game)
         assert not [f for f in files if "Paks/Victory/" in f or f.endswith(".original")], files
-        assert not set(files) & set(mr.FULL_EXCLUDE), set(files) & set(mr.FULL_EXCLUDE)
-        assert len(files) == len(mr.REQUIRED) + 10, files
+        assert not set(files) & (set(mr.FULL_EXCLUDE) | DEAD | PERSONAL), set(files) & (set(mr.FULL_EXCLUDE) | DEAD | PERSONAL)
+        assert len(files) == len(mr.REQUIRED) + 10 + 1, files
+        assert mr.SETTINGS_README_PATH in files, "steam_settings' README is the one file of it a release has"
+
+    @test
+    def ship_dead_weight():
+        """--ship-dead-weight ships the dead weight a live release still lists, nothing personal"""
+        files = set(mr.game_files(game, ship_dead_weight=True))
+        assert DEAD <= files, DEAD - files
+        assert not files & (set(mr.FULL_EXCLUDE) | PERSONAL), files & (set(mr.FULL_EXCLUDE) | PERSONAL)
+        # What 1.3.13 shipped by editing FULL_EXCLUDE by hand: the steam ID files, the Func DLLs, InstallScript
+        # and the patch pak stay out.
+        for rel in (mr.STEAM_SETTINGS + "/force_steamid.txt", mr.STEAM_SETTINGS + "/force_account_name.txt",
+                    "Victory/Binaries/Win64/Func.Client.Local.dll", "Victory/Binaries/Win64/Func.Client.Online.dll",
+                    "InstallScript.vdf", "Victory/Content/Paks/" + mr.PAK):
+            assert rel in mr.FULL_EXCLUDE and rel not in files, rel
+        refuses("--ship-dead-weight is for full releases", mr.main, "https://example.test", "9.9.9", out=out, setup=False,
+                pak_only=True, ship_dead_weight=True)
     @test
     def skip_gate_only_for_tests():
         """--skip-gate is refused for a build into releases/"""

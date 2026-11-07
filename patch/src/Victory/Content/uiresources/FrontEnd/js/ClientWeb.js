@@ -126,10 +126,33 @@ var REMASTER_MODE_GAMES = {
   solo: "/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C",
   duo: "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
 };
+// Only these options, each once and with a value of its own form (weather.c
+// reads the first three, the patched exe the last): anything else in a server
+// answer (a test switch such as the module's autotest) is refused, not opened.
+var REMASTER_MAP_OPTIONS = {
+  Weather: /^(clear|cloudy|rainy|storm|foggy)$/,
+  WeatherSeed: /^[0-9]{1,10}$/,
+  WeatherCycle: /^[01]$/,
+  TeamSize: /^[2-4]$/
+};
 function RemasterMapUrl(answer) {
-  var m = /^map:(solo|duo):([0-3])((\?[A-Za-z]+=[A-Za-z0-9]+){0,4})$/.exec(answer);
+  var m = /^map:(solo|duo):([0-3])((\?[A-Za-z]+=[A-Za-z0-9]+){0,4})$/.exec(String(answer));
   if (!m) return null;
-  return REMASTER_MAP_PATHS[parseInt(m[2], 10)] + "?bEnableBots=true?game=" + REMASTER_MODE_GAMES[m[1]] + m[3];
+  var opts = m[3] ? m[3].substring(1).split("?") : [];
+  var seen = {};
+  var out = "";
+  for (var i = 0; i < opts.length; i++) {
+    var eq = opts[i].indexOf("=");
+    var name = opts[i].substring(0, eq);
+    var value = opts[i].substring(eq + 1);
+    if (!Object.prototype.hasOwnProperty.call(REMASTER_MAP_OPTIONS, name) || seen[name]
+        || !REMASTER_MAP_OPTIONS[name].test(value)) {
+      return null;
+    }
+    seen[name] = true;
+    out += "?" + name + "=" + value;
+  }
+  return REMASTER_MAP_PATHS[parseInt(m[2], 10)] + "?bEnableBots=true?game=" + REMASTER_MODE_GAMES[m[1]] + out;
 }
 
 var socketConnection = null;
@@ -148,6 +171,10 @@ var Matchmaking = {
   // Remaster: the player asked to leave this search or pregame lobby; a
   // match-ready that still arrives for it is ignored. Cleared on the next queue.
   LeaveRequested: false,
+  // Remaster: the server acked that leave. A join (join-mm-ack, its lobby)
+  // that still arrives after it is the queue request crossing the cancel:
+  // the menu leaves again (leave-mm is idempotent on the server).
+  LeaveAcked: false,
   ShowQueueTimeScheduled : false,
   ShowQueueTime : false,
   UseLegacyMatchmaking : false,
@@ -519,17 +546,19 @@ function ConnectToClientweb(url)
   });
 }
 
+// Remaster: for console.log of a request or message: the Steam ticket and the
+// session token are never written to the log (JSON.stringify's replacer).
+function RemasterNoSecrets(key, value) {
+  return (key === "ticket" || key === "token" || key === "Authorization") && value ? "(hidden)" : value;
+}
+
 function LoadRootData(url) {
   console.log("LoadRootData from: " + url);
   var headers = {};
   if (ClientwebData && ClientwebData.AuthToken) {
       headers.Authorization = "Bearer " + ClientwebData.AuthToken;
-      console.log("LoadRootData::  " + headers.Authorization);
+      console.log("LoadRootData:: with the session token");
   }
-
-  console.log("LoadRootData::  " + url);
-  console.log("LoadRootData::  " + headers);
-  console.log("LoadRootData::  " + JSON.stringify(headers));
 
 
   return $.ajax({
@@ -665,7 +694,7 @@ function LoginWithTicket(ticket, userid) {
     return $.Deferred().reject().promise();
   }
 
-  console.log("Engine provided ticket " + ticket);
+  console.log("Engine provided a login ticket (" + (ticket ? String(ticket).length : 0) + " characters)");
   var authType = GetAuthType();
   console.log("Providing authType: " + authType);
   var postData = {
@@ -694,7 +723,7 @@ function LoginWithTicket(ticket, userid) {
     //  call for all platforms
       console.log("using javascript login");
       console.log("ClientwebRootData.login,: " + ClientwebRootData.login);
-      console.log("postData: " + JSON.stringify(postData));
+      console.log("postData: " + JSON.stringify(postData, RemasterNoSecrets));
 
     var nextPromise = null;
 
@@ -706,7 +735,17 @@ function LoginWithTicket(ticket, userid) {
         nextPromise = LoginResponseFromEngine(jqXHR.responseText, ProcessLoginResponse);
       },
       error: function (jqXHR) {
-        nextPromise = LoginResponseFromEngine(jqXHR.responseText, ProcessLoginFailure);
+        // Remaster: no answer, or a proxy's error page (the server is down or
+        // restarting): not a refusal; offline, and try again later.
+        var text = jqXHR && jqXHR.responseText ? String(jqXHR.responseText) : "";
+        if (!text || (jqXHR.status >= 500 && text.charAt(0) != "{")) {
+          console.log("Login got no answer from the server (HTTP " + (jqXHR && jqXHR.status) + ")");
+          ClientwebData.AuthToken = null;
+          SetFailedConnectionStatus();
+          CloseConnectingModal(false);
+          return;
+        }
+        nextPromise = LoginResponseFromEngine(text, ProcessLoginFailure);
       }
     }).then(function() {
       if (nextPromise != undefined && nextPromise != null) {
@@ -791,9 +830,11 @@ function ProcessLoginFailure(body) {
   SetFailedConnectionStatus();
   //return;
 
-  if (body != undefined && body.errorCode != undefined)
+  // Remaster: the server's refusals name the reason in errorCode or error.
+  var code = body == undefined ? undefined : body.errorCode != undefined ? body.errorCode : body.error;
+  if (code != undefined)
   {
-    switch (body.errorCode) {
+    switch (code) {
       case "missing_ticket":
         ShowGenericError(MISSING_TICKET);
         SetFailedConnectionStatusNoRetry();
@@ -837,8 +878,34 @@ function ProcessLoginFailure(body) {
         ShowGenericError(MAX_LOGINS_REACHED);
         SetFailedConnectionStatus();
         break;
+      // Remaster server (server/server.js /api/login and its request limits).
+      case "account-required":
+        ShowLoginRefused("Open the game from the launcher and sign in to play online.", false);
+        SetFailedConnectionStatusNoRetry();
+        break;
+      case "invalid-userid":
+        ShowLoginRefused("Steam didn't give the game a valid player ID. Restart Steam and the game, then try again.", false);
+        SetFailedConnectionStatusNoRetry();
+        break;
+      case "server-full":
+        ShowLoginRefused("The server is full right now. Please try again later.", true);
+        SetFailedConnectionStatus();
+        break;
+      case "too-many-new-players":
+        ShowLoginRefused("Too many new players are joining from your network right now. Please try again later.", true);
+        SetFailedConnectionStatus();
+        break;
+      case "rate-limited":
+      case "too-many-requests":
+        ShowLoginRefused("Too many requests from your network. Please wait a minute and try again.", true);
+        SetFailedConnectionStatus();
+        break;
+      case "stopping":
+        ShowLoginRefused("The server is restarting. Please try again in a minute.", true);
+        SetFailedConnectionStatus();
+        break;
       default:
-        console.error("Unhandled login rejection: " + body.errorCode);
+        console.error("Unhandled login rejection: " + code);
         ShowGenericError(UNDEFINED_ERROR);
         SetFailedConnectionStatus();
     }
@@ -857,7 +924,7 @@ function ShowOfflineError(errorCode){
       callback: function(option){
         if (option == "Retry") {
           PopModal();
-          ConnectWebsocketIfNeeded();
+          RemasterRetryNow();
         }
         else {
           if(GetActiveScreen().ScreenName != "MainMenu"){
@@ -870,6 +937,32 @@ function ShowOfflineError(errorCode){
     PushModal('Modal', modalArgs);
     //CloseConnectingModal(false);
 
+}
+
+// Remaster: a login refusal the server gave a reason for, in words. Retry only
+// when trying again can help (else the player is told what to do instead).
+function ShowLoginRefused(text, bCanRetry) {
+    if (bCanRetry && RemasterReconnect.auto) {
+      RemasterReconnectNotice("Offline — reconnecting (" + text + ")");
+      return;
+    }
+    PopModalByID("Offline");
+    PushModal('Modal', {
+      options: bCanRetry ? ["Retry", "Play Offline"] : ["Play Offline"],
+      title: text,
+      bSupportsBackButton: true,
+      modalID: "Offline",
+      callback: function(option){
+        if (option == "Retry") {
+          PopModal();
+          RemasterRetryNow();
+        }
+        else if (GetActiveScreen().ScreenName != "MainMenu") {
+          PushScreen("MainMenu");
+        }
+      }
+    });
+    CloseConnectingModal(false);
 }
 
 function ShowGenericError(errorCode) {
@@ -898,6 +991,7 @@ function SetFailedConnectionStatus() {
   } else {
       ClientwebData.connectionStatus = CW_STATUS_FAILED;
       engine.call("SetConnectionStatus", false);
+      RemasterReconnectLater();
   }
 }
 
@@ -909,6 +1003,81 @@ function SetFailedConnectionStatusNoRetry() {
   ClientwebData.bIsConnected = false;
   ClientwebData.connectionStatus = CW_STATUS_FAILED;
   engine.call("SetConnectionStatus", false);
+  RemasterReconnectStop();
+}
+
+// Remaster: reconnect on its own after the connection drops or a sign-in
+// fails (the stock RECONNECT_AUTOMATICALLY is off): one try at a time, the
+// wait doubling from 5 s to 60 s, +-25% so a server restart doesn't bring
+// every menu back in the same second. A small notice says the menu is
+// offline meanwhile. A refusal retrying can't help (banned, no account, out
+// of date) stops it until the player presses Retry; signing in resets it.
+var REMASTER_RECONNECT_FIRST = 5000;
+var REMASTER_RECONNECT_MAX = 60000;
+var RemasterReconnect = { delay: 0, timer: null, stopped: false, auto: false, note: null };
+
+function RemasterReconnectNotice(text) {
+  var n = RemasterReconnect.note;
+  if (!text) {
+    if (n) n.style.display = "none";
+    return;
+  }
+  if (!n && document.body && document.createElement) {
+    n = RemasterReconnect.note = document.createElement("div");
+    n.id = "remaster-offline";
+    n.style.cssText = "position: absolute; left: 1.2vw; bottom: 1.4vh; z-index: 90; padding: 0.5vh 0.8vw; border-radius: 1vh; " +
+      "font: 0.75vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; color: rgba(235, 235, 235, 0.9); " +
+      "background: rgba(10, 6, 8, 0.8); pointer-events: none;";
+    document.body.appendChild(n);
+  }
+  if (!n) return;
+  n.textContent = text;
+  n.style.display = "block";
+}
+
+function RemasterReconnectLater() {
+  if (RemasterReconnect.stopped || RemasterReconnect.timer || buildOutOfDate || IsOnline()) return;
+  var d = RemasterReconnect.delay = RemasterReconnect.delay ? Math.min(RemasterReconnect.delay * 2, REMASTER_RECONNECT_MAX) : REMASTER_RECONNECT_FIRST;
+  var wait = Math.round(d * (0.75 + Math.random() * 0.5));
+  console.log("Reconnecting in " + wait + " ms");
+  RemasterReconnectNotice("Offline — reconnecting");
+  RemasterReconnect.timer = setTimeout(function () {
+    RemasterReconnect.timer = null;
+    if (RemasterReconnect.stopped || IsOnline()) return;
+    RemasterReconnect.auto = true;
+    try {
+      ConnectWebsocketIfNeeded();
+    } finally {
+      RemasterReconnect.auto = false;
+    }
+  }, wait);
+}
+
+function RemasterReconnectStop() {
+  RemasterReconnect.stopped = true;
+  clearTimeout(RemasterReconnect.timer);
+  RemasterReconnect.timer = null;
+  RemasterReconnectNotice(null);
+}
+
+// Signed in: the next drop starts again at 5 s, and a sign-in error still
+// open from an earlier try ("unable to login", a refusal) is out of date.
+function RemasterReconnected() {
+  RemasterReconnect.delay = 0;
+  RemasterReconnect.stopped = false;
+  clearTimeout(RemasterReconnect.timer);
+  RemasterReconnect.timer = null;
+  RemasterReconnectNotice(null);
+  PopModalByID("Offline");
+}
+
+// The player pressed Retry: try now, and on our own again if that fails.
+function RemasterRetryNow() {
+  RemasterReconnect.stopped = false;
+  RemasterReconnect.delay = 0;
+  clearTimeout(RemasterReconnect.timer);
+  RemasterReconnect.timer = null;
+  ConnectWebsocketIfNeeded();
 }
 
 var bConnectAttemptProcessing = false;
@@ -967,6 +1136,7 @@ function ConnectWebsocketIfNeeded(doCallback)
     }
     else {
       engine.call("SetConnectionStatus", false);
+      RemasterReconnectLater();
     }
 
   }, 15000);
@@ -989,6 +1159,10 @@ function ConnectWebsocketIfNeeded(doCallback)
             engine.call("SetConnectionStatus", false);
           }
         }
+        // Remaster: no connection at the end of the attempt: try again later.
+        if (socketConnection == null && ClientwebData.connectionStatus != CW_STATUS_AUTHENTICATED) {
+          RemasterReconnectLater();
+        }
 
 		engine.call("RedeemTokens");
       });
@@ -1008,7 +1182,14 @@ function ConnectWebsocket()
 
   console.log("Connecting to websocket at: "+ ClientwebRootData.socket);
   socketConnection = io.connect(ClientwebRootData.socket, {forceNew: true});
+  // Remaster: this socket. Its events are bound once (a second login_ready, or
+  // one that lands after the socket was replaced, binds nothing), and a socket
+  // that is no longer the current one can't close the one after it.
+  var sock = socketConnection;
+  var bBound = false;
+  function stale() { return socketConnection !== sock; }
   socketConnection.on("connect", function () {
+    if (stale()) return;
     ClientwebData.bIsConnected = true;
     ClientwebData.connectionStatus = CW_STATUS_CONNECTED;
 	  console.log("Socket connected, now waiting for login to be ready.");
@@ -1017,19 +1198,32 @@ function ConnectWebsocket()
 
   socketConnection.on("login_ready", function () {
       console.log("Socket connected, received login ready, now authenticating and binding events. bIsConnected: " + ClientwebData.bIsConnected);
-      if (ClientwebData.bIsConnected)
+      if (ClientwebData.bIsConnected && !stale())
       {
           setTimeout(function () {// Ugly hack to avoid xhr poll error when connecting web sockets on xbone.
-              if (socketConnection != null) {
+              if (!stale() && !bBound) {
+                bBound = true;
                 BindClientwebEvents(deferred);
               }
           }, 3000);
       }
   });
 
+  // Remaster: the server refused the socket's login (its token is unknown:
+  // expired, or the server restarted). Sign in from scratch, after the backoff.
+  socketConnection.on("auth-fail", function (msg) {
+      console.error("socket login refused: " + (msg && msg.reason));
+      if (stale()) return;
+      ClientwebData.connectionStatus = CW_STATUS_FAILED;
+      engine.call("SetConnectionStatus", false);
+      OnSocketConnectionClosed();
+      deferred.reject();
+  });
+
   socketConnection.on("connect_error", function (err) {
       console.error("connect_error: err.type: " + err.type + " err.description: " + err.description);
       console.error("err: " + err);
+      if (stale()) { deferred.reject(); return; }
       ClientwebData.bIsConnected = false;
       // this means the server's there, but it's probably not listening for websockets
       if (err.description == httpStatus.NOT_FOUND) {
@@ -1062,6 +1256,7 @@ function ConnectWebsocket()
 
   socketConnection.on("error", function (err) {
     console.error("generic error: " + err);
+    if (stale()) { deferred.reject(); return; }
     ShowError("Unexpected websocket connect error: " + err);
     ClientwebData.connectionStatus = CW_STATUS_FAILED;
     engine.call("SetConnectionStatus", false);
@@ -1071,6 +1266,7 @@ function ConnectWebsocket()
 
   socketConnection.on("disconnect", function () {
     console.log("socket disconnected");
+    if (stale()) { deferred.reject(); return; }
     ClientwebData.connectionStatus = CW_STATUS_UNKNOWN;
     engine.call("SetConnectionStatus", false);
     OnSocketConnectionClosed();
@@ -1078,8 +1274,9 @@ function ConnectWebsocket()
   });
 
   socketConnection.on("server-disconnect", function (data) {
-    console.error("server is forcibly disconnecting: ", data.reason);
-    ShowError("Server is forcibly disconnecting: " + data.reason);
+    console.error("server is forcibly disconnecting: ", data && data.reason);
+    if (stale()) { deferred.reject(); return; }
+    ShowError("Server is forcibly disconnecting: " + (data && data.reason));
     ClientwebData.connectionStatus = CW_STATUS_UNKNOWN;
     engine.call("SetConnectionStatus", false);
     OnSocketConnectionClosed();
@@ -1097,7 +1294,7 @@ function ConnectWebsocket()
 
         clearTimeout(loginTimeout);
 
-        if (ClientwebData.connectionStatus != CW_STATUS_AUTHENTICATED) {
+        if (ClientwebData.connectionStatus != CW_STATUS_AUTHENTICATED && (socketConnection == null || !stale())) {
           console.log("Reporting login as failed.");
           ClientwebData.bIsConnected = false;
           ClientwebData.connectionStatus = CW_STATUS_FAILED;
@@ -1105,6 +1302,17 @@ function ConnectWebsocket()
           OnSocketConnectionClosed();
         }
       });
+}
+
+// Remaster: a join that arrived after the server acked the player's leave
+// (the queue request crossed the cancel): leave again, once per ack, so the
+// player isn't left queued with the pill on "Leaving...". 1 if it did.
+function RemasterLeaveAgainIfAcked() {
+    if (!Matchmaking.LeaveRequested || !Matchmaking.LeaveAcked || !socketConnection) return false;
+    console.log("Joined after the leave was acked: leaving again");
+    Matchmaking.LeaveAcked = false;
+    socketConnection.emit("leave-mm", { queueName: Matchmaking.LastQueue });
+    return true;
 }
 
 function LeaveMatchmaking() {
@@ -1117,6 +1325,7 @@ function LeaveMatchmaking() {
 
         if (IsOnline()) {
             Matchmaking.LeaveRequested = true;
+            Matchmaking.LeaveAcked = false;
             socketConnection.emit("leave-mm", params);
         }
         else {
@@ -1145,13 +1354,23 @@ function CloseConnectingModal(succeeded)
   }
 }
 
-function ClosePurchasingModal(succeeded)
+// Remaster: why the server refused a purchase (server.js purchase-entitlement).
+var REMASTER_PURCHASE_REASONS = {
+  "not-enough-credits": "You don't have enough credits.",
+  "ranked-reward": "This is a ranked reward: reach its tier in Ranked to unlock it.",
+  "unknown-item": "This item can't be bought."
+};
+
+// reason: the server's purchase-fail { reason } (or its message), if any.
+function ClosePurchasingModal(succeeded, reason)
 {
   PopModalByID("Purchasing");
 
+  var why = succeeded ? "" : (reason && REMASTER_PURCHASE_REASONS.hasOwnProperty(reason) ? REMASTER_PURCHASE_REASONS[reason]
+    : (typeof reason == "string" && reason ? reason : ""));
   var modalArgs = {
     options: ["OK"],
-    title: (succeeded ? "Purchase successful." : "Purchase failed."),
+    title: (succeeded ? "Purchase successful." : "Purchase failed." + (why ? " " + why : "")),
     modalID: "Purchase Result",
     needInput: false,
     hideOptions:true
@@ -1160,7 +1379,7 @@ function ClosePurchasingModal(succeeded)
 
   setTimeout(function () {
     PopModalByID("Purchase Result");
-  }, 800);
+  }, why ? 3000 : 800);
 
   if (succeeded) {
     engine.call("TriggerPurchaseCompleted");
@@ -1221,7 +1440,7 @@ function fillPlayersTopTenMatches(arr){
 
 function BindClientwebEvents(deferred) {
     console.log("BindClientwebEvents start " + bCheckDLCAtLogin);
-  console.log("Doing Socket Login with auth token: " + ClientwebData.AuthToken);
+  console.log("Doing Socket Login with the session token");
   if("userID" in ClientwebData && "build" in ClientwebData)
   {
 	if(GetAuthType() == "xblive")
@@ -1235,7 +1454,7 @@ function BindClientwebEvents(deferred) {
 			  bCheckDLC:bCheckDLCAtLogin,
 			  dlcEntitlements:result
 			};
-			console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg));
+			console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg, RemasterNoSecrets));
 
 			socketConnection.emit("login", loginMsg);
 		});
@@ -1249,7 +1468,7 @@ function BindClientwebEvents(deferred) {
 		  build: ClientwebData.build,
 		  bCheckDLC:bCheckDLCAtLogin
 		};
-		console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg));
+		console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg, RemasterNoSecrets));
 
 		socketConnection.emit("login", loginMsg);
 	}
@@ -1401,9 +1620,9 @@ function BindClientwebEvents(deferred) {
     engine.call("NotifyEntitlementUnlocked", purchaseData.itemAddData.typeId);
   });
   socketConnection.on("purchase-fail", function (msg) {
-	  console.log("Failed purchase failed notification");
+	  console.log("Failed purchase failed notification: " + (msg && msg.reason));
 
-    ClosePurchasingModal(false);
+    ClosePurchasingModal(false, msg && (msg.reason || msg.message));
   });
   socketConnection.on("auth-response", function () {
 
@@ -1493,12 +1712,14 @@ function BindClientwebEvents(deferred) {
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
+      RemasterLeaveAgainIfAcked();
   });
   socketConnection.on("join-mm-group", function (msg) {
       console.log("Group leader just queued us!");
       // Remaster: the leader's queue, so this menu shows the party's mode.
       if (msg && typeof msg.queueName == "string") Matchmaking.LastQueue = msg.queueName;
       Matchmaking.LeaveRequested = false;
+      Matchmaking.LeaveAcked = false;
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
@@ -1506,6 +1727,7 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("leave-mm-ack", function () {
       console.log("Server confirms we left the matchmaking queue.");
+      if (Matchmaking.LeaveRequested) Matchmaking.LeaveAcked = true;
       Matchmaking.SetMatchmaking(false);
       StoppedMatchmaking();
   });
@@ -1547,6 +1769,11 @@ function BindClientwebEvents(deferred) {
           console.log("match-ready:: ignored, the player asked to leave");
           Matchmaking.SetMatchmaking(false);
           StoppedMatchmaking();
+          // Remaster: tell the server, so it drops the match's ticket (and a
+          // pending ranked match) instead of waiting for a result.
+          if (socketConnection) {
+              socketConnection.emit("match-declined", { nonce: msg && msg.nonce, queueName: Matchmaking.LastQueue });
+          }
           return;
       }
       // Local server: "offline:<map>" means play a local match against bots.
@@ -1957,6 +2184,7 @@ function BindClientwebEvents(deferred) {
   });
   // Remaster: who is in the matchmaking lobby (MatchLobby.js).
   socketConnection.on("remaster-lobby", function (msg) {
+    if (RemasterLeaveAgainIfAcked()) return;
     if (window.RemasterLobby && Matchmaking.IsMatchmaking) window.RemasterLobby.show(msg);
   });
   // Remaster: a party change the player should know about (a member offline too long left it).
@@ -1974,6 +2202,7 @@ function BindClientwebEvents(deferred) {
     });
   });
   socketConnection.on("auth-response", function () {
+    RemasterReconnected();
     if (window.RemasterFriends) window.RemasterFriends.connected();
     if (window.RemasterLeaderboard && window.RemasterLeaderboard.connected) window.RemasterLeaderboard.connected();
     if (window.RemasterRanked) window.RemasterRanked.refresh();   // RankedUI.js: no polling
@@ -2616,6 +2845,7 @@ function DoQueueMatchmaking(GameType, ticket, userid)
         //We're matchmaking once we try to queue - this way we can show
         //a queuing message if the actual server ack is running slow
         Matchmaking.LeaveRequested = false;
+        Matchmaking.LeaveAcked = false;
         Matchmaking.SetMatchmaking(true);
         Matchmaking.MatchmakingState = "QUEUING";
         // Remaster: the lobby pill shows "Joining" until the server's lobby arrives (MatchLobby.js).
@@ -2639,7 +2869,7 @@ function DoQueueMatchmaking(GameType, ticket, userid)
           badFilterStr = Matchmaking.BadFilters.join("|");
         }
 
-        console.log("Engine provided ticket " + ticket);
+        console.log("Engine provided a login ticket (" + (ticket ? String(ticket).length : 0) + " characters)");
         console.log("Engine provided userid " + userid);
 
         console.log("Providing authType: " + authType);
@@ -2656,12 +2886,18 @@ function DoQueueMatchmaking(GameType, ticket, userid)
           __Type: "JSMatchQueuePostData"
         };
 
-        console.log("using c++ MatchQueueWithTicket postData: " + JSON.stringify(postData));
+        console.log("using c++ MatchQueueWithTicket postData: " + JSON.stringify(postData, RemasterNoSecrets));
         engine.call("MatchQueueWithTicket", ClientwebRootData.matchqueue, postData);
       }
       else {
         Matchmaking.IsStartingMatchmaking = false;
       }
+    }, function () {
+      // Remaster: the connection failed (offline, the server down): not
+      // starting any more, or every later queue is refused for good. The
+      // promise stays rejected, so the caller's fail handler runs.
+      console.log("QueueMatchmaking: no connection");
+      Matchmaking.IsStartingMatchmaking = false;
     })).then(function(){
     return Matchmaking.IsMatchmaking;
   });
@@ -2712,6 +2948,8 @@ function OnSocketConnectionClosed()
   if (window.RemasterFriends && window.RemasterFriends.disconnected) window.RemasterFriends.disconnected();
   if (RECONNECT_AUTOMATICALLY) {
     setTimeout(ConnectWebsocketIfNeeded, 30000);
+  } else {
+    RemasterReconnectLater();
   }
 
   // If on the loot screen, kick them back to the main menubar

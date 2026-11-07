@@ -32,7 +32,7 @@
 // The manifest comes from the network, so it is trusted only after its
 // signature verifies, every path must stay inside the game folder (never the
 // launcher's own state folder) and every URL must be https (http only for
-// localhost, for testing).
+// localhost, for testing, and never in the installed launcher: lib/localhttp.js).
 
 "use strict";
 
@@ -42,6 +42,7 @@ const crypto = require("crypto");
 const { Readable, Transform } = require("stream");
 const { pipeline } = require("stream/promises");
 const RELEASE_KEY = require("./releasekey");
+const localhttp = require("./localhttp");
 
 const STATE_DIR = ".remaster";
 const STATE_FILE = "sync-state.json";
@@ -75,10 +76,22 @@ const SAVE_EVERY_MS = 2000;
 const META_MIN = 1 << 20;
 // Kept free beyond what an update needs (logs, the file system's own needs).
 const SPACE_MARGIN = 512 * 1024 * 1024;
+// The most a manifest and its signature may be: a whole-game manifest is about
+// 1 MB, an Ed25519 signature in base64 is 88 bytes. Anything bigger is cut off
+// while it streams, as is a file download past its signed size, so a
+// misbehaving server can't fill the memory or the disk.
+const MANIFEST_MAX = 8 * 1024 * 1024;
+const SIG_MAX = 1024;
 // Windows device names can't be file names, with or without an extension.
 const DEVICE_RX = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³]) *(\..*)?$/i;
 // File errors that retrying can't fix.
 const DISK_CODES = new Set(["ENOSPC", "EROFS", "EACCES", "EPERM", "EDQUOT"]);
+// What Windows says about a file another program holds open: most often an
+// antivirus scanning a file that was just written. A finished download waits
+// this long for it to let go (checking again with growing waits) before the
+// file is reported as locked; the download itself is kept for Resume.
+const LOCK_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
+const LOCK_WAIT_MS = 30000;
 
 let fetchImpl = (url, init) => fetch(url, init);
 // The launcher passes Electron's net.fetch, which uses the system proxy and
@@ -100,8 +113,7 @@ class ConnectionLost extends SyncPaused {
 
 function checkUrl(u) {
   const url = new URL(u);
-  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
+  if (!localhttp.ok(url)) {
     throw new SyncError("refusing non-https URL " + url.href);
   }
   return url;
@@ -129,8 +141,22 @@ const stateDir = (gameRoot) => path.join(gameRoot, STATE_DIR);
 // Where a file is staged; its path was checked by targetPath first.
 const stagedPath = (gameRoot, rel) => path.join(stateDir(gameRoot), "staging", ...rel.split("/"));
 // Where a commit keeps the files it replaces: the journal names the folder
-// (journals of the first launchers didn't: "backup").
-const holdDir = (gameRoot, journal) => path.join(stateDir(gameRoot), ...String(journal.hold || "backup").split("/"));
+// (journals of the first launchers didn't: "backup"). The journal is read
+// back from disk, so the name must be one a commit writes (backup,
+// backup-<id> or replaced/<id>) and stay inside .remaster: a damaged or
+// planted journal can't move the game's files anywhere else.
+const HOLD_RX = /^(backup|backup-[0-9a-z]+|replaced\/[0-9a-z]+)$/;
+function holdDir(gameRoot, journal) {
+  const hold = journal.hold === undefined ? "backup" : journal.hold;
+  const base = stateDir(gameRoot);
+  if (typeof hold === "string" && HOLD_RX.test(hold)) {
+    const dir = path.join(base, ...hold.split("/"));
+    const root = path.resolve(base);
+    if (path.resolve(dir).startsWith(root.endsWith(path.sep) ? root : root + path.sep)) return dir;
+  }
+  throw new SyncError("the update journal names an unsafe backup folder: " + JSON.stringify(hold), "journal");
+}
+const validHold = (gameRoot, journal) => { try { holdDir(gameRoot, journal); return true; } catch { return false; } };
 const holdPath = (gameRoot, journal, rel) => path.join(holdDir(gameRoot, journal), ...rel.split("/"));
 // A same-version repair keeps the files it replaced (a player's own edits)
 // here, the newest repair only, up to this many bytes.
@@ -176,11 +202,11 @@ function validateManifest(m) {
 // mismatch is tried once more before the release is refused.
 async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 1500) {
   const url = checkUrl(manifestUrl);
-  const get = async (u) => {
+  const get = async (u, max, label) => {
     // Generous: the manifest of a whole-game release is about 1 MB.
     const res = await fetchImpl(u.href, { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(60000) });
     if (!res.ok) throw new SyncError(`${u.pathname.split("/").pop()} request failed: HTTP ${res.status}`, "http");
-    return Buffer.from(await res.arrayBuffer());
+    return readCapped(res, max, u.pathname.split("/").pop() + " is larger than " + label + ": refusing it");
   };
   let body = null;
   let ok = false;
@@ -188,7 +214,7 @@ async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 150
     if (i) await sleep(retryMs);
     // The manifest and its signature at once: one round trip to the server
     // instead of two at every start (measured: docs/LOADING_TIME_OPTIMIZATION_REPORT.md).
-    const [b, s] = await Promise.all([get(url), get(new URL(url.href + ".sig"))]);
+    const [b, s] = await Promise.all([get(url, MANIFEST_MAX, "8 MB"), get(new URL(url.href + ".sig"), SIG_MAX, "1 KB")]);
     body = b;
     const sig = Buffer.from(s.toString("utf8").trim(), "base64");
     try { ok = crypto.verify(null, body, publicKey, sig); } catch { ok = false; }
@@ -199,6 +225,25 @@ async function fetchManifest(manifestUrl, publicKey = RELEASE_KEY, retryMs = 150
   const m = validateManifest(parsed);
   m.baseUrl = url.href;
   return m;
+}
+
+// A response body, read until it passes `max` bytes (then the request is
+// cancelled and the read refused): never more than that is held in memory.
+async function readCapped(res, max, message) {
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > max) { await res.body?.cancel(); throw new SyncError(message); }
+  if (!res.body) return Buffer.alloc(0);
+  const chunks = [];
+  let n = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.length;
+    if (n > max) { await reader.cancel().catch(() => {}); throw new SyncError(message); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, n);
 }
 
 function sha256File(file) {
@@ -297,6 +342,30 @@ function move(from, to) {
   }
 }
 
+// move() for a finished download: waits (without blocking the main process)
+// while the file is locked, up to waitMs, then fails as "locked", not as a
+// disk or folder problem.
+async function moveWhenFree(from, to, rel, waitMs, signal) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  const t0 = Date.now();
+  for (let delay = 100; ; delay = Math.min(delay * 2, 5000)) {
+    try {
+      fs.rmSync(to, { force: true });
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      if (!LOCK_CODES.has(e.code)) throw e;
+      const left = waitMs - (Date.now() - t0);
+      if (left <= 0) {
+        throw new SyncError(`${rel}: a file is locked (antivirus?): Windows didn't let the finished download be moved into place for ` +
+          `${Math.round(waitMs / 1000)} s (${e.code})`, "locked");
+      }
+      await sleep(Math.min(delay, left), signal);
+      if (signal && signal.aborted) throw new SyncPaused();
+    }
+  }
+}
+
 // ---------------------------------------------------------------- planning
 // Which manifest files aren't installed as they should be. Each entry is the
 // manifest entry plus `staged: true` when it is already downloaded and
@@ -357,7 +426,7 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
         state.staged[f.path] = recordOf(staged, f.sha256);
         isStaged = true;
       }
-      if (!isStaged) delete state.staged[f.path];
+      if (!isStaged) { delete state.staged[f.path]; dropOversizedPart(gameRoot, f); }
       else report.staged++;
       todo.push(Object.assign({}, f, { staged: isStaged }));
     }
@@ -373,6 +442,15 @@ async function plan(manifest, gameRoot, onProgress = () => {}, opts = {}) {
   keep();
   Object.defineProperty(todo, "report", { value: report, enumerable: false });
   return todo;
+}
+
+// A partial download bigger than its file (a server that sent too much, to
+// an older launcher) can only be wrong, and it takes up disk space the
+// disk-space check would count against the update: it goes.
+function dropOversizedPart(gameRoot, f) {
+  const part = stagedPath(gameRoot, f.path) + ".part";
+  const st = statOrNull(part);
+  if (st && st.size > f.size) for (const p of [part, part + ".json"]) fs.rmSync(p, { force: true });
 }
 
 // A staged file and its partial download (.part, .part.json).
@@ -441,7 +519,7 @@ function sleep(ms, signal) {
   });
 }
 
-// What went wrong, as one of: stall, network, http, range, disk, verify.
+// What went wrong, as one of: stall, network, http, range, disk, verify, locked.
 function classify(e) {
   if (e instanceof SyncError) return e.kind;
   if (DISK_CODES.has(e && e.code)) return "disk";
@@ -481,13 +559,21 @@ async function attempt(url, f, part, onBytes, o) {
     // listener beside it: work done in such a listener (the launcher sends
     // progress to the window from there) could let later chunks reach the file
     // first, scrambling it. Each chunk re-arms the stall timer, and waits its
-    // turn under the bandwidth cap.
-    const count = () => new Transform({
-      transform(chunk, _enc, done) {
-        arm();
-        o.limit.take(chunk.length).then(() => { arm(); onBytes(chunk.length); done(null, chunk); }, done);
-      }
-    });
+    // turn under the bandwidth cap. Past `max` bytes (what is left of the file)
+    // the download stops: the chunk that would pass it is never written.
+    const tooBig = () => Object.assign(new SyncError(`${f.path}: the server sent more than the file's ${f.size} bytes`, "verify"), { oversize: true });
+    const count = (max) => {
+      let got = 0;
+      return new Transform({
+        transform(chunk, _enc, done) {
+          arm();
+          got += chunk.length;
+          if (got > max) { done(tooBig()); return; }
+          o.limit.take(chunk.length).then(() => { arm(); onBytes(chunk.length); done(null, chunk); }, done);
+        }
+      });
+    };
+    const declared = Number(res.headers.get("content-length"));
     const remember = () => {
       if (f.size >= META_MIN) writeJson(metaFile, { sha256: f.sha256, etag: res.headers.get("etag") || null });
     };
@@ -506,13 +592,16 @@ async function attempt(url, f, part, onBytes, o) {
         onBytes(-have);
         throw new SyncError(`${f.path}: unexpected Content-Range "${res.headers.get("content-range")}"; starting over`, "range");
       }
+      if (declared > f.size - have) { await res.body?.cancel(); throw tooBig(); }
       remember();
-      await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part, { flags: "a" }));
+      await pipeline(Readable.fromWeb(res.body), count(f.size - have), fs.createWriteStream(part, { flags: "a" }));
     } else if (res.ok && res.body) {
       // A whole file (no range support, or it changed): the partial data goes.
       if (have > 0) onBytes(-have);
+      have = 0;
+      if (declared > f.size) { await res.body?.cancel(); fs.rmSync(part, { force: true }); throw tooBig(); }
       remember();
-      await pipeline(Readable.fromWeb(res.body), count(), fs.createWriteStream(part));
+      await pipeline(Readable.fromWeb(res.body), count(f.size), fs.createWriteStream(part));
     } else {
       await res.body?.cancel();
       throw Object.assign(new SyncError(`download failed for ${f.path}: HTTP ${res.status}`, "http"), { status: res.status });
@@ -567,6 +656,12 @@ async function download(manifest, f, gameRoot, onBytes, o) {
       throw new SyncError(`${f.path} failed verification (got ${size} bytes${digest ? ", " + digest.slice(0, 12) + "..." : ""})`, "verify");
     } catch (e) {
       if (e instanceof SyncPaused) throw e;      // the .part stays for the resume
+      // Cut off for sending too much: what it sent isn't trusted, the file starts over.
+      if (e.oversize) {
+        fs.rmSync(part, { force: true });
+        fs.rmSync(part + ".json", { force: true });
+        count(-counted);
+      }
       lastError = e;
       if (!retryable(e)) break;
       fails = counted > before && e.kind !== "verify" ? 0 : fails + 1;
@@ -577,7 +672,12 @@ async function download(manifest, f, gameRoot, onBytes, o) {
     }
   }
   if (lastError) { onBytes(-counted); throw lastError; }
-  move(part, staged);
+  try {
+    await moveWhenFree(part, staged, f.path, o.lockWaitMs, o.signal);
+  } catch (e) {
+    if (!(e instanceof SyncPaused)) onBytes(-counted);    // the complete .part stays for Resume
+    throw e;
+  }
   fs.rmSync(part + ".json", { force: true });
   return recordOf(staged, f.sha256);
 }
@@ -692,8 +792,12 @@ function removeEmptyDirs(dir) {
 
 // Finishes a commit a crash interrupted (start-up, and before any plan).
 function recover(gameRoot) {
-  const journal = readJson(path.join(stateDir(gameRoot), JOURNAL_FILE));
+  const file = path.join(stateDir(gameRoot), JOURNAL_FILE);
+  const journal = readJson(file);
   if (!journal || !Array.isArray(journal.files)) return false;
+  // Not a journal a commit wrote: nothing it names is moved. The next plan
+  // checks every file against the release as usual.
+  if (!validHold(gameRoot, journal)) { fs.rmSync(file, { force: true }); return false; }
   commitFiles(gameRoot, journal);
   finishCommit(gameRoot, loadState(gameRoot), journal);
   return true;
@@ -753,6 +857,7 @@ function rollback(gameRoot) {
   recover(gameRoot);
   const last = readJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE));
   if (!last || !last.from) throw new SyncError("there is no previous version to restore");
+  if (!validHold(gameRoot, last)) throw new SyncError("the record of the last update is damaged (it names an unsafe backup folder): the previous version can't be restored");
   const state = loadState(gameRoot);
   // Each file put back is noted in last-commit.json, so a restore that stops
   // part-way (a locked file) can simply be run again.
@@ -790,7 +895,7 @@ function rollback(gameRoot) {
 // The version rollback() would restore, or null.
 function previousVersion(gameRoot) {
   const last = readJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE));
-  return last && last.from ? last.from : null;
+  return last && last.from && validHold(gameRoot, last) ? last.from : null;
 }
 
 // ---------------------------------------------------------------- apply
@@ -799,7 +904,7 @@ function previousVersion(gameRoot) {
 // filesDone, filesTotal }) and then ({ phase: "install", done, total }).
 // opts: signal (abort = pause: throws SyncPaused, keeping finished and
 // partial downloads), parallel, maxBytesPerSec, stallMs, retryDelayMs,
-// log(event, data). A file that keeps failing doesn't stop the others; the
+// lockWaitMs (how long a locked finished download is waited for), log(event, data). A file that keeps failing doesn't stop the others; the
 // sync then fails listing it, and the next run only fetches what is missing.
 async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {}) {
   const log = opts.log || (() => {});
@@ -807,6 +912,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
   fs.mkdirSync(gameRoot, { recursive: true });
   checkWritable(gameRoot);
   recover(gameRoot);
+  for (const f of todo) if (!f.staged) dropOversizedPart(gameRoot, f);
   checkSpace(gameRoot, totalBytes - partialBytes(todo, gameRoot));
   if (opts.signal && opts.signal.aborted) throw new SyncPaused();
   const state = loadState(gameRoot);
@@ -821,6 +927,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     signal: stopAll.signal,
     stallMs: opts.stallMs || STALL_MS,
     retryDelayMs: opts.retryDelayMs == null ? 1000 : opts.retryDelayMs,
+    lockWaitMs: opts.lockWaitMs == null ? LOCK_WAIT_MS : opts.lockWaitMs,
     limit: bandwidth(opts.maxBytesPerSec || 0),
     onRetry(kind, e, n, file) {
       retries++;
@@ -973,6 +1080,51 @@ function countFiles(dir) {
   return n;
 }
 
+// ---------------------------------------------------------------- downgrade floor
+// The newest release this launcher has accepted, kept in the launcher's own
+// folder (userData), not in a game folder: a fresh install, a new folder or a
+// deleted sync-state.json would otherwise take any old signed manifest a
+// server replays (its old server list among it). Signed manifests don't
+// expire, so the floor is what keeps players from being taken back.
+// { version, released }: released is the manifest's own (signed) time, so a
+// replayed earlier build of the same version is refused too.
+function readFloor(file) {
+  const f = readJson(file);
+  return f && typeof f.version === "string" ? f : null;
+}
+
+const releasedAt = (m) => (m && typeof m.released === "string" ? Date.parse(m.released) : NaN);
+
+// -1, 0 or 1: release m against the floor (the version first, then, for the
+// same version, the released time when both have one).
+function againstFloor(m, floor) {
+  const c = compareVersions(m.version, floor.version);
+  if (c) return c;
+  const a = releasedAt(m), b = releasedAt(floor);
+  if (isNaN(a) || isNaN(b) || a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+// Throws when manifest m is older than the newest release seen.
+function checkFloor(file, m) {
+  const floor = readFloor(file);
+  if (floor && againstFloor(m, floor) < 0) {
+    const same = compareVersions(m.version, floor.version) === 0;
+    throw new SyncError(`the server offers ${m.version}${same ? " (an earlier build of it)" : ""}, older than ${floor.version}, ` +
+      "the newest release this launcher has seen: not installing it", "downgrade");
+  }
+}
+
+// Raises the floor to manifest m when it is newer (never lowers it).
+function noteFloor(file, m) {
+  const floor = readFloor(file);
+  if (floor && againstFloor(m, floor) <= 0) return false;
+  const next = { version: m.version };
+  if (!isNaN(releasedAt(m))) next.released = m.released;
+  writeJson(file, next);
+  return true;
+}
+
 function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
@@ -984,5 +1136,5 @@ function isHeld(gameRoot) {
 }
 
 module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion, isHeld,
-  freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
+  freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch, checkFloor, noteFloor,
   SyncError, SyncPaused, ConnectionLost, STATE_DIR, REPLACED_DIR, PARALLEL };

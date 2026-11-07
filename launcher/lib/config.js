@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const localhttp = require("./localhttp");
 
 const DEFAULTS = {
   gamePath: "",
@@ -54,14 +55,12 @@ function sanitize(c) {
   return out;
 }
 
-// An https address (plain http only on this PC, for testing), as Game Sync
-// and the account client require.
+// An https address (plain http only on this PC, for testing, in a dev run:
+// lib/localhttp.js), as Game Sync and the account client require.
 function validUrl(u) {
   if (typeof u !== "string") return false;
   try {
-    const url = new URL(u);
-    const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    return url.protocol === "https:" || (url.protocol === "http:" && local);
+    return localhttp.ok(new URL(u));
   } catch {
     return false;
   }

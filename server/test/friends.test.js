@@ -224,6 +224,9 @@ function friendsWhen(socket, check, ms = 3000) {
     });
 
     await test("friends see searching, then in match, then back in the menu", async () => {
+      // (Past A's last panel push: one push per 300 ms, and "searching" lasts
+      // only the lobby's 300 ms gather here.)
+      await sleep(350);
       const searching = friendsWhen(A.socket, (f) => f.friends[0].status.state === "searching");
       B.socket.emit("join-mm", { queueName: "ffa_jungle" });
       assert.strictEqual((await searching).friends[0].status.label, "Searching · Solo");
@@ -307,6 +310,69 @@ function friendsWhen(socket, check, ms = 3000) {
       assert.deepStrictEqual([c.username, c.relation], ["Charlie_3", "you"]);
       assert.deepStrictEqual(c.showdown, { won: 0, lost: 1 });
       assert.strictEqual(c.ranked, null, "no ranked matches yet");
+    });
+
+    await test("a stranger's card and a friend request show no live status or last seen", async () => {
+      const card = next(A.socket, "remaster-player-card");
+      A.socket.emit("player-card", { username: "Charlie_3" });
+      const c = await card;
+      assert.ok(c.found);
+      assert.strictEqual(c.relation, "none");
+      assert.ok(!("status" in c), "no status on a stranger's card: " + JSON.stringify(c.status));
+      const asked = friendsWhen(C.socket, (f) => f.incoming.length === 1);
+      assert.ok((await act(A, "friend-request", { username: "Charlie_3" })).ok);
+      const f = await asked;
+      assert.ok(!("status" in f.incoming[0]), "no status on a request");
+      const mine = friendsWhen(A.socket, (x) => x.outgoing.length === 1, 3000);
+      A.socket.emit("friends-get");
+      assert.ok(!("status" in (await mine).outgoing[0]), "nor on your own request");
+    });
+
+    await test("player cards are rate limited: one a second, bursts of 10", async () => {
+      await sleep(1100);
+      let cards = 0, slow = 0;
+      const onCard = () => cards++;
+      const onResult = (r) => { if (r.action === "player-card" && r.error === "slow-down") slow++; };
+      A.socket.on("remaster-player-card", onCard);
+      A.socket.on("remaster-friend-result", onResult);
+      for (let i = 0; i < 20; i++) A.socket.emit("player-card", { username: "bravo" });
+      await sleep(400);
+      A.socket.off("remaster-player-card", onCard);
+      A.socket.off("remaster-friend-result", onResult);
+      // (The per-address socket limit may drop some of the 20 as well: every
+      // test player connects from 127.0.0.1.)
+      assert.ok(cards >= 1 && cards <= 11, "cards: " + cards);
+      assert.ok(slow >= 1, "the rest refused: " + slow);
+    });
+
+    // Performance review P6: every status change of a friend pushed the whole
+    // panel at once; a burst of changes is now one push per 300 ms per panel.
+    await test("a burst of a friend's status changes reaches the panel as a few pushes, ending in the latest", async () => {
+      await sleep(400);
+      const pushes = [];
+      const onPush = (f) => pushes.push(f);
+      A.socket.on("remaster-friends", onPush);
+      for (let i = 0; i < 6; i++) {
+        B.socket.emit("join-mm", { queueName: "ffa_jungle" });
+        await sleep(15);
+        B.socket.emit("leave-mm");
+        await sleep(15);
+      }
+      await sleep(800);
+      A.socket.off("remaster-friends", onPush);
+      assert.ok(pushes.length >= 1 && pushes.length <= 4, "pushes for 12 changes in ~200 ms: " + pushes.length);
+      const bravo = pushes[pushes.length - 1].friends.find((f) => f.username === "bravo");
+      assert.strictEqual(bravo.status.state, "menu", "the latest state");
+    });
+
+    await test("friends-get is answered at once, even right after a push", async () => {
+      for (let i = 0; i < 3; i++) {
+        const t0 = Date.now();
+        const got = next(A.socket, "remaster-friends");
+        A.socket.emit("friends-get");
+        await got;
+        assert.ok(Date.now() - t0 < 150, "answered in " + (Date.now() - t0) + " ms");
+      }
     });
 
     await test("going offline: friends see it, with when they were last seen", async () => {

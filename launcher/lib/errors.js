@@ -31,6 +31,12 @@ function friendly(e, ctx = {}) {
   if (kind === "signature") {
     return "The update server sent a release this launcher can't verify, so nothing was installed. Try again later. " + DIAGNOSE;
   }
+  // A finished download Windows wouldn't let the launcher move (lib/sync.js):
+  // a lock, most likely an antivirus scanning it, not the drive or the folder.
+  if (kind === "locked") {
+    return "A downloaded game file is locked, most likely by your antivirus while it scans it. Wait a minute, then press Resume. " +
+      "If it keeps happening, add the game folder to your antivirus's exclusions." + detail(msg);
+  }
   if (op === "setup") {
     return "Windows didn't let the launcher update start (an antivirus or app control may have blocked it). Download the new launcher from the website." + detail(msg);
   }

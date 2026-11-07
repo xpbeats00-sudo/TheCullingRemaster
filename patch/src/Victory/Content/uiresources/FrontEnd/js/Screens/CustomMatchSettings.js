@@ -96,10 +96,10 @@
 
       return processFunction(body);
     } catch (ex) {
+      // The console only (never the menu's build-version line), and only the
+      // start of the text.
       console.error("Failed to parse server login response " + ex);
-      console.error("Response text was: '" + bodyText + "'");
-
-      $('.build-version').text("Failed to parse server login response " + ex + "\r\n" + "Response text was: '" + bodyText + "'");
+      console.error("Response text was: '" + String(bodyText).substring(0, 200) + "'");
 
       ProcessLoginFailure({errorCode: "invalid_server_json"});
       return null;

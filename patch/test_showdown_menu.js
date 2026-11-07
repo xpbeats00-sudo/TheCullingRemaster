@@ -39,7 +39,7 @@ function menu(stored) {
     PlayScreen,
     hasClickButton: false,
     Matchmaking: { CanStartMatching: () => true, IsStartingMatchmaking: false },
-    QueueMatchmaking: (q) => { queued.push(q); return { then: (fn) => fn(queueResult) }; },
+    QueueMatchmaking: (q) => { queued.push(q); return { then: (fn, bad) => (queueResult === "reject" ? bad() : fn(queueResult)) }; },
     PopScreenToMainMenu: () => popped++,
     ShowError: (m) => errors.push(m),
     RemasterOverlay: { open: (root, o) => overlays.push(o), close: () => {} }
@@ -54,7 +54,7 @@ function menu(stored) {
   };
   const byText = (t) => buttons().find((b) => b.textContent === t);
   return { g, queued, errors, overlays, stock, storage, root, buttons, byText, popped: () => popped,
-    fail: () => { queueResult = false; }, tile: (id) => new PlayScreen().OnOptionElemSelected({ id }) };
+    fail: () => { queueResult = false; }, reject: () => { queueResult = "reject"; }, tile: (id) => new PlayScreen().OnOptionElemSelected({ id }) };
 }
 
 let passed = 0;
@@ -114,6 +114,16 @@ test("BACK queues nothing; a failed queue says so and lets the tile work again",
   m.byText("PLAY").click();
   assert.deepStrictEqual(m.queued, ["showdown_duo"]);
   assert.ok(m.errors.length === 1 && m.g.hasClickButton === false);
+});
+
+test("no connection (the queue's promise rejected): says so, and PLAY works again", () => {
+  const m = menu();
+  m.reject();
+  m.tile("showdown_play");
+  m.byText("PLAY").click();
+  assert.strictEqual(m.queued.length, 1);
+  assert.ok(m.errors.length === 1 && /reach the server/.test(m.errors[0]), m.errors);
+  assert.strictEqual(m.g.hasClickButton, false);
 });
 
 test("browser storage unavailable: the picker still works (1v1)", () => {

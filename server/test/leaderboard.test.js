@@ -88,7 +88,7 @@ const get = (view, id) => view.boards.find((b) => b.id === id);
 
   await test("ranked: this season's rating and tier, within the season cap; last season's not listed", async () => {
     const lb = board([
-      who("a", "Old", { games: 5, rating: 1300, season: "S0" }),
+      who("a", "Old", { games: 5, rating: 1300, season: "S0", minutes: 30 }),
       who("b", "Mid", { games: 5, rating: 1100, rankedWins: 2 }),
       who("c", "Top", { games: 5, rating: 9000 }),
       who("d", "Fresh", { games: 0 })
@@ -99,6 +99,9 @@ const get = (view, id) => view.boards.find((b) => b.id === id);
     assert.deepStrictEqual([r.top[1].matches, r.top[1].wins], [5, 2]);
     assert.strictEqual(r.you.position, null, "no ranked matches this season");
     assert.strictEqual(r.you.value, null);
+    const old = get(lb.view("d"), "time").top.find((e) => e.username === "Old");
+    assert.ok(old, "listed on the other boards");
+    assert.strictEqual(old.rank, null, "with no rank from last season");
   });
 
   await test("the top 50, and your own row and position outside it", async () => {

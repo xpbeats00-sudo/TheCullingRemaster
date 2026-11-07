@@ -8,7 +8,12 @@
 // - a closed Friends panel doesn't keep its text field focused;
 // - offline, opening Friends or the Leaderboard tries to connect once, and the
 //   Leaderboard asks again when the menu signs in;
-// - two refusals in a row arm one Leaderboard retry, not two.
+// - two refusals in a row arm one Leaderboard retry, not two;
+// - a Leaderboard ask the server never answers says so after 10 s instead of
+//   "Loading..." for good (an answer, or opening it again, clears it);
+// - Friends: an action's buttons wait for the server's answer (a double click
+//   asks once; no answer in 8 s frees them), and a result that arrives while
+//   the panel is closed (the invite toast's Join) shows as a note.
 // usage: node test_remaster_panels.js
 "use strict";
 const fs = require("fs");
@@ -244,6 +249,66 @@ test("Leaderboard: two refusals in a row arm one retry", () => {
   g.RemasterLeaderboard.on({ error: "rate" });
   g.RemasterLeaderboard.on({ error: "rate" });
   assert.strictEqual(g.live().filter((t) => t.ms === 2500).length, 1, "one retry pending");
+});
+
+test("Leaderboard: an ask never answered says so after 10 s, not Loading... for good", () => {
+  const g = page();
+  g.load("Friends.js");
+  g.load("Leaderboard.js");
+  g.RemasterLeaderboard.open();
+  const lb = g.document.getElementById("remaster-leaderboard");
+  assert.ok(/Loading/.test(lb.textContent));
+  const wait = g.live().filter((t) => t.ms === 10000);
+  assert.strictEqual(wait.length, 1, "one answer timeout");
+  wait[0].live = false;
+  wait[0].fn();
+  assert.ok(!/Loading/.test(lb.textContent) && /isn't answering/.test(lb.textContent), lb.textContent);
+  g.RemasterLeaderboard.close();
+  g.RemasterLeaderboard.open();                        // opening again asks again
+  assert.ok(/Loading/.test(lb.textContent));
+  g.RemasterLeaderboard.on({ season: { name: "S1" }, boards: [{ id: "ranked", players: 1, top: [{ username: "Ann", value: 1200, position: 1 }] }] });
+  g.live().filter((t) => t.ms === 10000).forEach((t) => t.fn());
+  assert.ok(/Ann/.test(lb.textContent) && !/isn't answering/.test(lb.textContent), "an answer stands");
+});
+
+test("Friends: a double click asks once; the answer (or 8 s without one) frees the buttons", () => {
+  const g = page();
+  g.load("Friends.js");
+  g.RemasterFriends.open();
+  g.RemasterFriends.on("remaster-friends", { you: "me", friends: [{ username: "Bo", status: { state: "menu" } }] });
+  const fr = g.document.getElementById("remaster-friends");
+  const invite = () => fr.querySelectorAll(".rf-btn").filter((b) => b.textContent === "Invite")[0];
+  invite().click();
+  invite().click();
+  assert.strictEqual(g.emitted.filter((e) => e[0] === "party-invite").length, 1, "one invite for two clicks");
+  assert.strictEqual(invite().style.opacity, "0.45", "the buttons look disabled while waiting");
+  g.RemasterFriends.on("remaster-friend-result", { action: "party-invite", ok: true, username: "Bo" });
+  assert.strictEqual(invite().style.opacity, "");
+  invite().click();
+  assert.strictEqual(g.emitted.filter((e) => e[0] === "party-invite").length, 2, "answered: the next click asks");
+  const wait = g.live().filter((t) => t.ms === 8000);
+  assert.ok(wait.length >= 1);
+  wait.forEach((t) => { t.live = false; t.fn(); });   // no answer
+  invite().click();
+  assert.strictEqual(g.emitted.filter((e) => e[0] === "party-invite").length, 3, "no answer in 8 s: free again");
+});
+
+test("Friends: the invite toast's Join with the panel closed: the result shows as a note", () => {
+  const g = page();
+  g.load("Friends.js");
+  g.RemasterFriends.on("remaster-party-invite", { partyId: "p1", from: { username: "Ann" } });
+  const toast = g.document.getElementById("remaster-party-toast");
+  toast.querySelectorAll(".rf-btn").filter((b) => b.textContent === "Join")[0].click();
+  assert.deepStrictEqual(g.emitted.filter((e) => e[0] === "party-accept").map((e) => e[1].partyId), ["p1"]);
+  g.RemasterFriends.on("remaster-friend-result", { action: "party-accept", error: "party-in-queue",
+    message: "That party is searching for a match: accept when its search is over." });
+  const note = g.document.getElementById("remaster-friend-note");
+  assert.ok(note && note.className !== "hidden", "a note is shown");
+  assert.ok(/searching for a match/.test(note.textContent), note.textContent);
+  g.RemasterFriends.on("remaster-friend-result", { action: "party-accept", ok: true, partyId: "p1" });
+  assert.ok(/joined the party/.test(note.textContent) && note.className === "ok");
+  g.live().filter((t) => t.ms === 5000).forEach((t) => t.fn());
+  assert.strictEqual(note.className, "hidden", "it goes after 5 s");
 });
 
 test("closing a panel takes its card rows off the page (AnimatedCards.js animates every row on it)", () => {

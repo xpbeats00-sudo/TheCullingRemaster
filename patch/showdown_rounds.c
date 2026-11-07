@@ -294,6 +294,12 @@ static struct {
 
 static u16 message[256];
 
+/* The autotest (autotest.c, only with ?RemasterAutoTest= in the match URL). */
+static void at_message(const u16 *m, i32 n);
+static void at_match_end(char ended);
+static void at_gas(u8 *victim, u8 *by, const char *why);
+static void at_note(const char *what);
+
 static u8 *base(void) { return (u8 *)&sd_self_rva - sd_self_rva; }
 
 static int is_a(u8 *obj, u64 class_rva)
@@ -403,6 +409,7 @@ static void send(u8 *pc, i32 n)
     FString s;
     i32 i;
     if (!pc) return;
+    at_message(message, n);
     hud = FIELD(pc, PC_HUD, u8 *);
     if (!is_a(hud, R_CLS_HUD)) return;
     s.data = 0;
@@ -618,6 +625,46 @@ static i32 team_size(u8 *gm, u8 type)
     if (type == CLASSIC_TEAMS) return n ? n : DUO;
     if (type == LIGHTNING) return showdown_size(gm);
     return 0;
+}
+
+/* One pod each in the team modes. AShooterGame_FreeForAll's start chooser
+   (vtable slot 189, VA 0x140244740) asks the contestant's TeamNumber
+   (AVictoryPlayerState::GetTeamNum, VA 0x140249320, its call at VA
+   0x1402447ff) and, for a team other than 0, gives it the start its team got
+   first (the TMap<int32, APlayerStart*> at GameMode +0x7a0), and records the
+   team's start when bSpawnPairTogether (+0x799) or bSpawnPairBalanced
+   (+0x79a) is set; IsSpawnpointAllowed (vtable +0x8d8, VA 0x1402450f0)
+   refuses another contestant any start in that map. The teams a ClassicTeams
+   match has while it spawns (in the pods, the bots in one batch) are not its
+   final ones: fix 4's stub and sd_teams set those at the scoreboard refresh.
+   So two contestants of different final teams shared a pod (seen in game by
+   patch/autotest in Duo: a rival on the player's mate's start, one start
+   empty). In a ClassicTeams match the chooser now sees team 0, as in Solo:
+   every contestant gets a free start of its own (sd_spawn_bots caps them at
+   the starts), the map stays empty, and teammates start apart (their team is
+   set before the pods open). Every other mode keeps the stock team. */
+#define R_GET_TEAM     0x249320    /* AVictoryPlayerState::GetTeamNum (reads +0x490) */
+#define GM_PAIR_TEAMS  0x798       /* AShooterGame_FreeForAll::bPairTeams */
+#define GM_PAIR_SPAWN  0x799       /* bSpawnPairTogether: record the team's start */
+#define GM_PAIR_BALANCED 0x79a     /* bSpawnPairBalanced */
+#define GM_TEAM_STARTS 0x7a0       /* TMap<int32, APlayerStart*> team -> start (num at +0x7a8) */
+typedef i32 (*fn_int)(u8 *);
+static void at_spawn_team(u8 *gm, u8 *ps, i32 team, i32 given);
+
+i32 sd_spawn_team(u8 *ps)
+{
+    u8 *world, *gm;
+    i32 team;
+    B = base();
+    team = ((fn_int)AT(R_GET_TEAM))(ps);
+    world = ps ? world_of(ps) : 0;
+    gm = world ? FIELD(world, W_AUTH_GM, u8 *) : 0;
+    if (gm && is_a(gm, R_CLS_GAMEMODE) && FIELD(gm, GM_TYPE, u8) == CLASSIC_TEAMS) {
+        at_spawn_team(gm, ps, team, 0);
+        return 0;
+    }
+    if (gm) at_spawn_team(gm, ps, team, team);
+    return team;
 }
 
 char sd_teams(u8 *gs)
@@ -977,11 +1024,12 @@ u8 *sd_gas_instigator(u8 *wound)
     }
     if (i == C.n) return 0;
     by = weak(&C.list[i].by);
-    if (!by || FIELD(by, C_PAWN, u8 *) == victim) return 0;
+    if (!by || FIELD(by, C_PAWN, u8 *) == victim) { at_gas(victim, 0, "user"); return 0; }
     vc = FIELD(victim, P_CONTROLLER, u8 *);
-    if (vc == by) return 0;
+    if (vc == by) { at_gas(victim, 0, "user"); return 0; }
     t = team_of(by);
-    if (t > 0 && team_of(vc) == t) return 0;
+    if (t > 0 && team_of(vc) == t) { at_gas(victim, 0, "teammate"); return 0; }
+    at_gas(victim, by, "rival");
     return by;
 }
 
@@ -1085,6 +1133,43 @@ static void sides_tick(u8 *world, i32 teams)
     if (!place(world, teams)) S.placing = 0;
 }
 
+/* The player's pawn of this round, kept possessed. After the player's own
+   death the game puts its controller in the spectating state a few seconds
+   later (APlayerController::BeginSpectatingState unpossesses the pawn it has
+   then). The round's 3 black seconds are shorter than that, so it took the
+   pawn reset() had just given the player: the next round was lost about a
+   second in, without a blow (seen by patch/autotest, round after a lost
+   round). The pawn is still there, uncontrolled: the controller possesses it
+   again (AController::Possess, vtable +0x648). */
+#define V_POSSESS      0x648
+static struct { Weak ctrl, pawn; } K;
+
+static void keep_record(u8 *world)
+{
+    u8 *list = world + W_CONTROLLERS;
+    i32 i, num = FIELD(list, 8, i32);
+    K.ctrl.index = K.pawn.index = -1;
+    K.ctrl.serial = K.pawn.serial = 0;
+    for (i = 0; i < num; i++) {
+        u8 *c = weak_get(list, i), *p;
+        if (!c || !is_a(c, R_CLS_PC) || !(p = FIELD(c, C_PAWN, u8 *))) continue;
+        if (is_a(p, R_CLS_CHARACTER)) {                /* a character's only: IsAlive below is AShooterCharacter's */
+            weak_set(&K.ctrl, c);
+            weak_set(&K.pawn, p);
+        }
+        return;
+    }
+}
+
+static int keep_possessed(void)
+{
+    u8 *c = weak(&K.ctrl), *p = weak(&K.pawn);
+    if (!c || !p || !is_a(p, R_CLS_CHARACTER) || FIELD(c, C_PAWN, u8 *) || FIELD(p, P_CONTROLLER, u8 *)
+        || !((fn_bool)AT(US_CH_ALIVE))(p)) return 0;
+    ((fn_void2)VFN(c, V_POSSESS))(c, p);
+    return FIELD(c, C_PAWN, u8 *) == p;
+}
+
 /* For the tests: the sides' state. */
 void sd_sides_probe(i32 *out)
 {
@@ -1092,7 +1177,60 @@ void sd_sides_probe(i32 *out)
     out[1] = S.placing;
 }
 
+/* Your place at your death, for the HUD's match result ("PLC|<n>"). The game
+   gives the HUD none: its death data has no Rank and SetRewardRank is a letter
+   grade (seen in game by patch/autotest), so hud.js posted 0 and every ranked
+   loss scored last. Once a second (InProgress, every mode but Showdown, which
+   keeps its own series): the local player alive by the game state's records
+   last second and not now -> n = the contestants still alive (the stock end
+   check's filters: PlayerArray, not spectator, a contestant, not left, alive)
+   + 1. Contestants who died in the same second count as still alive: the
+   place is never worse than the true one. */
+static struct { u8 *gm; i32 alive; } PL;
+
+static void place_tick(u8 *gm)
+{
+    u8 *gs, *world, *list, *pc = 0, *me, **players;
+    i32 i, n, num, alive, left = 0, at = 0;
+    if (!gm || FIELD(gm, GM_TYPE, u8) == LIGHTNING || !(gs = FIELD(gm, GM_GAMESTATE, u8 *)) || !(world = world_of(gm))) return;
+    if (PL.gm != gm) { PL.gm = gm; PL.alive = 0; }
+    list = world + W_CONTROLLERS;
+    num = FIELD(list, 8, i32);
+    for (i = 0; i < num && !pc; i++) {
+        u8 *c = weak_get(list, i);
+        if (c && is_a(c, R_CLS_PC)) pc = c;
+    }
+    me = pc ? FIELD(pc, C_PLAYERSTATE, u8 *) : 0;
+    if (!is_a(me, R_CLS_PS)) return;
+    alive = !((fn_bool)AT(R_PS_HAS_LEFT))(me) && ((fn_bool)AT(R_PS_IS_ALIVE))(me);
+    if (alive || !PL.alive) { PL.alive = alive; return; }
+    PL.alive = 0;
+    players = FIELD(gs, GS_PLAYERS, u8 **);
+    n = FIELD(gs, GS_NUM_PLAYERS, i32);
+    for (i = 0; i < n; i++) {
+        u8 *ps = players[i];
+        if (!ps || ps == me || (FIELD(ps, PS_FLAGS, u32) & 1) || !FIELD(ps, PS_CONTESTANT, u8)) continue;
+        if (!((fn_bool)AT(R_PS_HAS_LEFT))(ps) && ((fn_bool)AT(R_PS_IS_ALIVE))(ps)) left++;
+    }
+    put(&at, 'P'); put(&at, 'L'); put(&at, 'C'); put(&at, '|');
+    put_int(&at, left + 1);
+    put(&at, 0);
+    send(pc, at);
+}
+
+static char should_end(u8 *gm);
+
 char sd_should_end(u8 *gm)
+{
+    char end;
+    B = base();
+    place_tick(gm);
+    end = should_end(gm);
+    at_match_end(end);
+    return end;
+}
+
+static char should_end(u8 *gm)
 {
     u8 *world;
     Count n;
@@ -1117,6 +1255,7 @@ char sd_should_end(u8 *gm)
     if (teams > DUO) report_mates(gm, world);
     ensure(gm);
     S.size = teams ? teams : 1;
+    if (S.phase == FIGHT && S.round > 1 && keep_possessed()) at_note("repossessed");
     count(world, &n, teams);
     if (!n.mine || !n.theirs) return ((fn_bool)AT(R_FFA_SHOULD_END))(gm);
     if (!S.announced) {
@@ -1134,6 +1273,7 @@ char sd_should_end(u8 *gm)
         S.round++;
         S.kit = kit_for(S.round);
         reset(gm, world);
+        keep_record(world);
         new_round_sides(world, teams);
         sides_tick(world, teams);
         S.kitted = kit_rival(world) ? S.round : 0;
@@ -1189,3 +1329,5 @@ void *sd_spawn_with(u8 *pawn, void *out, float stat)
         return ((fn_spawn_with)AT(R_SPAWN_WITH))(S.kit_source, out, KIT_BITS);
     return ((fn_spawn_with)AT(R_SPAWN_WITH))(pawn, out, stat);
 }
+
+#include "autotest.c"           /* the in-game tests (sd_gm_tick, only with ?RemasterAutoTest=) */

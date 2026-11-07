@@ -24,6 +24,13 @@ test("a release that fails its signature check says nothing was installed", () =
   assert.match(friendly(new SyncError("the release's signature doesn't match: refusing it", "signature")), /can't verify, so nothing was installed/);
 });
 
+test("a download an antivirus keeps locked reads as a lock, not as the drive or the game folder", () => {
+  const e = new SyncError("1 file(s) couldn't be downloaded (Victory/x.pak: a file is locked (antivirus?): ... (EPERM)); press Resume to try them again", "locked");
+  const m = friendly(e, { gamePath: "C:\\Games\\The Culling" });
+  assert.match(m, /locked, most likely by your antivirus/);
+  assert.doesNotMatch(m, /Choose another folder|refused access|drive is full/);
+});
+
 test("disk and permission problems say what to do", () => {
   assert.match(friendly(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })), /drive is full/);
   assert.match(friendly(Object.assign(new Error("EACCES: permission denied, open 'C:\\Program Files\\x'"), { code: "EACCES" })), /refused access/);

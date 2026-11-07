@@ -540,6 +540,207 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.deepStrictEqual((await sync.plan(await get("v1"), r2)).length, 0, "the files are 1.0.0's");
     });
 
+    await test("a server sending more than a file's size is cut off, never filling the disk", async () => {
+      // The manifest says 1,000 bytes; the server streams 20 MB with no Content-Length.
+      const real = Buffer.alloc(1000, 3);
+      routes["/huge/o/big"] = (req, res) => {
+        let sent = 0;
+        res.writeHead(200);
+        const chunk = Buffer.alloc(64 * 1024, 3);
+        const pump = () => {
+          while (sent < 20 * 1048576) { sent += chunk.length; if (!res.write(chunk)) return res.once("drain", pump); }
+          res.end();
+        };
+        res.on("close", () => { sent = Infinity; });
+        pump();
+      };
+      const body = Buffer.from(JSON.stringify({ version: "1", files: [{ path: "Victory/big.pak", size: real.length, sha256: sha(real), url: "o/big" }] }));
+      routes["/huge/manifest.json"] = (req, res) => res.end(body);
+      routes["/huge/manifest.json.sig"] = (req, res) => res.end(crypto.sign(null, body, pair.privateKey).toString("base64"));
+      const r = path.join(tmp, "huge-game");
+      await assert.rejects(install("huge", r), /sent more than the file's 1000 bytes/);
+      const part = path.join(r, ".remaster", "staging", "Victory", "big.pak.part");
+      assert.ok(!fs.existsSync(part) || fs.statSync(part).size <= real.length, "no oversized .part left");
+    });
+
+    await test("a resumed download (206) that sends more than the rest of the file is cut off", async () => {
+      const real = Buffer.alloc(300000, 6);
+      routes["/huge206/o/f"] = (req, res) => {
+        const m = /^bytes=(\d+)-$/.exec(req.headers.range || "");
+        if (!m) { res.writeHead(200, { "Content-Length": real.length }); return res.end(real); }
+        const from = Number(m[1]);
+        // The right Content-Range, but far more data than it says.
+        res.writeHead(206, { "Content-Range": `bytes ${from}-${real.length - 1}/${real.length}` });
+        res.end(Buffer.alloc(4 * 1048576, 6));
+      };
+      const body = Buffer.from(JSON.stringify({ version: "1", files: [{ path: "Victory/f.pak", size: real.length, sha256: sha(real), url: "o/f" }] }));
+      routes["/huge206/manifest.json"] = (req, res) => res.end(body);
+      routes["/huge206/manifest.json.sig"] = (req, res) => res.end(crypto.sign(null, body, pair.privateKey).toString("base64"));
+      const r = path.join(tmp, "huge206-game");
+      const part = path.join(r, ".remaster", "staging", "Victory", "f.pak.part");
+      fs.mkdirSync(path.dirname(part), { recursive: true });
+      fs.writeFileSync(part, real.subarray(0, 1000));
+      const retries = [];
+      await install("huge206", r, { retryDelayMs: 1, log: (ev, d) => { if (ev === "retry") retries.push(d.file); } });
+      assert.ok(/sent more than the file's 300000 bytes/.test(retries[0] || ""), "the resume was cut off: " + retries.join("; "));
+      assert.ok(read(r, "Victory/f.pak").equals(real), "then the file started over and came whole");
+    });
+
+    await test("an oversized manifest or signature is refused while it streams", async () => {
+      const big = Buffer.alloc(9 * 1048576, 32);
+      routes["/bigman/manifest.json"] = (req, res) => { res.writeHead(200); res.end(big); };
+      routes["/bigman/manifest.json.sig"] = (req, res) => res.end("x");
+      await assert.rejects(get("bigman"), /manifest\.json is larger than 8 MB/);
+      const body = Buffer.from(JSON.stringify({ version: "1", files: [] }));
+      routes["/bigsig/manifest.json"] = (req, res) => res.end(body);
+      routes["/bigsig/manifest.json.sig"] = (req, res) => { res.writeHead(200); res.end(Buffer.alloc(4096, 65)); };
+      await assert.rejects(get("bigsig"), /manifest\.json\.sig is larger than 1 KB/);
+    });
+
+    await test("a .part bigger than its file is deleted before the disk-space check", async () => {
+      const f1 = Buffer.alloc(2000, 8);
+      release("oversized-part", "1", { "Victory/p.pak": f1 });
+      const r = path.join(tmp, "oversized-part-game");
+      const part = path.join(r, ".remaster", "staging", "Victory", "p.pak.part");
+      const plant = () => { fs.mkdirSync(path.dirname(part), { recursive: true }); fs.writeFileSync(part, Buffer.alloc(50000, 1)); };
+      plant();
+      const m = await get("oversized-part");
+      const todo = await sync.plan(m, r);
+      assert.ok(!fs.existsSync(part), "plan() drops it");
+      // Left again after the plan (an older launcher, a crash): apply() drops it before it checks the space,
+      // which here reports a full drive while the oversized .part is there.
+      plant();
+      const realStatfs = fs.statfsSync;
+      fs.statfsSync = function (d) {
+        const s = realStatfs.apply(this, arguments);
+        return fs.existsSync(part) ? Object.assign({}, s, { bavail: 0, bsize: s.bsize }) : s;
+      };
+      try {
+        await sync.apply(m, todo, r, () => {}, { retryDelayMs: 5 });
+      } finally {
+        fs.statfsSync = realStatfs;
+      }
+      assert.ok(read(r, "Victory/p.pak").equals(f1));
+    });
+
+    await test("the downgrade floor: an older release than the newest one seen is refused, even for a new folder", async () => {
+      const floor = path.join(tmp, "userData", "release-floor.json");
+      const m = (version, released) => ({ version, released, files: [] });
+      sync.checkFloor(floor, m("1.0.0"));                        // nothing seen yet: anything goes
+      sync.noteFloor(floor, m("1.2.0", "2026-11-01T00:00:00.000Z"));
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(floor, "utf8")), { version: "1.2.0", released: "2026-11-01T00:00:00.000Z" });
+      assert.throws(() => sync.checkFloor(floor, m("1.1.9", "2026-12-01T00:00:00.000Z")), /offers 1\.1\.9, older than 1\.2\.0/);
+      // The same version, signed earlier (a replayed build of it), is refused too; the same build or a later one isn't.
+      assert.throws(() => sync.checkFloor(floor, m("1.2.0", "2026-10-31T00:00:00.000Z")), /older than/);
+      sync.checkFloor(floor, m("1.2.0", "2026-11-01T00:00:00.000Z"));
+      sync.checkFloor(floor, m("1.2.0"));
+      sync.noteFloor(floor, m("1.2.0", "2026-11-02T00:00:00.000Z"));
+      assert.strictEqual(JSON.parse(fs.readFileSync(floor, "utf8")).released, "2026-11-02T00:00:00.000Z");
+      // Older ones never lower it.
+      sync.noteFloor(floor, m("1.1.0", "2027-01-01T00:00:00.000Z"));
+      sync.noteFloor(floor, m("1.2.0", "2026-11-01T00:00:00.000Z"));
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(floor, "utf8")), { version: "1.2.0", released: "2026-11-02T00:00:00.000Z" });
+      sync.noteFloor(floor, m("1.10.0", "2026-11-03T00:00:00.000Z"));
+      assert.strictEqual(JSON.parse(fs.readFileSync(floor, "utf8")).version, "1.10.0");
+      // An unreadable floor file is no floor (and is replaced by the next release seen).
+      fs.writeFileSync(floor, "{not json");
+      sync.checkFloor(floor, m("1.0.0"));
+    });
+
+    await test("a finished download an antivirus holds locked is moved once it lets go", async () => {
+      const f1 = Buffer.alloc(40000, 1), f2 = Buffer.from("second");
+      release("av", "1", { "Victory/scanned.pak": f1, "Victory/other.txt": f2 });
+      const r = path.join(tmp, "av-game");
+      const realRename = fs.renameSync;
+      let refused = 0;
+      fs.renameSync = function (from, to) {
+        if (String(from).endsWith("scanned.pak.part") && refused < 5) {
+          refused++;
+          throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM", path: String(from) });
+        }
+        return realRename.apply(this, arguments);
+      };
+      try {
+        await install("av", r, { lockWaitMs: 5000 });
+      } finally {
+        fs.renameSync = realRename;
+      }
+      assert.strictEqual(refused, 5, "more refusals than the old blocking retries took");
+      assert.ok(read(r, "Victory/scanned.pak").equals(f1) && read(r, "Victory/other.txt").equals(f2));
+    });
+
+    await test("a download that stays locked is reported as a lock (not a disk or folder problem) and doesn't stop the others", async () => {
+      const f1 = Buffer.alloc(40000, 2), f2 = Buffer.from("second v2");
+      release("av2", "1", { "Victory/scanned.pak": f1, "Victory/other.txt": f2 });
+      const r = path.join(tmp, "av2-game");
+      const realRename = fs.renameSync;
+      fs.renameSync = function (from) {
+        if (String(from).endsWith("scanned.pak.part")) throw Object.assign(new Error("EBUSY: resource busy or locked, rename"), { code: "EBUSY" });
+        return realRename.apply(this, arguments);
+      };
+      let err = null;
+      const t0 = Date.now();
+      try {
+        await install("av2", r, { lockWaitMs: 600 });
+      } catch (e) {
+        err = e;
+      } finally {
+        fs.renameSync = realRename;
+      }
+      assert.ok(err, "the sync fails");
+      assert.strictEqual(err.kind, "locked");
+      assert.match(err.message, /a file is locked \(antivirus\?\)/);
+      assert.ok(Date.now() - t0 >= 500, "it waited for the lock");
+      const { friendly } = require("../lib/errors");
+      const shown = friendly(err, { gamePath: r });
+      assert.match(shown, /antivirus/);
+      assert.doesNotMatch(shown, /Choose another folder|drive is full/);
+      // The other file was not stopped, and the locked one's download is kept for Resume.
+      const staging = path.join(r, ".remaster", "staging", "Victory");
+      assert.ok(fs.existsSync(path.join(staging, "other.txt")), "the other file is staged");
+      assert.strictEqual(fs.statSync(path.join(staging, "scanned.pak.part")).size, f1.length, "the finished download is kept");
+      for (const k of Object.keys(hits)) delete hits[k];
+      await install("av2", r);
+      assert.ok(read(r, "Victory/scanned.pak").equals(f1));
+    });
+
+    await test("a journal whose backup folder leaves .remaster is dropped, not followed", async () => {
+      const r = path.join(tmp, "bad-hold");
+      release("bh", "1.0.0", { "Victory/x.bin": Buffer.from("x1"), "Victory/y.bin": Buffer.from("y1") });
+      await install("bh", r);
+      const Y2 = Buffer.from("y2");
+      const staged = path.join(r, ".remaster", "staging", "Victory", "y.bin");
+      fs.mkdirSync(path.dirname(staged), { recursive: true });
+      fs.writeFileSync(staged, Y2);
+      const outside = path.join(tmp, "bad-hold-outside");
+      for (const hold of ["../../bad-hold-outside", "backup/../../../bad-hold-outside", "..\\..\\bad-hold-outside", "replaced", "backup-X", "staging", 7]) {
+        fs.writeFileSync(path.join(r, ".remaster", "journal.json"), JSON.stringify({
+          version: "2.0.0", from: "1.0.0", hold, obsolete: [], oldRecords: {},
+          files: [{ path: "Victory/y.bin", sha256: sha(Y2), size: 2, hadOld: true }]
+        }));
+        assert.strictEqual(sync.recover(r), false, "not recovered: " + hold);
+        assert.ok(!fs.existsSync(path.join(r, ".remaster", "journal.json")), "the bad journal is gone: " + hold);
+        assert.ok(!fs.existsSync(outside), "nothing moved outside: " + hold);
+        assert.ok(read(r, "Victory/y.bin").equals(Buffer.from("y1")), "the installed file stays: " + hold);
+      }
+      assert.strictEqual(sync.installedVersion(r), "1.0.0");
+      assert.deepStrictEqual(await sync.plan(await get("bh"), r), [], "the install still checks out");
+    });
+
+    await test("a last-commit record whose backup folder leaves .remaster can't be restored from", async () => {
+      const r = path.join(tmp, "bad-last");
+      await install("v1", r);
+      await install("v2", r);
+      const lastFile = path.join(r, ".remaster", "last-commit.json");
+      const last = JSON.parse(fs.readFileSync(lastFile, "utf8"));
+      last.hold = "../..";
+      fs.writeFileSync(lastFile, JSON.stringify(last));
+      assert.strictEqual(sync.previousVersion(r), null, "nothing to restore is offered");
+      assert.throws(() => sync.rollback(r), /damaged/);
+      assert.strictEqual(sync.installedVersion(r), "1.1.0", "the install is untouched");
+      assert.ok(read(r, "Victory/c.ini").equals(C2));
+    });
+
     console.log("all %d update tests passed", passed);
   } finally {
     server.close();

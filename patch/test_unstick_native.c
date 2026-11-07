@@ -94,7 +94,8 @@ static int messages, stock_calls;
 static char stock_end(u8 *g) { (void)g; stock_calls++; return 0; }
 static char has_left(u8 *p) { CHECK(p == ps); return (char)ps_left; }
 static char record_alive(u8 *p) { CHECK(p == ps); return (char)ps_record_alive; }
-static char pawn_is_alive(u8 *p) { CHECK(alive(p)); return (char)pawn_alive; }
+static int alive_calls;
+static char pawn_is_alive(u8 *p) { CHECK(alive(p)); alive_calls++; return (char)pawn_alive; }
 static void resize(u16 **s, i32 n, i32 prev) { (void)prev; *s = (u16 *)calloc((size_t)n + 1, 2); }
 static wchar_t last_message[256];
 static void hud_message(u8 *h, u16 **s, float t)
@@ -479,6 +480,34 @@ static void checks(void)
     tick(t++);
     CHECK(moves() == 1 && teleports == before + 1 && at()[0] == good[0]);
     printf("ok    a refused teleport: every candidate tried once, then again 2 ticks later\n");
+
+    /* The controller's pawn is not an AShooterCharacter (a plain APawn): it is
+       left alone, and nothing past APawn is read. The pawn ends at a
+       no-access page from +0x440 on (APawn::Controller is +0x438), so a read
+       of CharacterMovement (+0x468), CapsuleComponent (+0x470) or the using
+       bits (+0xd80) would crash this test; IsAlive (AShooterCharacter's) is
+       never called on it. */
+    new_match("");
+    t = walk(20, 25);
+    {
+        u8 *page = (u8 *)VirtualAlloc(0, 0x2000, MEM_RESERVE, PAGE_NOACCESS), *plain;
+        CHECK(page && VirtualAlloc(page, 0x1000, MEM_COMMIT, PAGE_READWRITE));
+        plain = page + 0x1000 - 0x440;
+        memset(plain, 0, 0x440);
+        F(plain, 0, void **) = vtable;
+        F(plain, 0x10, u8 *) = 0;                  /* no class: not a character */
+        F(plain, 0x1e0, u8 *) = root;              /* RootComponent (AActor's) */
+        reg(plain);
+        F(pc, 0x408, u8 *) = plain;
+        mode(3);
+        input(2048.0f, 0.0f);
+        alive_calls = 0;
+        before = teleports;
+        for (m0 = t + 10; t < m0; t++) tick(t);
+        CHECK(moves() == 0 && teleports == before && alive_calls == 0);
+        F(pc, 0x408, u8 *) = pawn;                 /* the character back: it works again */
+    }
+    printf("ok    a pawn that is not a character: left alone, nothing past APawn read\n");
 
     /* A new match (or the same game mode's clock going back) forgets the old one. */
     new_match("");

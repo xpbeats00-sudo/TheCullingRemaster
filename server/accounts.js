@@ -15,6 +15,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const os = require("os");
 const fs = require("fs");
 const { promisify } = require("util");
 const { CoalescedJsonFile, writeAtomicSync } = require("./store");
@@ -25,10 +26,16 @@ const TOKEN_TTL_MS = 30 * 24 * 3600 * 1000;
 const MAX_TOKENS_PER_ACCOUNT = 8;
 const MAX_TOKENS = 100000;
 const GRANT_TTL_MS = 12 * 3600 * 1000;
+// A game login extends its grant in memory; the extension is saved at most
+// this often per grant (every login rewrote accounts.json: performance review
+// P5). A crash loses at most this much of a 12-hour grant's extension.
+const GRANT_SAVE_EVERY_MS = 60 * 1000;
 const PRUNE_EVERY_MS = 60 * 1000;
 
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, keylen: 64, saltBytes: 16, maxmem: 64 * 1024 * 1024 };
-const SCRYPT_ACTIVE = 2;            // hashes computed at once
+// Hashes computed at once: at most 2, and never every thread of the machine
+// (a 2-core VPS keeps one for everything else: performance review P7).
+const SCRYPT_ACTIVE = Math.max(1, Math.min(2, os.availableParallelism() - 1));
 const SCRYPT_QUEUE = 64;            // waiting beyond that: 503 busy
 
 const USERNAME_RE = /^[A-Za-z0-9_.\- ]+$/;
@@ -154,6 +161,7 @@ class Accounts {
     this.tokens = new Map();              // sha256(token) -> { u: key, at }, oldest first
     this.tokensByAccount = new Map();     // key -> [hash, ...], oldest first
     this.grants = new Map();              // userID -> { ip: hashed, until }
+    this.grantSavedAt = new Map();        // userID -> when its grant was last saved (memory only)
     this.secret = secretFile ? loadSecret(secretFile) : crypto.randomBytes(32).toString("hex");
     this.load();
     this.store = file ? new CoalescedJsonFile(file, () => this.serialize(), { delayMs: saveDelayMs, onError: onSaveError, now })
@@ -291,11 +299,13 @@ class Accounts {
   grant(userID, ipHash) {
     this.grants.delete(userID);       // re-insert so the Map stays roughly oldest-first
     this.grants.set(userID, { ip: ipHash, until: this.now() + GRANT_TTL_MS });
+    this.grantSavedAt.set(userID, this.now());
     this.maybePrune();
     this.save();
   }
 
   revokeGrant(userID) {
+    this.grantSavedAt.delete(userID);
     if (this.grants.delete(userID)) this.save();
   }
 
@@ -305,7 +315,10 @@ class Accounts {
     const g = this.grants.get(userID);
     if (!g || g.until < this.now() || g.ip !== ipHash || !this.byUserID.has(userID)) return false;
     g.until = this.now() + GRANT_TTL_MS;
-    this.save();
+    if (this.now() - (this.grantSavedAt.get(userID) || 0) >= GRANT_SAVE_EVERY_MS) {
+      this.grantSavedAt.set(userID, this.now());
+      this.save();
+    }
     return true;
   }
 
@@ -349,4 +362,4 @@ function loadSecret(file) {
 
 module.exports = { Accounts, normalizeUsername, usernameKey, normalizeEmail, validPassword, hashPassword, verifyPassword,
   dummyPasswordHash, randomPassword, randomSteamID, validSteamID, createGate, TOKEN_TTL_MS, GRANT_TTL_MS,
-  MAX_TOKENS_PER_ACCOUNT, SCRYPT };
+  MAX_TOKENS_PER_ACCOUNT, SCRYPT, SCRYPT_ACTIVE };

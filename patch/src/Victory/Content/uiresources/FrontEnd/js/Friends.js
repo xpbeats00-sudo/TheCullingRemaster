@@ -243,7 +243,7 @@
     "#remaster-friends, #remaster-card { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); }",
     // z-index 100 (RemasterOverlay sets it when shown): over the stock player card.
     "#remaster-friends, #remaster-card { z-index: 100; }",
-    "#remaster-friends.hidden, #remaster-card.hidden, #remaster-party-toast.hidden { display: none; }",
+    "#remaster-friends.hidden, #remaster-card.hidden, #remaster-party-toast.hidden, #remaster-friend-note.hidden { display: none; }",
     ".rf-panel { position: relative; display: flex; flex-direction: column; width: 36vw; height: 84vh; padding: 2.4vh 1.6vw; box-sizing: border-box; border-radius: 1.8vh; background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     ".rf-close { position: absolute; right: 1.2vw; top: 1.6vh; width: 2.2vw; height: 2.2vw; line-height: 2.2vw; text-align: center; border-radius: 50%; font: 1.1vw Sucrose-Bold, Arial, sans-serif; background: rgba(255, 255, 255, 0.1); cursor: pointer; }",
     ".rf-close:hover { background: rgba(204, 0, 0, 1); }",
@@ -324,11 +324,22 @@
     // of the lobby's map vote (bottom middle).
     "#remaster-party-toast { position: absolute; right: 2.6vw; top: 34vh; z-index: 100; display: flex; align-items: center; padding: 1.2vh 1.2vw; border-radius: 1.6vh; white-space: nowrap; font-family: Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }",
     "#remaster-party-toast .rt-text { margin-right: 1vw; font-size: 0.95vw; }",
-    "#remaster-party-toast .rt-text b { color: rgba(255, 70, 60, 1); }"
+    "#remaster-party-toast .rt-text b { color: rgba(255, 70, 60, 1); }",
+    // A friend or party action's result while the Friends panel is closed (the
+    // invite toast's Join, a player card's buttons): a note where the toast is.
+    "#remaster-friend-note { position: absolute; right: 2.6vw; top: 42vh; z-index: 100; max-width: 30vw; padding: 1vh 1.2vw; border-radius: 1.6vh; font: 0.9vw Sucrose-Regular, Arial, sans-serif; color: rgba(235, 235, 235, 1); background: rgba(12, 8, 10, 1); box-shadow: 0 0 0 0.15vw rgba(204, 0, 0, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); pointer-events: none; }",
+    "#remaster-friend-note.ok { box-shadow: 0 0 0 0.15vw rgba(80, 200, 110, 0.8), 0 1vh 3vh rgba(0, 0, 0, 0.7); }"
   ].join("\n");
 
   var data = null;            // the last remaster-friends push
-  var panel = null, cardRoot = null, toast = null, styled = false;
+  var panel = null, cardRoot = null, toast = null, note = null, styled = false;
+  // An action asked of the server (friend-*, party-*): one at a time. Its
+  // buttons wait (dimmed, clicks do nothing) until the server's
+  // remaster-friend-result for it, or ACTION_WAIT_MS without one (the server
+  // drops events over its limits), so a double click can't give two
+  // contradictory answers.
+  var ACTION_WAIT_MS = 8000;
+  var acting = null;          // { action, timer }
   var pendingCard = null;     // what the lobby row or list knew of the card asked for
   var message = { text: "", ok: false };
   var removing = null;        // a friend whose Remove was clicked once
@@ -357,8 +368,36 @@
   function button(parent, text, cls, onClick) {
     var b = el("span", "rf-btn" + (cls ? " " + cls : ""), text);
     b.addEventListener("click", function (e) { e.stopPropagation(); onClick(); });
+    if (acting) b.style.opacity = "0.45";
     parent.appendChild(b);
     return b;
+  }
+
+  // Ask the server for an action, unless one is still waiting for its answer
+  // (then nothing: false).
+  function act(name, msg) {
+    if (acting) return false;
+    acting = { action: name, timer: setTimeout(function () { done(null); }, ACTION_WAIT_MS) };
+    dim();
+    emit(name, msg);
+    return true;
+  }
+
+  // The answer to `action` came (null: any, or none is coming).
+  function done(action) {
+    if (!acting || (action && acting.action !== action)) return;
+    clearTimeout(acting.timer);
+    acting = null;
+    dim();
+  }
+
+  function dim() {
+    var roots = [panel, cardRoot, toast];
+    for (var r = 0; r < roots.length; r++) {
+      if (!roots[r] || !roots[r].querySelectorAll) continue;
+      var bs = roots[r].querySelectorAll(".rf-btn");
+      for (var i = 0; i < bs.length; i++) bs[i].style.opacity = acting ? "0.45" : "";
+    }
   }
 
   function cardImage(cardID) {
@@ -423,6 +462,17 @@
       var m = panel.querySelector(".rf-msg");
       if (m) { m.textContent = message.text; m.className = "rf-msg" + (message.ok ? " ok" : ""); }
     }
+    // The panel closed (the invite toast's Join, a player card): a note.
+    if (message.text && (!panel || panel.className === "hidden")) showNote(message.text, message.ok);
+  }
+
+  function showNote(text, ok) {
+    style();
+    if (!note) note = overlay("remaster-friend-note");
+    note.textContent = text;
+    note.className = ok ? "ok" : "";
+    clearTimeout(note.timer);
+    note.timer = setTimeout(function () { note.className = "hidden"; }, 5000);
   }
 
   function personRow(p, opts) {
@@ -494,8 +544,8 @@
       var inv = section(box, "Party invites");
       data.invites.forEach(function (i) {
         var r = personRow(i.from, { line: "Invited you to their party" });
-        button(r, "Join", null, function () { emit("party-accept", { partyId: i.partyId }); });
-        button(r, "Decline", "quiet", function () { emit("party-decline", { partyId: i.partyId }); });
+        button(r, "Join", null, function () { act("party-accept", { partyId: i.partyId }); });
+        button(r, "Decline", "quiet", function () { act("party-decline", { partyId: i.partyId }); });
         inv.appendChild(r);
       });
     }
@@ -511,7 +561,7 @@
       var f = el("div", "rf-footer");
       f.appendChild(el("div", "rf-hint", lead ? "You lead: when you queue, your party joins your lobby."
         : data.party.leader + " leads: when they queue, you join their lobby."));
-      button(f, "Leave party", "quiet", function () { emit("party-leave"); });
+      button(f, "Leave party", "quiet", function () { act("party-leave"); });
       party.appendChild(f);
     } else {
       party.appendChild(el("div", "rf-hint", "Invite friends to play together (up to " + max + "). The leader queues, and everyone joins the same lobby."));
@@ -522,13 +572,13 @@
       var req = section(box, "Requests", String(data.incoming.length + data.outgoing.length));
       data.incoming.forEach(function (p) {
         var r = personRow(p, { line: "Wants to be friends" });
-        button(r, "Accept", null, function () { emit("friend-accept", { username: p.username }); });
-        button(r, "Decline", "quiet", function () { emit("friend-decline", { username: p.username }); });
+        button(r, "Accept", null, function () { act("friend-accept", { username: p.username }); });
+        button(r, "Decline", "quiet", function () { act("friend-decline", { username: p.username }); });
         req.appendChild(r);
       });
       data.outgoing.forEach(function (p) {
         var r = personRow(p, { line: "Request sent" });
-        button(r, "Cancel", "quiet", function () { emit("friend-decline", { username: p.username }); });
+        button(r, "Cancel", "quiet", function () { act("friend-decline", { username: p.username }); });
         req.appendChild(r);
       });
     }
@@ -541,9 +591,10 @@
     data.friends.forEach(function (p) {
       var r = personRow(p, {});
       var full = data.party && data.party.members.length >= max;
-      if (!inParty(p.username) && !full) button(r, "Invite", null, function () { emit("party-invite", { username: p.username }); });
+      if (!inParty(p.username) && !full) button(r, "Invite", null, function () { act("party-invite", { username: p.username }); });
       button(r, removing === p.username ? "Sure?" : "Remove", "quiet", function () {
-        if (removing === p.username) { removing = null; emit("friend-remove", { username: p.username }); }
+        if (acting) return;
+        if (removing === p.username) { removing = null; act("friend-remove", { username: p.username }); }
         else { removing = p.username; renderPanel(); }
       });
       list.appendChild(r);
@@ -565,7 +616,7 @@
     function add() {
       var name = input.value.replace(/^\s+|\s+$/g, "");
       if (!name) return say("Type their username.");
-      emit("friend-request", { username: name });
+      act("friend-request", { username: name });
     }
     button(p.querySelector(".rf-add"), "Add friend", "big", add);
     panel.addFriend = add;
@@ -647,8 +698,8 @@
     t.appendChild(el("b", null, msg.from.username));
     t.appendChild(document.createTextNode(" invited you to their party"));
     toast.appendChild(t);
-    button(toast, "Join", null, function () { emit("party-accept", { partyId: msg.partyId }); hideInvite(); });
-    button(toast, "Decline", "quiet", function () { emit("party-decline", { partyId: msg.partyId }); hideInvite(); });
+    button(toast, "Join", null, function () { if (act("party-accept", { partyId: msg.partyId })) hideInvite(); });
+    button(toast, "Decline", "quiet", function () { if (act("party-decline", { partyId: msg.partyId })) hideInvite(); });
     toast.className = "";
     clearTimeout(toast.timer);
     toast.timer = setTimeout(hideInvite, 30000);
@@ -765,9 +816,9 @@
 
     var buttons = el("div", "rc-buttons");
     var name = c.username || c.name;
-    if (full && c.relation === "none") button(buttons, "Add friend", null, function () { emit("friend-request", { username: name }); closeCard(); });
-    if (full && c.relation === "asked-you") button(buttons, "Accept friend", null, function () { emit("friend-accept", { username: name }); closeCard(); });
-    if (full && c.relation === "friend" && !inParty(name)) button(buttons, "Invite to party", null, function () { emit("party-invite", { username: name }); });
+    if (full && c.relation === "none") button(buttons, "Add friend", null, function () { if (act("friend-request", { username: name })) closeCard(); });
+    if (full && c.relation === "asked-you") button(buttons, "Accept friend", null, function () { if (act("friend-accept", { username: name })) closeCard(); });
+    if (full && c.relation === "friend" && !inParty(name)) button(buttons, "Invite to party", null, function () { act("party-invite", { username: name }); });
     button(buttons, "Close", "quiet", closeCard);
     body.appendChild(buttons);
     root.appendChild(p);
@@ -799,7 +850,8 @@
       noAccount = r.error === "no-account";
       return renderPanel();
     }
-    if (r.error) return say(ERRORS[r.error] || "That didn't work.");
+    done(r.action);
+    if (r.error) return say(r.message || ERRORS[r.error] || "That didn't work.");
     var who = r.username || "";
     if (r.action === "friend-request") {
       say(r.state === "friends" ? "You and " + who + " are now friends." : "Request sent to " + who + ".", true);
@@ -861,7 +913,7 @@
 
   window.RemasterFriends = { open: open, close: close, showCard: showCard, on: on,
     connected: function () { emit("friends-get"); },
-    disconnected: function () { renderPanel(); renderParty(); },
+    disconnected: function () { done(null); renderPanel(); renderParty(); },
     // Your account username from the server; false: no account; null: not known yet.
     account: function () { return data ? data.you || false : (noAccount ? false : null); } };
 

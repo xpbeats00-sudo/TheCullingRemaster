@@ -79,6 +79,12 @@ const MODES = Object.keys(TEAM);
       assert.strictEqual(R.teamPlacement(m, reported, victory, TEAM[m].of24), want, m + " " + reported + " " + victory);
     }
     assert.strictEqual(R.teamPlacement("duo", 24, false, 8), 8, "Prison duos: 8 teams");
+    // The patched exe's place at your death ("PLC|<alive + 1>", hud.js) on the 16-contestant
+    // maps: the team slice it falls in, among 8 duos, 5 trios or 4 quads.
+    for (const [m, alive, teams, want] of [["duo", 14, 8, 7], ["duo", 3, 8, 2], ["duo", 16, 8, 8], ["trio", 13, 5, 5],
+      ["trio", 7, 5, 3], ["quad", 15, 4, 4], ["quad", 5, 4, 2]]) {
+      assert.strictEqual(R.teamPlacement(m, alive, false, teams), want, m + " " + alive + " alive of " + teams + " teams");
+    }
   });
 
   await test("a team match rejects a placement past its teams, and a result can't change its field", () => {
@@ -156,8 +162,9 @@ const MODES = Object.keys(TEAM);
   });
 
   await test("old profiles: Solo-only profiles migrate cleanly; malformed team records are repaired", () => {
+    // (processed as today's list: an older object is converted when read, ranked.test.js.)
     const p = { ranked: { season: R.CONFIG.season.id, rating: 1234, mmr: 1200, matches: 9, wins: 2, peakRating: 1250, peakTier: "Hunter",
-      pending: null, processed: {}, history: [], tiersReached: { Scrapper: 1 } } };
+      pending: null, processed: [], history: [], tiersReached: { Scrapper: 1 } } };
     const solo = JSON.stringify(p.ranked);
     const all = R.summaries(p);
     assert.deepStrictEqual(Object.keys(all), ["solo", "duo", "trio", "quad"]);
@@ -249,7 +256,10 @@ const MODES = Object.keys(TEAM);
 
     await test("tickets: no ticket, no rating; the same result twice scores once; a forged matchId is ignored", async () => {
       const before = JSON.stringify(rec(A, "duo"));
-      assert.strictEqual((await result(tokenA, { victory: true, placement: 1 })).status, 409);
+      // No ticket: refused, or (within 10 minutes of A's last result) that
+      // result's answer again; either way nothing is scored.
+      const none = await result(tokenA, { victory: true, placement: 1 });
+      assert.ok(none.status === 409 || none.status === 200, "refused: " + none.status);
       assert.strictEqual(JSON.stringify(rec(A, "duo")), before);
       await play(a, "ranked_ffa_jungle_coop2");
       const pending = rec(A, "duo").pending.id;
@@ -257,7 +267,8 @@ const MODES = Object.keys(TEAM);
       const first = await result(tokenA, body);
       assert.strictEqual(first.json.ranked.entry.matchId, pending);
       const matches = rec(A, "duo").matches;
-      assert.strictEqual((await result(tokenA, body)).status, 409, "the ticket is spent");
+      const again = await result(tokenA, body);
+      assert.deepStrictEqual([again.status, again.json], [200, first.json], "the ticket is spent: the same answer again");
       assert.strictEqual(rec(A, "duo").matches, matches);
     });
 

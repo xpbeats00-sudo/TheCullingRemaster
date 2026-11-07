@@ -31,7 +31,7 @@ function freePort() {
 }
 
 // startServer(env): env.profiles / env.files to start with, env.vars for the
-// server's environment. (A number as the first argument, the fixed port of
+// server's environment, env.output to keep what the server logs (srv.output()). (A number as the first argument, the fixed port of
 // older tests, is ignored: the port is always the system's pick.)
 function startServer(env = {}, legacyEnv) {
   if (typeof env === "number") env = legacyEnv || {};
@@ -50,14 +50,17 @@ function startServer(env = {}, legacyEnv) {
       CULLING_REQUIRE_ACCOUNT: "0",
       CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100",
       // Results right after the match starts (season.test.js tests the real minimum).
-      CULLING_MIN_MATCH_SECONDS: "0", CULLING_SHOWDOWN_MIN_SECONDS: "0",
+      CULLING_MIN_MATCH_SECONDS: "0", CULLING_SHOWDOWN_MIN_SECONDS: "0", CULLING_SHOWDOWN_MIN_ROUND_SECONDS: "0",
       // The pay limits off, so tests can post results at once (test/matchpay.test.js turns them on).
       CULLING_SECONDS_PER_KILL: "0", CULLING_DAMAGE_PER_SECOND: "0", CULLING_DAILY_MATCH_CREDITS: "0",
       CULLING_DAILY_MATCH_XP: "0" }, env.vars || {}),
-    stdio: "ignore"
+    stdio: env.output ? ["ignore", "pipe", "pipe"] : "ignore"
   });
+  let output = "";
+  if (env.output) for (const s of [proc.stdout, proc.stderr]) s.on("data", (c) => { output += c; });
   const srv = {
     dir, port: null, proc,
+    output: () => output,
     profiles: () => JSON.parse(fs.readFileSync(path.join(dir, "profiles.json"), "utf8")),
     request(method, url, body, headers = {}) {
       return new Promise((resolve, reject) => {

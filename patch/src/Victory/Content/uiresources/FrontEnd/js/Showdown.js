@@ -66,6 +66,10 @@
         if (onFailed) onFailed();
         ShowError("Failed to join Showdown. Please try again.");
       }
+    }, function () {
+      // No connection (QueueMatchmaking rejected): PLAY works again.
+      if (onFailed) onFailed();
+      ShowError("Couldn't reach the server. Please try again.");
     });
   }
 

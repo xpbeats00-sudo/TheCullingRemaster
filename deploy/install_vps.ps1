@@ -39,6 +39,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Pinned with its SHA-256 (from https://nodejs.org/dist/v<version>/SHASUMS256.txt, node-v<version>-win-x64.zip).
+# Bump both together to the newest 22.x LTS (FULL_AUDIT_2026-11-06, P1); 22.11.0 is from October 2024.
 $NodeVersion = '22.11.0'
 $NodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"
 $NodeSha256 = '905373A059AECAF7F48C1CE10FFBD5334457CA00F678747F19DB5EA7D256C236'
@@ -115,8 +117,7 @@ try {
         if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
         Expand-Archive $zip $tmp
         Stop-CullingService
-        $outcome = "Node.js was being replaced (the service is stopped): check $Root
-ode and start the service"
+        $outcome = "Node.js was being replaced (the service is stopped): check $Root\node and start the service"
         Remove-Item (Join-Path $Root 'node') -Recurse -Force
         Move-Item (Join-Path $tmp "node-v$NodeVersion-win-x64") (Join-Path $Root 'node')
         Remove-Item $tmp -Recurse -Force
@@ -255,6 +256,11 @@ ode and start the service"
     Step "HTTPS on $PublicUrl"
     $sites = Join-Path $SsrRoot 'caddy\sites'
     New-Item -ItemType Directory -Force -Path $sites | Out-Null
+    $site = Join-Path $sites 'culling.caddy'
+    # Written outside sites\ first (the Caddyfile imports sites/*.caddy) and checked before it replaces the live file:
+    # a site file Caddy refuses would otherwise stay in place, and the next reload of Superstar Racing's Caddy fail.
+    $siteNew = Join-Path $Root 'downloads\culling.caddy.new'
+    $sitePrevious = "$site.previous"
 @"
 # The Culling Remaster account server (written by TheCullingRemaster deploy\install_vps.ps1).
 ${Domain}:$PublicPort {
@@ -271,13 +277,26 @@ ${Domain}:$PublicPort {
 	reverse_proxy 127.0.0.1:$LocalPort
 	header Strict-Transport-Security "max-age=31536000"
 }
-"@ | Set-Content -Encoding UTF8 (Join-Path $sites 'culling.caddy')
+"@ | Set-Content -Encoding UTF8 $siteNew
     $caddyfile = Join-Path $SsrRoot 'caddy\Caddyfile'
     $caddyExe = Join-Path $SsrRoot 'caddy\caddy.exe'
     if ((Test-Path $caddyfile) -and (Select-String -Path $caddyfile -Pattern 'import .*sites/\*\.caddy' -Quiet)) {
-        Invoke-Native 'caddy validate' { & $caddyExe validate --config $caddyfile --adapter caddyfile }
+        # The site on its own, then the whole configuration with it in place; if Caddy refuses that, the previous
+        # site file goes back (or the new one goes, on a first install) and Caddy keeps running as it was.
+        Invoke-Native 'caddy validate (the new site file on its own)' { & $caddyExe validate --config $siteNew --adapter caddyfile }
+        if (Test-Path $site) { Copy-Item $site $sitePrevious -Force } else { Remove-Item $sitePrevious -Force -ErrorAction SilentlyContinue }
+        Move-Item $siteNew $site -Force
+        try {
+            Invoke-Native 'caddy validate' { & $caddyExe validate --config $caddyfile --adapter caddyfile }
+        } catch {
+            if (Test-Path $sitePrevious) { Move-Item $sitePrevious $site -Force } else { Remove-Item $site -Force }
+            throw "Caddy refused the configuration with the new site file (the previous one was put back): $($_.Exception.Message)"
+        }
+        Remove-Item $sitePrevious -Force -ErrorAction SilentlyContinue
         Invoke-Native 'caddy reload' { & $caddyExe reload --config $caddyfile --adapter caddyfile }
     } else {
+        # Nothing loads it yet: written in place for when the Caddyfile imports sites/*.caddy.
+        Move-Item $siteNew $site -Force
         Write-Warning "The Superstar Racing Caddyfile doesn't import sites/*.caddy yet: update the VPS with the Superstarracing change that adds it (""Update VPS.bat""), then run this again."
     }
     if (-not (Get-NetFirewallRule -DisplayName "Culling Remaster HTTPS $PublicPort" -ErrorAction SilentlyContinue)) {

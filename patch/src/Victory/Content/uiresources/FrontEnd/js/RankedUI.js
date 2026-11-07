@@ -29,6 +29,7 @@
   ];
   var STORE = "remaster-ranked-mode";
   var last = null;
+  var failed = false;                   // the last /api/ranked ask got no answer (or an error)
   var selected = "solo";
   try {
     var saved = window.localStorage ? window.localStorage.getItem(STORE) : null;
@@ -40,7 +41,7 @@
     return null;
   }
 
-  function emblem(tier) { return "/images/ranked/" + tier.toLowerCase() + ".png"; }
+  function emblem(tier) { return "/images/ranked/" + String(tier).toLowerCase() + ".png"; }
 
   // The player card reads: level, rank emblem, name (Ranked Solo's rank).
   function badge(s) {
@@ -80,7 +81,16 @@
     return true;
   }
 
-  function esc(t) { return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  // Text from the server, for HTML text and attribute values (quotes too).
+  function esc(t) {
+    return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  // A number from the server (0 when it isn't one): never markup.
+  function num(v) {
+    var n = Number(v);
+    return isFinite(n) ? n : 0;
+  }
 
   // The selected mode's summary: the server's modes (every mode), or, from a
   // server older than the team modes, its one summary (Solo's).
@@ -130,6 +140,17 @@
 
   function chip(value, label) { return '<div class="rp-chip"><b>' + esc(value) + "</b><span>" + label + "</span></div>"; }
 
+  // No summary to show: why, and how to get one.
+  function emptyText() {
+    if (!(typeof ClientwebData != "undefined" && ClientwebData.AuthToken)) {
+      return '<div class="rp-empty">You\'re offline. Ranked shows here once the menu is signed in.</div>';
+    }
+    if (failed) {
+      return '<div class="rp-empty rp-retry" data-retry="1">Ranked unavailable \u2014 retry</div>';
+    }
+    return '<div class="rp-empty">Loading your ranked season...</div>';
+  }
+
   function panel() {
     modes();
     tile();
@@ -139,12 +160,17 @@
     if (!box) {
       box = document.createElement("section");
       box.id = "ranked-panel";
+      box.addEventListener("click", function (ev) {
+        var t = ev.target;
+        while (t && t !== box && !(t.getAttribute && t.getAttribute("data-retry"))) t = t.parentNode;
+        if (t && t !== box) refresh(true);
+      });
       menu.appendChild(box);
     }
     var m = mode(selected);
     var s = summaryFor(last, selected);
     if (!last) {
-      box.innerHTML = '<div class="rp-empty">Loading your ranked season...</div>';
+      box.innerHTML = emptyText();
       return;
     }
     if (!usable(s)) {
@@ -152,14 +178,15 @@
       return;
     }
     var team = m.team > 1;
-    var next = s.tier.next != null ? (s.tier.next - s.rating) + " to next tier" : "Top tier";
-    var title = s.placement ? "Placements " + s.placement.played + "/" + s.placement.total : s.tier.name;
+    var rating = num(s.rating);
+    var next = s.tier.next != null ? (num(s.tier.next) - rating) + " to next tier" : "Top tier";
+    var title = s.placement ? "Placements " + num(s.placement.played) + "/" + num(s.placement.total) : s.tier.name;
     var recent = s.recent.slice(0, 8).map(function (e) {
-      var up = e.delta >= 0;
-      return '<div class="rp-row"><span>#' + e.placement + (e.field ? '<small> of ' + e.field + "</small>" : "") +
+      var delta = num(e.delta), up = delta >= 0;
+      return '<div class="rp-row"><span>#' + num(e.placement) + (e.field ? '<small> of ' + num(e.field) + "</small>" : "") +
         (e.abandoned ? " (left)" : "") + '</span>' +
-        '<span class="r ' + (up ? "up" : "down") + '">' + (up ? "+" : "") + e.delta + '</span>' +
-        '<span class="r">' + e.ratingAfter + "</span></div>";
+        '<span class="r ' + (up ? "up" : "down") + '">' + (up ? "+" : "") + delta + '</span>' +
+        '<span class="r">' + num(e.ratingAfter) + "</span></div>";
     }).join("");
     recent = recent ? '<div class="rp-row th"><span>' + (team ? "Team place" : "Place") + '</span><span class="r">Change</span>' +
       '<span class="r">Rating</span></div>' + recent
@@ -168,22 +195,23 @@
       var current = t.name === s.tier.name;
       var cls = "rp-tierrow" + (t.reached ? " reached" : "") + (current ? " current" : "");
       var tag = current ? '<span class="t-tag">You</span>' : (t.reached ? '<span class="t-tag">Unlocked</span>' : "");
-      return '<div class="' + cls + '"><img src="' + emblem(t.name) + '"><span class="t-name">' + esc(t.name) + "</span>" +
-        '<span class="t-min">' + t.min + "+</span>" + '<span class="t-reward">' + esc(REWARDS[t.name] || "") + "</span>" + tag + "</div>";
+      return '<div class="' + cls + '"><img src="' + esc(emblem(t.name)) + '"><span class="t-name">' + esc(t.name) + "</span>" +
+        '<span class="t-min">' + num(t.min) + "+</span>" + '<span class="t-reward">' + esc(REWARDS[t.name] || "") + "</span>" + tag + "</div>";
     }).join("");
     var note = team
       ? "Rated on your team's placement among the teams, never kills. A team win counts for the whole team, even if you fell early. " +
         "Each mode has its own rating. Leaving a ranked match counts as last place."
       : "Rating moves on placement, never kills. Leaving a ranked match counts as last place.";
     box.innerHTML =
-      '<div class="rp-head"><img src="' + emblem(s.tier.name) + '"><div class="rp-main">' +
+      '<div class="rp-head"><img src="' + esc(emblem(s.tier.name)) + '"><div class="rp-main">' +
         '<div class="rp-season">' + esc("Ranked " + m.label).toUpperCase() + " · " + esc(s.season.name).toUpperCase() + " · " +
-          s.season.daysLeft + " DAYS LEFT</div>" +
+          (isFinite(Number(s.season.daysLeft)) ? num(s.season.daysLeft) : "-") + " DAYS LEFT</div>" +
         '<div class="rp-tier">' + esc(title).toUpperCase() + "</div>" +
-        '<div class="rp-elo">' + s.rating + " ELO<small>" + next + "</small></div>" +
-        '<div class="rp-bar"><div style="width:' + Math.round(s.tier.progress * 100) + '%"></div></div>' +
+        '<div class="rp-elo">' + rating + " ELO<small>" + next + "</small></div>" +
+        '<div class="rp-bar"><div style="width:' + Math.max(0, Math.min(100, Math.round(num(s.tier.progress) * 100))) + '%"></div></div>' +
       "</div>" +
-      '<div class="rp-chips">' + chip(s.peak.rating, "Peak · " + esc(s.peak.tier)) + chip(s.matches, "Matches") + chip(s.wins, "Wins") + "</div></div>" +
+      '<div class="rp-chips">' + chip(num(s.peak.rating), "Peak · " + esc(s.peak.tier)) + chip(num(s.matches), "Matches") +
+        chip(num(s.wins), "Wins") + "</div></div>" +
       '<div class="rp-cols">' +
         '<div class="rp-col recent"><div class="rp-h">Recent</div>' + recent + "</div>" +
         '<div class="rp-col ladder"><div class="rp-h">Rank ladder<span>Rewards</span></div>' + ladder + "</div>" +
@@ -201,16 +229,26 @@
 
   var asked = 0;
 
-  function refresh() {
+  // bNow: the player pressed retry (not throttled).
+  function refresh(bNow) {
     // Ranked is per player: send the login token the menus already hold.
     var token = typeof ClientwebData != "undefined" && ClientwebData.AuthToken;
-    if (!token) return;
+    if (!token) {
+      if (!last && document.getElementById("ranked-menu")) panel();   // offline: says so
+      return;
+    }
     var t = new Date().getTime();
-    if (t - asked < 2000) return;        // several triggers at once (sign-in, a screen showing)
+    if (bNow !== true && t - asked < 2000) return;        // several triggers at once (sign-in, a screen showing)
     asked = t;
-    $.ajax({ url: URL, dataType: "json", headers: { Authorization: "Bearer " + token } }).done(function (s) {
+    failed = false;
+    if (!last && document.getElementById("ranked-menu")) panel();     // Loading...
+    $.ajax({ url: URL, dataType: "json", timeout: 15000, headers: { Authorization: "Bearer " + token } }).done(function (s) {
       last = s;
+      failed = false;
       badge(s);
+      if (document.getElementById("ranked-menu")) panel();
+    }).fail(function () {
+      failed = true;                              // what was shown stays; nothing yet: "unavailable - retry"
       if (document.getElementById("ranked-menu")) panel();
     });
   }
@@ -251,6 +289,9 @@
       } else {
         ShowError("Failed to join the queue. Please try again.");
       }
+    }, function () {
+      queueing = false;                 // no connection: Play works again
+      ShowError("Couldn't reach the server. Please try again.");
     });
   };
 

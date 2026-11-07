@@ -21,12 +21,33 @@ const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // Rename, retrying briefly: on Windows a reader (antivirus, backup, an editor)
-// holding the target open makes MoveFileEx fail for a moment.
+// holding the target open makes MoveFileEx fail for a moment. This one sleeps
+// on the main thread between tries (up to ~300 ms): only for the synchronous
+// writes (flushSync at shutdown, writeAtomicSync); the periodic write uses
+// renameRetry, which waits with timers.
 function renameSyncRetry(from, to) {
   for (let attempt = 0; ; attempt++) {
     try { return fs.renameSync(from, to); } catch (e) {
       if (!RENAME_RETRY_CODES.has(e.code) || attempt >= 5) throw e;
       sleepSync(20 * (attempt + 1));
+    }
+  }
+}
+
+// The same retries without blocking the event loop: a timer between tries.
+// Each try is still a synchronous rename (one metadata call), and `wanted()`
+// is asked before each, so a synchronous flush that wrote newer data during a
+// wait is never overwritten. Resolves with whether it renamed, and the time
+// spent in the tries themselves.
+async function renameRetry(from, to, wanted = () => true) {
+  let blockedMs = 0;
+  for (let attempt = 0; ; attempt++) {
+    if (!wanted()) return { renamed: false, blockedMs };
+    const t0 = performance.now();
+    try { fs.renameSync(from, to); return { renamed: true, blockedMs: blockedMs + performance.now() - t0 }; } catch (e) {
+      blockedMs += performance.now() - t0;
+      if (!RENAME_RETRY_CODES.has(e.code) || attempt >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
     }
   }
 }
@@ -57,10 +78,16 @@ function writeAtomicSync(file, text) {
 
 class CoalescedJsonFile {
   // serialize: () => string (the whole file's contents, read at write time).
-  constructor(file, serialize, { delayMs = 1000, onError = () => {}, now = Date.now } = {}) {
+  // slowSerializeMs / slowDelayMs: once a serialize took longer than
+  // slowSerializeMs (a big file: it blocks the event loop), writes come at
+  // most every slowDelayMs instead of delayMs, until one is fast again
+  // (performance review P5). 0: off.
+  constructor(file, serialize, { delayMs = 1000, onError = () => {}, now = Date.now, slowSerializeMs = 0, slowDelayMs = 0 } = {}) {
     this.file = file;
     this.serialize = serialize;
     this.delayMs = delayMs;
+    this.slowSerializeMs = slowSerializeMs;
+    this.slowDelayMs = slowDelayMs;
     this.onError = onError;
     this.now = now;
     this.dirty = false;
@@ -88,10 +115,17 @@ class CoalescedJsonFile {
     this.schedule();
   }
 
+  // The interval writes keep now: delayMs, or slowDelayMs after a slow serialize.
+  currentDelayMs() {
+    const slow = this.slowSerializeMs > 0 && this.slowDelayMs > this.delayMs && this.stats.lastSerializeMs > this.slowSerializeMs;
+    return slow ? this.slowDelayMs : this.delayMs;
+  }
+
   schedule() {
     if (this.timer || this.writing || !this.dirty) return;
-    // At most one write per delayMs: wait out the rest of the interval.
-    const wait = Math.max(0, Math.min(this.delayMs, this.lastWriteAt + this.delayMs - this.now()));
+    // At most one write per interval: wait out the rest of it.
+    const delay = this.currentDelayMs();
+    const wait = Math.max(0, Math.min(delay, this.lastWriteAt + delay - this.now()));
     this.timer = setTimeout(() => { this.timer = null; this.writeAsync(); }, Math.max(wait, 1));
     // The pending write must not keep a stopping process alive; flushSync covers it.
     if (this.timer.unref) this.timer.unref();
@@ -107,6 +141,7 @@ class CoalescedJsonFile {
     this.dirty = false;             // changes from here on need another write
     this.lastWriteAt = this.now();
     const tmp = this.file + ".tmp";
+    // this.writing: the whole write, file I/O and rename (flush() waits on it).
     this.writing = (async () => {
       const fh = await fs.promises.open(tmp, "w");
       try {
@@ -115,20 +150,20 @@ class CoalescedJsonFile {
       } finally {
         await fh.close();
       }
-    })();
-    try {
-      await this.writing;
-      if (gen !== this.generation || this.closed) {
+      // Each rename try is synchronous, so a shutdown flush can never
+      // interleave with one; between tries (a reader holding the file) the
+      // event loop runs, and a flush that wrote newer data meanwhile wins.
+      const r = await renameRetry(tmp, this.file, () => gen === this.generation && !this.closed);
+      if (!r.renamed) {
         // A synchronous flush (shutdown) wrote newer data meanwhile: this
         // write is stale, don't rename it over the newer file.
         try { fs.unlinkSync(tmp); } catch { /* gone */ }
-      } else {
-        // Synchronous so a shutdown flush can never interleave with it.
-        const r0 = performance.now();
-        renameSyncRetry(tmp, this.file);
-        const r1 = performance.now();
-        this.recordWrite(text.length, t1 - t0, r1 - t0, (t1 - t0) + (r1 - r0));
+        return;
       }
+      this.recordWrite(text.length, t1 - t0, performance.now() - t0, (t1 - t0) + r.blockedMs);
+    })();
+    try {
+      await this.writing;
     } catch (e) {
       this.dirty = true;            // keep the change; try again next interval
       this.fail(e);
@@ -190,4 +225,4 @@ class CoalescedJsonFile {
   }
 }
 
-module.exports = { CoalescedJsonFile, writeAtomicSync, renameSyncRetry };
+module.exports = { CoalescedJsonFile, writeAtomicSync, renameSyncRetry, renameRetry };

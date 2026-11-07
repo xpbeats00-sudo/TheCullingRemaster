@@ -9,6 +9,8 @@
 //   in-match HUD (which has no token) reports its result against it. The
 //   ticket is found by token when there is one, else by the client's address
 //   when exactly one player there has an open match. Each ticket pays once.
+//   The address is kept hashed (opts.hashIp: the server's accounts.hashIp),
+//   never raw, in memory and in tickets.json.
 // - Rate limits: a token bucket per client address.
 "use strict";
 
@@ -113,21 +115,29 @@ class Sessions {
 class MatchTickets {
   // file: where open tickets are kept, so a server restart (every deploy)
   // doesn't lose the matches being played; null keeps them in memory only.
+  // opts.hashIp: how an address is hashed (a plain SHA-256 by default).
   constructor(now = Date.now, file = null, opts = {}) {
     this.now = now;
-    this.open = new Map();          // userID -> { id, userID, ip, startedAt, ...info }
-    this.recent = new Map();        // ip -> { userID, at } of the last paid result
+    this.hashIp = opts.hashIp || ((ip) => crypto.createHash("sha256").update(String(ip || "")).digest("hex").slice(0, 32));
+    this.open = new Map();          // userID -> { id, userID, ipHash, startedAt, ...info }
+    this.recent = new Map();        // ipHash -> { userID, at } of the last paid result
     this.store = null;
     if (file) {
       let saved = [];
       try { saved = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none yet */ }
       const cutoff = this.now() - TICKET_TTL_MS;
+      let raw = false;
       (Array.isArray(saved) ? saved : [])
         .filter((t) => t && typeof t.userID === "string" && typeof t.id === "string" && Number.isFinite(t.startedAt) && t.startedAt >= cutoff)
         .sort((a, b) => a.startedAt - b.startedAt)
-        .forEach((t) => this.open.set(t.userID, t));
+        .forEach((t) => {
+          // Saved by an older server with the raw address: hashed, and the raw one dropped.
+          if ("ip" in t) { if (typeof t.ipHash !== "string") t.ipHash = this.hashIp(t.ip); delete t.ip; raw = true; }
+          this.open.set(t.userID, t);
+        });
       this.store = new CoalescedJsonFile(file, () => JSON.stringify([...this.open.values()]),
         { delayMs: opts.saveDelayMs || 0, onError: opts.onSaveError, now });
+      if (raw) this.save();
     }
   }
 
@@ -143,7 +153,7 @@ class MatchTickets {
   // ranked match it is, if any).
   start(userID, ip, info = {}) {
     this.expire();
-    const t = Object.assign({}, info, { id: crypto.randomBytes(8).toString("hex"), userID, ip, startedAt: this.now() });
+    const t = Object.assign({}, info, { id: crypto.randomBytes(8).toString("hex"), userID, ipHash: this.hashIp(ip), startedAt: this.now() });
     this.open.delete(userID);       // re-insert so the Map stays oldest-first
     this.open.set(userID, t);       // a new match replaces an unfinished one
     this.save();
@@ -157,6 +167,12 @@ class MatchTickets {
     for (const [ip, r] of this.recent) { if (r.at >= recentCutoff) break; this.recent.delete(ip); }
   }
 
+  // The open tickets from an address.
+  fromIp(ip) {
+    const h = this.hashIp(ip);
+    return [...this.open.values()].filter((x) => x.ipHash === h);
+  }
+
   // Take the ticket for a result: by userID (token) or by address. When
   // several players share the address (a household, a LAN), `pick` (a test on
   // a ticket, e.g. "this player's name is the one the HUD sent") chooses.
@@ -167,7 +183,7 @@ class MatchTickets {
       t = this.open.get(userID) || null;
       if (!t) return { error: "no-match" };
     } else {
-      const mine = [...this.open.values()].filter((x) => x.ip === ip);
+      const mine = this.fromIp(ip);
       if (mine.length > 1 && pick) {
         const chosen = mine.filter(pick);
         if (chosen.length === 1) t = chosen[0];
@@ -181,8 +197,9 @@ class MatchTickets {
     }
     this.open.delete(t.userID);
     this.save();
-    this.recent.delete(ip);         // re-insert so the Map stays oldest-first
-    this.recent.set(ip, { userID: t.userID, at: this.now() });
+    const h = this.hashIp(ip);
+    this.recent.delete(h);          // re-insert so the Map stays oldest-first
+    this.recent.set(h, { userID: t.userID, at: this.now() });
     return { ticket: t, elapsed: (this.now() - t.startedAt) / 1000 };
   }
 
@@ -198,19 +215,29 @@ class MatchTickets {
     return t;
   }
 
+  // Closes a player's open ticket `id` unpaid (the menu turned the match
+  // down). Returns whether it was open.
+  cancel(userID, id) {
+    const t = this.open.get(userID);
+    if (!t || t.id !== id) return false;
+    this.open.delete(userID);
+    this.save();
+    return true;
+  }
+
   // The open ticket for a player (by userID, or the only one from an address),
   // without taking it: the HUD asking about the match it is in.
   peek({ userID, ip }) {
     this.expire();
     if (userID) return this.open.get(userID) || null;
-    const mine = [...this.open.values()].filter((x) => x.ip === ip);
+    const mine = this.fromIp(ip);
     return mine.length === 1 ? mine[0] : null;
   }
 
   // The player whose result was last paid from this address (the HUD's
   // follow-up /api/setlevel), within 15 minutes.
   recentUser(ip) {
-    const r = this.recent.get(ip);
+    const r = this.recent.get(this.hashIp(ip));
     return r && r.at > this.now() - RECENT_TTL_MS ? r.userID : null;
   }
 }
