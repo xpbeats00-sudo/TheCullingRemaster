@@ -5,6 +5,12 @@
 // - login refusals: the server's reasons (errorCode or error) are shown in
 //   words, with Retry only where trying again can help; unknown ones keep the
 //   stock "Error code: 7".
+// - reconnect: after a drop, a failed root data load, no answer to the login
+//   or the server's auth-fail, the menu signs in again on its own (one try at
+//   a time, 5 s doubling to 60 s, +-25%) with an "Offline - reconnecting"
+//   notice; never after a refusal retrying can't help (until Retry); a
+//   socket's events are bound once, and a replaced socket can't close the
+//   next one.
 // The functions are the shipped ones (the whole file is run).
 // usage: node test_clientweb.js
 "use strict";
@@ -184,7 +190,8 @@ function test(name, fn) { fn(); passed++; console.log("ok    " + name); }
 // A fresh menu: offline, nothing pending.
 function reset() {
   run("if (socketConnection) OnSocketConnectionClosed(); ClientwebData.connectionStatus = CW_STATUS_UNKNOWN; bConnectAttemptProcessing = false;" +
-      "buildOutOfDate = false; Matchmaking.LeaveRequested = false; Matchmaking.IsStartingMatchmaking = false; Matchmaking.IsMatchmaking = false;");
+      "buildOutOfDate = false; Matchmaking.LeaveRequested = false; Matchmaking.IsStartingMatchmaking = false; Matchmaking.IsMatchmaking = false;" +
+      "RemasterReconnect.timer = null; RemasterReconnect.delay = 0; RemasterReconnect.stopped = false; RemasterReconnect.auto = false;");
   timers = [];
   modals.length = 0;
   sockets.length = 0;
@@ -256,6 +263,177 @@ test("Retry on a refusal tries to sign in again", () => {
   serverUp();
   m.callback("Retry");
   assert.ok(last(), "a socket after Retry");
+});
+
+// ---------------------------------------------------------------- reconnect
+const notice = () => {
+  const n = body.children.find((c) => c.id == "remaster-offline");
+  return n && n.style.display != "none" ? n.textContent : null;
+};
+const logins = () => requests.filter((r) => r.url == "https://srv/api/login").length;
+const pending = () => timers.length;
+function serverDown() { answer = {}; }
+
+test("a drop: 'Offline - reconnecting', signed in again 5 s later, the notice gone", () => {
+  reset();
+  const s = signIn();
+  assert.strictEqual(notice(), null);
+  fire(s, "disconnect");
+  assert.ok(/^Offline . reconnecting$/.test(notice()), notice());
+  const n = sockets.length;
+  advance(4999);
+  assert.strictEqual(sockets.length, n, "not before 5 s");
+  advance(1);
+  assert.strictEqual(sockets.length, n + 1, "a new socket at 5 s");
+  const s2 = last();
+  fire(s2, "connect"); fire(s2, "login_ready"); advance(3000); fire(s2, "auth-response");
+  assert.strictEqual(run("IsOnline()"), true);
+  assert.strictEqual(notice(), null);
+  assert.strictEqual(pending(), 0, "nothing left scheduled");
+});
+
+test("server down: one try at a time, waits 5, 10, 20, 40, 60, 60 s; back up: signed in, the next drop waits 5 s", () => {
+  reset();
+  const s = signIn();
+  serverDown();
+  fire(s, "disconnect");
+  const waits = [];
+  for (let k = 0; k < 6; k++) {
+    assert.strictEqual(pending(), 1, "exactly one try scheduled");
+    const t = timers[0];
+    waits.push(t.at - now);
+    const before = requests.length;
+    advance(t.at - now);
+    assert.strictEqual(requests.length, before + 1, "one root data request per try");
+  }
+  assert.strictEqual(JSON.stringify(waits), JSON.stringify([5000, 10000, 20000, 40000, 60000, 60000]));
+  assert.ok(notice());
+  serverUp();
+  advance(timers[0].at - now);
+  const s2 = last();
+  fire(s2, "connect"); fire(s2, "login_ready"); advance(3000); fire(s2, "auth-response");
+  assert.strictEqual(run("IsOnline()"), true);
+  fire(s2, "disconnect");
+  assert.strictEqual(timers[0].at - now, 5000);
+});
+
+test("the wait is jittered by +-25%", () => {
+  for (const [r, want] of [[0, 3750], [0.999, 6248]]) {
+    reset();
+    ctx.Math.random = () => r;
+    const s = signIn();
+    fire(s, "disconnect");
+    assert.strictEqual(timers[0].at - now, want);
+  }
+  ctx.Math.random = () => 0.5;
+});
+
+test("a failed login-data load (root data) at start-up: retried", () => {
+  reset();
+  serverDown();
+  run("ConnectWebsocketIfNeeded()");
+  assert.strictEqual(pending(), 1);
+  assert.ok(notice());
+  assert.strictEqual(modals.length, 0, "no modal for an unreachable server");
+  serverUp();
+  advance(5000);
+  assert.ok(last(), "signed in on the retry");
+});
+
+test("no answer to the login (status 0, or a proxy's 502 page): retried, no modal", () => {
+  for (const r of [[0, ""], [502, "<html>Bad Gateway</html>"]]) {
+    reset();
+    answer["https://srv/api/login"] = () => r;
+    run("ConnectWebsocketIfNeeded()");
+    assert.strictEqual(modals.length, 0, JSON.stringify(modals));
+    assert.strictEqual(pending(), 1, "retry scheduled after " + r[0]);
+  }
+});
+
+test("auth-fail (the server no longer knows the token): a fresh login after the backoff", () => {
+  reset();
+  const s = signIn();
+  assert.strictEqual(logins(), 1);
+  fire(s, "auth-fail", { reason: "invalid-token" });
+  assert.strictEqual(run("ClientwebData.AuthToken"), undefined, "the token is dropped");
+  assert.strictEqual(run("socketConnection"), null);
+  advance(5000);
+  assert.strictEqual(logins(), 2, "logged in again over HTTP");
+  const s2 = last();
+  assert.notStrictEqual(s2, s);
+  fire(s2, "connect"); fire(s2, "login_ready"); advance(3000);
+  assert.strictEqual(emits(s2, "login").length, 1);
+});
+
+test("a refusal retrying can't help (account-required): no automatic tries; Retry tries again", () => {
+  const m = loginRefused(403, { errorCode: "account-required" });
+  assert.strictEqual(pending(), 0);
+  assert.strictEqual(notice(), null);
+  advance(600000);
+  assert.strictEqual(logins(), 1);
+  answer["https://srv/api/login"] = () => [503, { error: "server-full" }];
+  modals.length = 0;
+  m.callback("Play Offline");
+  run("RemasterRetryNow()");
+  assert.strictEqual(logins(), 2);
+  assert.strictEqual(pending(), 1, "retryable again after Retry");
+});
+
+test("a retryable refusal during an automatic try: the notice says why, no modal each time", () => {
+  reset();
+  const s = signIn();
+  answer["https://srv/api/login"] = () => [503, { error: "stopping" }];
+  fire(s, "disconnect");
+  advance(5000);
+  advance(10000);
+  assert.strictEqual(modals.filter((m) => m.modalID == "Offline").length, 0);
+  assert.ok(/restarting/.test(notice()), notice());
+  assert.strictEqual(pending(), 1);
+});
+
+test("login_ready twice: the socket's events are bound (and the login sent) once", () => {
+  reset();
+  run("ConnectWebsocketIfNeeded()");
+  const s = last();
+  fire(s, "connect");
+  fire(s, "login_ready");
+  fire(s, "login_ready");
+  advance(3000);
+  fire(s, "login_ready");
+  advance(3000);
+  assert.strictEqual(emits(s, "login").length, 1);
+  assert.strictEqual(s.handlers["match-ready"].length, 1);
+});
+
+test("login_ready from a socket replaced within the 3 s: binds nothing on the new one", () => {
+  reset();
+  run("ConnectWebsocketIfNeeded()");
+  const s = last();
+  fire(s, "connect");
+  fire(s, "login_ready");
+  fire(s, "disconnect");                 // replaced before its 3 s are up
+  advance(5000);                         // the reconnect: a new socket
+  const s2 = last();
+  assert.notStrictEqual(s2, s);
+  fire(s2, "connect");
+  fire(s2, "login_ready");
+  advance(3000);
+  assert.strictEqual(emits(s2, "login").length, 1);
+  assert.strictEqual(s2.handlers["match-ready"].length, 1);
+  assert.strictEqual(emits(s, "login").length, 0);
+});
+
+test("a replaced socket's late disconnect doesn't close the current one", () => {
+  reset();
+  const s = signIn();
+  fire(s, "disconnect");
+  advance(5000);
+  const s2 = last();
+  fire(s2, "connect"); fire(s2, "login_ready"); advance(3000); fire(s2, "auth-response");
+  fire(s, "disconnect");
+  fire(s, "error", "late");
+  assert.strictEqual(run("socketConnection"), s2);
+  assert.strictEqual(run("IsOnline()"), true);
 });
 
 console.log("all %d ClientWeb connection tests passed", passed);

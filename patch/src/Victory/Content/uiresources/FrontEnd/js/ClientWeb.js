@@ -729,7 +729,16 @@ function LoginWithTicket(ticket, userid) {
         nextPromise = LoginResponseFromEngine(jqXHR.responseText, ProcessLoginResponse);
       },
       error: function (jqXHR) {
-        nextPromise = LoginResponseFromEngine(jqXHR.responseText, ProcessLoginFailure);
+        // Remaster: no answer, or a proxy's error page (the server is down or
+        // restarting): not a refusal; offline, and try again later.
+        var text = jqXHR && jqXHR.responseText ? String(jqXHR.responseText) : "";
+        if (!text || (jqXHR.status >= 500 && text.charAt(0) != "{")) {
+          console.log("Login got no answer from the server (HTTP " + (jqXHR && jqXHR.status) + ")");
+          ClientwebData.AuthToken = null;
+          SetFailedConnectionStatus();
+          return;
+        }
+        nextPromise = LoginResponseFromEngine(text, ProcessLoginFailure);
       }
     }).then(function() {
       if (nextPromise != undefined && nextPromise != null) {
@@ -908,7 +917,7 @@ function ShowOfflineError(errorCode){
       callback: function(option){
         if (option == "Retry") {
           PopModal();
-          ConnectWebsocketIfNeeded();
+          RemasterRetryNow();
         }
         else {
           if(GetActiveScreen().ScreenName != "MainMenu"){
@@ -926,6 +935,10 @@ function ShowOfflineError(errorCode){
 // Remaster: a login refusal the server gave a reason for, in words. Retry only
 // when trying again can help (else the player is told what to do instead).
 function ShowLoginRefused(text, bCanRetry) {
+    if (bCanRetry && RemasterReconnect.auto) {
+      RemasterReconnectNotice("Offline — reconnecting (" + text + ")");
+      return;
+    }
     PopModalByID("Offline");
     PushModal('Modal', {
       options: bCanRetry ? ["Retry", "Play Offline"] : ["Play Offline"],
@@ -935,7 +948,7 @@ function ShowLoginRefused(text, bCanRetry) {
       callback: function(option){
         if (option == "Retry") {
           PopModal();
-          ConnectWebsocketIfNeeded();
+          RemasterRetryNow();
         }
         else if (GetActiveScreen().ScreenName != "MainMenu") {
           PushScreen("MainMenu");
@@ -971,6 +984,7 @@ function SetFailedConnectionStatus() {
   } else {
       ClientwebData.connectionStatus = CW_STATUS_FAILED;
       engine.call("SetConnectionStatus", false);
+      RemasterReconnectLater();
   }
 }
 
@@ -982,6 +996,79 @@ function SetFailedConnectionStatusNoRetry() {
   ClientwebData.bIsConnected = false;
   ClientwebData.connectionStatus = CW_STATUS_FAILED;
   engine.call("SetConnectionStatus", false);
+  RemasterReconnectStop();
+}
+
+// Remaster: reconnect on its own after the connection drops or a sign-in
+// fails (the stock RECONNECT_AUTOMATICALLY is off): one try at a time, the
+// wait doubling from 5 s to 60 s, +-25% so a server restart doesn't bring
+// every menu back in the same second. A small notice says the menu is
+// offline meanwhile. A refusal retrying can't help (banned, no account, out
+// of date) stops it until the player presses Retry; signing in resets it.
+var REMASTER_RECONNECT_FIRST = 5000;
+var REMASTER_RECONNECT_MAX = 60000;
+var RemasterReconnect = { delay: 0, timer: null, stopped: false, auto: false, note: null };
+
+function RemasterReconnectNotice(text) {
+  var n = RemasterReconnect.note;
+  if (!text) {
+    if (n) n.style.display = "none";
+    return;
+  }
+  if (!n && document.body && document.createElement) {
+    n = RemasterReconnect.note = document.createElement("div");
+    n.id = "remaster-offline";
+    n.style.cssText = "position: absolute; left: 1.2vw; bottom: 1.4vh; z-index: 90; padding: 0.5vh 0.8vw; border-radius: 1vh; " +
+      "font: 0.75vw Sucrose-Bold, Arial, sans-serif; letter-spacing: 0.08vw; color: rgba(235, 235, 235, 0.9); " +
+      "background: rgba(10, 6, 8, 0.8); pointer-events: none;";
+    document.body.appendChild(n);
+  }
+  if (!n) return;
+  n.textContent = text;
+  n.style.display = "block";
+}
+
+function RemasterReconnectLater() {
+  if (RemasterReconnect.stopped || RemasterReconnect.timer || buildOutOfDate || IsOnline()) return;
+  var d = RemasterReconnect.delay = RemasterReconnect.delay ? Math.min(RemasterReconnect.delay * 2, REMASTER_RECONNECT_MAX) : REMASTER_RECONNECT_FIRST;
+  var wait = Math.round(d * (0.75 + Math.random() * 0.5));
+  console.log("Reconnecting in " + wait + " ms");
+  RemasterReconnectNotice("Offline — reconnecting");
+  RemasterReconnect.timer = setTimeout(function () {
+    RemasterReconnect.timer = null;
+    if (RemasterReconnect.stopped || IsOnline()) return;
+    RemasterReconnect.auto = true;
+    try {
+      ConnectWebsocketIfNeeded();
+    } finally {
+      RemasterReconnect.auto = false;
+    }
+  }, wait);
+}
+
+function RemasterReconnectStop() {
+  RemasterReconnect.stopped = true;
+  clearTimeout(RemasterReconnect.timer);
+  RemasterReconnect.timer = null;
+  RemasterReconnectNotice(null);
+}
+
+// Signed in: the next drop starts again at 5 s.
+function RemasterReconnected() {
+  RemasterReconnect.delay = 0;
+  RemasterReconnect.stopped = false;
+  clearTimeout(RemasterReconnect.timer);
+  RemasterReconnect.timer = null;
+  RemasterReconnectNotice(null);
+}
+
+// The player pressed Retry: try now, and on our own again if that fails.
+function RemasterRetryNow() {
+  RemasterReconnect.stopped = false;
+  RemasterReconnect.delay = 0;
+  clearTimeout(RemasterReconnect.timer);
+  RemasterReconnect.timer = null;
+  ConnectWebsocketIfNeeded();
 }
 
 var bConnectAttemptProcessing = false;
@@ -1040,6 +1127,7 @@ function ConnectWebsocketIfNeeded(doCallback)
     }
     else {
       engine.call("SetConnectionStatus", false);
+      RemasterReconnectLater();
     }
 
   }, 15000);
@@ -1062,6 +1150,10 @@ function ConnectWebsocketIfNeeded(doCallback)
             engine.call("SetConnectionStatus", false);
           }
         }
+        // Remaster: no connection at the end of the attempt: try again later.
+        if (socketConnection == null && ClientwebData.connectionStatus != CW_STATUS_AUTHENTICATED) {
+          RemasterReconnectLater();
+        }
 
 		engine.call("RedeemTokens");
       });
@@ -1081,7 +1173,14 @@ function ConnectWebsocket()
 
   console.log("Connecting to websocket at: "+ ClientwebRootData.socket);
   socketConnection = io.connect(ClientwebRootData.socket, {forceNew: true});
+  // Remaster: this socket. Its events are bound once (a second login_ready, or
+  // one that lands after the socket was replaced, binds nothing), and a socket
+  // that is no longer the current one can't close the one after it.
+  var sock = socketConnection;
+  var bBound = false;
+  function stale() { return socketConnection !== sock; }
   socketConnection.on("connect", function () {
+    if (stale()) return;
     ClientwebData.bIsConnected = true;
     ClientwebData.connectionStatus = CW_STATUS_CONNECTED;
 	  console.log("Socket connected, now waiting for login to be ready.");
@@ -1090,19 +1189,32 @@ function ConnectWebsocket()
 
   socketConnection.on("login_ready", function () {
       console.log("Socket connected, received login ready, now authenticating and binding events. bIsConnected: " + ClientwebData.bIsConnected);
-      if (ClientwebData.bIsConnected)
+      if (ClientwebData.bIsConnected && !stale())
       {
           setTimeout(function () {// Ugly hack to avoid xhr poll error when connecting web sockets on xbone.
-              if (socketConnection != null) {
+              if (!stale() && !bBound) {
+                bBound = true;
                 BindClientwebEvents(deferred);
               }
           }, 3000);
       }
   });
 
+  // Remaster: the server refused the socket's login (its token is unknown:
+  // expired, or the server restarted). Sign in from scratch, after the backoff.
+  socketConnection.on("auth-fail", function (msg) {
+      console.error("socket login refused: " + (msg && msg.reason));
+      if (stale()) return;
+      ClientwebData.connectionStatus = CW_STATUS_FAILED;
+      engine.call("SetConnectionStatus", false);
+      OnSocketConnectionClosed();
+      deferred.reject();
+  });
+
   socketConnection.on("connect_error", function (err) {
       console.error("connect_error: err.type: " + err.type + " err.description: " + err.description);
       console.error("err: " + err);
+      if (stale()) { deferred.reject(); return; }
       ClientwebData.bIsConnected = false;
       // this means the server's there, but it's probably not listening for websockets
       if (err.description == httpStatus.NOT_FOUND) {
@@ -1135,6 +1247,7 @@ function ConnectWebsocket()
 
   socketConnection.on("error", function (err) {
     console.error("generic error: " + err);
+    if (stale()) { deferred.reject(); return; }
     ShowError("Unexpected websocket connect error: " + err);
     ClientwebData.connectionStatus = CW_STATUS_FAILED;
     engine.call("SetConnectionStatus", false);
@@ -1144,6 +1257,7 @@ function ConnectWebsocket()
 
   socketConnection.on("disconnect", function () {
     console.log("socket disconnected");
+    if (stale()) { deferred.reject(); return; }
     ClientwebData.connectionStatus = CW_STATUS_UNKNOWN;
     engine.call("SetConnectionStatus", false);
     OnSocketConnectionClosed();
@@ -1151,8 +1265,9 @@ function ConnectWebsocket()
   });
 
   socketConnection.on("server-disconnect", function (data) {
-    console.error("server is forcibly disconnecting: ", data.reason);
-    ShowError("Server is forcibly disconnecting: " + data.reason);
+    console.error("server is forcibly disconnecting: ", data && data.reason);
+    if (stale()) { deferred.reject(); return; }
+    ShowError("Server is forcibly disconnecting: " + (data && data.reason));
     ClientwebData.connectionStatus = CW_STATUS_UNKNOWN;
     engine.call("SetConnectionStatus", false);
     OnSocketConnectionClosed();
@@ -1170,7 +1285,7 @@ function ConnectWebsocket()
 
         clearTimeout(loginTimeout);
 
-        if (ClientwebData.connectionStatus != CW_STATUS_AUTHENTICATED) {
+        if (ClientwebData.connectionStatus != CW_STATUS_AUTHENTICATED && (socketConnection == null || !stale())) {
           console.log("Reporting login as failed.");
           ClientwebData.bIsConnected = false;
           ClientwebData.connectionStatus = CW_STATUS_FAILED;
@@ -2047,6 +2162,7 @@ function BindClientwebEvents(deferred) {
     });
   });
   socketConnection.on("auth-response", function () {
+    RemasterReconnected();
     if (window.RemasterFriends) window.RemasterFriends.connected();
     if (window.RemasterLeaderboard && window.RemasterLeaderboard.connected) window.RemasterLeaderboard.connected();
     if (window.RemasterRanked) window.RemasterRanked.refresh();   // RankedUI.js: no polling
@@ -2785,6 +2901,8 @@ function OnSocketConnectionClosed()
   if (window.RemasterFriends && window.RemasterFriends.disconnected) window.RemasterFriends.disconnected();
   if (RECONNECT_AUTOMATICALLY) {
     setTimeout(ConnectWebsocketIfNeeded, 30000);
+  } else {
+    RemasterReconnectLater();
   }
 
   // If on the loot screen, kick them back to the main menubar
