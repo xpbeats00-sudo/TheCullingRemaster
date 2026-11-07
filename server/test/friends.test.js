@@ -365,6 +365,16 @@ function friendsWhen(socket, check, ms = 3000) {
       assert.strictEqual(bravo.status.state, "menu", "the latest state");
     });
 
+    await test("friends-get is answered at once, even right after a push", async () => {
+      for (let i = 0; i < 3; i++) {
+        const t0 = Date.now();
+        const got = next(A.socket, "remaster-friends");
+        A.socket.emit("friends-get");
+        await got;
+        assert.ok(Date.now() - t0 < 150, "answered in " + (Date.now() - t0) + " ms");
+      }
+    });
+
     await test("going offline: friends see it, with when they were last seen", async () => {
       const off = friendsWhen(A.socket, (f) => f.friends[0].status.state === "offline");
       B.socket.close();

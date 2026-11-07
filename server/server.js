@@ -1939,13 +1939,16 @@ const STATE_ORDER = { match: 0, lobby: 1, searching: 2, menu: 3, offline: 4 };
 // blocked the event loop for ~85 ms (SERVER_AUDIT_2 P2, test/friends_load.js).
 // And a panel gets at most one push per FRIENDS_PUSH_MS (performance review
 // P6): the first change goes out right away, later ones in that window wait
-// for its end and go out together, with the state as it is then.
+// for its end and go out together, with the state as it is then. A panel the
+// player asked for (friends-get: `asked`) goes out at once all the same.
 const FRIENDS_PUSH_MS = intEnv('CULLING_FRIENDS_PUSH_MS', 300);
 const friendsDirty = new Set();
 const friendsPushedAt = new Map();      // userID -> when their panel was last pushed
+const friendsAsked = new Set();          // panels asked for: not held to the window
 let friendsFlush = null, friendsLater = null;
-function sendFriends(userID) {
+function sendFriends(userID, asked = false) {
   friendsDirty.add(userID);
+  if (asked) friendsAsked.add(userID);
   if (!friendsFlush) friendsFlush = setImmediate(flushFriends);
 }
 function flushFriends() {
@@ -1954,9 +1957,10 @@ function flushFriends() {
   const ids = [];
   let nextDue = Infinity;
   for (const id of friendsDirty) {
-    const due = (friendsPushedAt.get(id) || 0) + FRIENDS_PUSH_MS;
+    const due = friendsAsked.has(id) ? 0 : (friendsPushedAt.get(id) || 0) + FRIENDS_PUSH_MS;
     if (due <= now) { ids.push(id); friendsDirty.delete(id); friendsPushedAt.set(id, now); } else nextDue = Math.min(nextDue, due);
   }
+  friendsAsked.clear();
   if (nextDue < Infinity && !friendsLater) {
     friendsLater = setTimeout(() => { friendsLater = null; if (!friendsFlush) friendsFlush = setImmediate(flushFriends); }, nextDue - now);
     if (friendsLater.unref) friendsLater.unref();
@@ -2336,7 +2340,7 @@ io.on('connection', (socket) => {
     fn(me, msg && typeof msg === 'object' ? msg : {}, reply);
   });
   const target = (msg) => (typeof msg.username === 'string' && msg.username.length <= 40 ? userIDForName(msg.username) : null);
-  friendAction('friends-get', (me) => sendFriends(me));
+  friendAction('friends-get', (me) => sendFriends(me, true));
   friendAction('friend-request', (me, msg, reply) => {
     const to = target(msg);
     if (!to) return reply({ error: 'no-such-player', username: msg.username });
