@@ -126,10 +126,33 @@ var REMASTER_MODE_GAMES = {
   solo: "/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C",
   duo: "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"
 };
+// Only these options, each once and with a value of its own form (weather.c
+// reads the first three, the patched exe the last): anything else in a server
+// answer (a test switch such as the module's autotest) is refused, not opened.
+var REMASTER_MAP_OPTIONS = {
+  Weather: /^(clear|cloudy|rainy|storm|foggy)$/,
+  WeatherSeed: /^[0-9]{1,10}$/,
+  WeatherCycle: /^[01]$/,
+  TeamSize: /^[2-4]$/
+};
 function RemasterMapUrl(answer) {
-  var m = /^map:(solo|duo):([0-3])((\?[A-Za-z]+=[A-Za-z0-9]+){0,4})$/.exec(answer);
+  var m = /^map:(solo|duo):([0-3])((\?[A-Za-z]+=[A-Za-z0-9]+){0,4})$/.exec(String(answer));
   if (!m) return null;
-  return REMASTER_MAP_PATHS[parseInt(m[2], 10)] + "?bEnableBots=true?game=" + REMASTER_MODE_GAMES[m[1]] + m[3];
+  var opts = m[3] ? m[3].substring(1).split("?") : [];
+  var seen = {};
+  var out = "";
+  for (var i = 0; i < opts.length; i++) {
+    var eq = opts[i].indexOf("=");
+    var name = opts[i].substring(0, eq);
+    var value = opts[i].substring(eq + 1);
+    if (!Object.prototype.hasOwnProperty.call(REMASTER_MAP_OPTIONS, name) || seen[name]
+        || !REMASTER_MAP_OPTIONS[name].test(value)) {
+      return null;
+    }
+    seen[name] = true;
+    out += "?" + name + "=" + value;
+  }
+  return REMASTER_MAP_PATHS[parseInt(m[2], 10)] + "?bEnableBots=true?game=" + REMASTER_MODE_GAMES[m[1]] + out;
 }
 
 var socketConnection = null;
