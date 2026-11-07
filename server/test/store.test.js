@@ -266,6 +266,11 @@ const read = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
       } finally { srv.stop(); }
     });
 
+    await test("password hashes run on at most one fewer thread than the machine has (1 or 2)", async () => {
+      const { SCRYPT_ACTIVE } = require("../accounts");
+      assert.strictEqual(SCRYPT_ACTIVE, Math.max(1, Math.min(2, os.availableParallelism() - 1)));
+    });
+
     console.log("all %d store tests passed", passed);
   } catch (e) {
     console.error("FAIL", e.stack || e.message);

@@ -15,6 +15,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const os = require("os");
 const fs = require("fs");
 const { promisify } = require("util");
 const { CoalescedJsonFile, writeAtomicSync } = require("./store");
@@ -32,7 +33,9 @@ const GRANT_SAVE_EVERY_MS = 60 * 1000;
 const PRUNE_EVERY_MS = 60 * 1000;
 
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, keylen: 64, saltBytes: 16, maxmem: 64 * 1024 * 1024 };
-const SCRYPT_ACTIVE = 2;            // hashes computed at once
+// Hashes computed at once: at most 2, and never every thread of the machine
+// (a 2-core VPS keeps one for everything else: performance review P7).
+const SCRYPT_ACTIVE = Math.max(1, Math.min(2, os.availableParallelism() - 1));
 const SCRYPT_QUEUE = 64;            // waiting beyond that: 503 busy
 
 const USERNAME_RE = /^[A-Za-z0-9_.\- ]+$/;
@@ -359,4 +362,4 @@ function loadSecret(file) {
 
 module.exports = { Accounts, normalizeUsername, usernameKey, normalizeEmail, validPassword, hashPassword, verifyPassword,
   dummyPasswordHash, randomPassword, randomSteamID, validSteamID, createGate, TOKEN_TTL_MS, GRANT_TTL_MS,
-  MAX_TOKENS_PER_ACCOUNT, SCRYPT };
+  MAX_TOKENS_PER_ACCOUNT, SCRYPT, SCRYPT_ACTIVE };

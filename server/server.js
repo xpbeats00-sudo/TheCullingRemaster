@@ -1279,7 +1279,9 @@ server.headersTimeout = 70 * 1000;
 const SOCKET_MAX_BYTES = intEnv('CULLING_SOCKET_MAX_BYTES', 64 * 1024);
 const allowSocketPost = rateLimiter(30, 90);
 const allowHandshake = rateLimiter(1, 30);
-const io = socketio(server, { pingInterval: 10000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: SOCKET_MAX_BYTES,
+// pingInterval: socket.io's default 25 s (was 10 s: a ping round trip per
+// connected menu every 10 s, which nothing here needs; performance review P7).
+const io = socketio(server, { pingInterval: 25000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: SOCKET_MAX_BYTES,
   allowRequest: (req, fn) => {
     const ok = allowHandshake(clientIp(req.connection.remoteAddress, req.headers['x-forwarded-for']));
     if (!ok) metrics.error('handshakeRefused');

@@ -38,7 +38,11 @@ const handshake = (srv, ip) => raw(srv.port, "GET", "/socket.io/?EIO=3&transport
       const got = [];
       require("engine.io-parser").decodePayloadAsBinary(hs.buf, (p) => { got.push(p); });
       assert.strictEqual(got[0].type, "open");
-      assert.ok(JSON.parse(got[0].data).sid, "the handshake");
+      const open = JSON.parse(got[0].data);
+      assert.ok(open.sid, "the handshake");
+      // Performance review P7: socket.io's default 25 s (was 10 s: a ping per
+      // connected menu every 10 s for nothing the server needs that fast).
+      assert.strictEqual(open.pingInterval, 25000);
     });
 
     await test("a polling upload over 64 KB is refused (413) before its body is read", async () => {
