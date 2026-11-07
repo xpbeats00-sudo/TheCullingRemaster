@@ -85,6 +85,12 @@ const SIG_MAX = 1024;
 const DEVICE_RX = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³]) *(\..*)?$/i;
 // File errors that retrying can't fix.
 const DISK_CODES = new Set(["ENOSPC", "EROFS", "EACCES", "EPERM", "EDQUOT"]);
+// What Windows says about a file another program holds open: most often an
+// antivirus scanning a file that was just written. A finished download waits
+// this long for it to let go (checking again with growing waits) before the
+// file is reported as locked; the download itself is kept for Resume.
+const LOCK_CODES = new Set(["EBUSY", "EPERM", "EACCES"]);
+const LOCK_WAIT_MS = 30000;
 
 let fetchImpl = (url, init) => fetch(url, init);
 // The launcher passes Electron's net.fetch, which uses the system proxy and
@@ -322,6 +328,30 @@ function move(from, to) {
   }
 }
 
+// move() for a finished download: waits (without blocking the main process)
+// while the file is locked, up to waitMs, then fails as "locked", not as a
+// disk or folder problem.
+async function moveWhenFree(from, to, rel, waitMs, signal) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  const t0 = Date.now();
+  for (let delay = 100; ; delay = Math.min(delay * 2, 5000)) {
+    try {
+      fs.rmSync(to, { force: true });
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      if (!LOCK_CODES.has(e.code)) throw e;
+      const left = waitMs - (Date.now() - t0);
+      if (left <= 0) {
+        throw new SyncError(`${rel}: a file is locked (antivirus?): Windows didn't let the finished download be moved into place for ` +
+          `${Math.round(waitMs / 1000)} s (${e.code})`, "locked");
+      }
+      await sleep(Math.min(delay, left), signal);
+      if (signal && signal.aborted) throw new SyncPaused();
+    }
+  }
+}
+
 // ---------------------------------------------------------------- planning
 // Which manifest files aren't installed as they should be. Each entry is the
 // manifest entry plus `staged: true` when it is already downloaded and
@@ -475,7 +505,7 @@ function sleep(ms, signal) {
   });
 }
 
-// What went wrong, as one of: stall, network, http, range, disk, verify.
+// What went wrong, as one of: stall, network, http, range, disk, verify, locked.
 function classify(e) {
   if (e instanceof SyncError) return e.kind;
   if (DISK_CODES.has(e && e.code)) return "disk";
@@ -628,7 +658,12 @@ async function download(manifest, f, gameRoot, onBytes, o) {
     }
   }
   if (lastError) { onBytes(-counted); throw lastError; }
-  move(part, staged);
+  try {
+    await moveWhenFree(part, staged, f.path, o.lockWaitMs, o.signal);
+  } catch (e) {
+    if (!(e instanceof SyncPaused)) onBytes(-counted);    // the complete .part stays for Resume
+    throw e;
+  }
   fs.rmSync(part + ".json", { force: true });
   return recordOf(staged, f.sha256);
 }
@@ -850,7 +885,7 @@ function previousVersion(gameRoot) {
 // filesDone, filesTotal }) and then ({ phase: "install", done, total }).
 // opts: signal (abort = pause: throws SyncPaused, keeping finished and
 // partial downloads), parallel, maxBytesPerSec, stallMs, retryDelayMs,
-// log(event, data). A file that keeps failing doesn't stop the others; the
+// lockWaitMs (how long a locked finished download is waited for), log(event, data). A file that keeps failing doesn't stop the others; the
 // sync then fails listing it, and the next run only fetches what is missing.
 async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {}) {
   const log = opts.log || (() => {});
@@ -873,6 +908,7 @@ async function apply(manifest, todo, gameRoot, onProgress = () => {}, opts = {})
     signal: stopAll.signal,
     stallMs: opts.stallMs || STALL_MS,
     retryDelayMs: opts.retryDelayMs == null ? 1000 : opts.retryDelayMs,
+    lockWaitMs: opts.lockWaitMs == null ? LOCK_WAIT_MS : opts.lockWaitMs,
     limit: bandwidth(opts.maxBytesPerSec || 0),
     onRetry(kind, e, n, file) {
       retries++;

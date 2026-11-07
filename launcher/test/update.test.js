@@ -647,6 +647,63 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       sync.checkFloor(floor, m("1.0.0"));
     });
 
+    await test("a finished download an antivirus holds locked is moved once it lets go", async () => {
+      const f1 = Buffer.alloc(40000, 1), f2 = Buffer.from("second");
+      release("av", "1", { "Victory/scanned.pak": f1, "Victory/other.txt": f2 });
+      const r = path.join(tmp, "av-game");
+      const realRename = fs.renameSync;
+      let refused = 0;
+      fs.renameSync = function (from, to) {
+        if (String(from).endsWith("scanned.pak.part") && refused < 5) {
+          refused++;
+          throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM", path: String(from) });
+        }
+        return realRename.apply(this, arguments);
+      };
+      try {
+        await install("av", r, { lockWaitMs: 5000 });
+      } finally {
+        fs.renameSync = realRename;
+      }
+      assert.strictEqual(refused, 5, "more refusals than the old blocking retries took");
+      assert.ok(read(r, "Victory/scanned.pak").equals(f1) && read(r, "Victory/other.txt").equals(f2));
+    });
+
+    await test("a download that stays locked is reported as a lock (not a disk or folder problem) and doesn't stop the others", async () => {
+      const f1 = Buffer.alloc(40000, 2), f2 = Buffer.from("second v2");
+      release("av2", "1", { "Victory/scanned.pak": f1, "Victory/other.txt": f2 });
+      const r = path.join(tmp, "av2-game");
+      const realRename = fs.renameSync;
+      fs.renameSync = function (from) {
+        if (String(from).endsWith("scanned.pak.part")) throw Object.assign(new Error("EBUSY: resource busy or locked, rename"), { code: "EBUSY" });
+        return realRename.apply(this, arguments);
+      };
+      let err = null;
+      const t0 = Date.now();
+      try {
+        await install("av2", r, { lockWaitMs: 600 });
+      } catch (e) {
+        err = e;
+      } finally {
+        fs.renameSync = realRename;
+      }
+      assert.ok(err, "the sync fails");
+      assert.strictEqual(err.kind, "locked");
+      assert.match(err.message, /a file is locked \(antivirus\?\)/);
+      assert.ok(Date.now() - t0 >= 500, "it waited for the lock");
+      const { friendly } = require("../lib/errors");
+      const shown = friendly(err, { gamePath: r });
+      assert.match(shown, /antivirus/);
+      assert.doesNotMatch(shown, /Choose another folder|drive is full/);
+      // The other file was not stopped, and the locked one's download is kept for Resume.
+      const staging = path.join(r, ".remaster", "staging", "Victory");
+      assert.ok(fs.existsSync(path.join(staging, "other.txt")), "the other file is staged");
+      assert.strictEqual(fs.statSync(path.join(staging, "scanned.pak.part")).size, f1.length, "the finished download is kept");
+      for (const k of Object.keys(hits)) delete hits[k];
+      await install("av2", r);
+      assert.ok(read(r, "Victory/scanned.pak").equals(f1));
+    });
+
     console.log("all %d update tests passed", passed);
   } finally {
     server.close();
