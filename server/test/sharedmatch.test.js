@@ -147,6 +147,40 @@ function sharedVars(extra = {}) {
     assert.deepStrictEqual(groupsOf([{ id: "a", party: "p" }, { id: "b" }, { id: "c", party: "p" }]).map((x) => x.ids), [["a", "c"], ["b"]]);
   });
 
+  await test("teams by size: a party is one team in Duos, Trios and Quads; parties that don't fit together never share one", () => {
+    const g = (n, party) => ({ ids: Array.from({ length: n }, (_, i) => party + i), party: n > 1 ? party : null });
+    const teamOf = (r, id) => r.teams.find((t) => t.players.includes(id)).team;
+    const partyTeams = (r, p, n) => new Set(Array.from({ length: n }, (_, i) => teamOf(r, p + i)));
+    for (const [size, teamsCount] of [[2, 8], [3, 5], [4, 4]]) {
+      // A party of the team's size, a smaller party and solos: every party whole on one team.
+      const r = packTeams([g(1, "s"), g(size, "A"), g(1, "t"), g(Math.max(2, size - 1), "B"), g(1, "u")], size, teamsCount);
+      assert.strictEqual(r.overflow.length, 0, "size " + size);
+      assert.strictEqual(partyTeams(r, "A", size).size, 1, "size " + size + ": the full party on one team");
+      assert.strictEqual(partyTeams(r, "B", Math.max(2, size - 1)).size, 1, "size " + size + ": the smaller party on one team");
+      assert.notStrictEqual(teamOf(r, "A0"), teamOf(r, "B0"), "size " + size + ": a full team takes nobody else");
+      assert.ok(r.teams.every((t) => t.players.length <= size), "size " + size + ": no team over its size");
+    }
+    // Two parties of 2: one team in Quads (they fit), two teams in Trios and Duos (they don't).
+    const quads = packTeams([g(2, "A"), g(2, "B")], 4, 4);
+    assert.strictEqual(new Set(["A0", "A1", "B0", "B1"].map((id) => teamOf(quads, id))).size, 1, "Quads: 2 + 2 = one team of 4");
+    for (const [size, teamsCount] of [[3, 5], [2, 8]]) {
+      const r = packTeams([g(2, "A"), g(2, "B")], size, teamsCount);
+      assert.strictEqual(partyTeams(r, "A", 2).size, 1);
+      assert.strictEqual(partyTeams(r, "B", 2).size, 1);
+      assert.notStrictEqual(teamOf(r, "A0"), teamOf(r, "B0"), "size " + size + ": two parties of 2 never share a team");
+    }
+    // Trios: a party of 2 and a solo fill one team; a party of 3 and a solo don't share.
+    const t21 = packTeams([g(1, "s"), g(2, "A")], 3, 5);
+    assert.strictEqual(teamOf(t21, "s0"), teamOf(t21, "A0"), "Trios: party of 2 + solo = one team");
+    const t31 = packTeams([g(1, "s"), g(3, "A")], 3, 5);
+    assert.notStrictEqual(teamOf(t31, "s0"), teamOf(t31, "A0"));
+    // Quads: a party of 3 and a party of 2 don't share; 3 + solo do.
+    const q32 = packTeams([g(3, "A"), g(2, "B")], 4, 4);
+    assert.notStrictEqual(teamOf(q32, "A0"), teamOf(q32, "B0"), "Quads: 3 + 2 don't fit one team");
+    const q31 = packTeams([g(3, "A"), g(1, "s")], 4, 4);
+    assert.strictEqual(teamOf(q31, "A0"), teamOf(q31, "s0"), "Quads: 3 + solo = one team");
+  });
+
   await test("lobbies (fits option): a party whose team no longer fits opens the next lobby; without the option, as before", () => {
     const { MatchLobbies } = require("../matchlobby");
     const { SharedMatches } = require("../sharedmatch");
@@ -719,12 +753,36 @@ function sharedVars(extra = {}) {
       await sleep(300);
       return (p) => team.get(p.userID);
     }
-    await test("test hook: refused behind a proxy header; a player not logged in", async () => {
+    await test("test hook: a Duos party of 2 is one real party and one team", async () => {
+      const team = await play("ffa_jungle_coop2", [[a1, a2]]);
+      assert.strictEqual(team(a1), team(a2));
+      const [m1, m2] = [a1.of("match-ready")[0], a2.of("match-ready")[0]];
+      assert.ok(m1.partyId && m1.partyId === m2.partyId, "the party's id on match-ready");
+    });
+    await test("test hook: Trios, a party of 3 is one team; a party of 2 + a solo is one team", async () => {
+      let team = await play("ffa_jungle_coop3", [[a1, a2, c]]);
+      assert.ok(team(a1) === team(a2) && team(a2) === team(c), "party of 3");
+      team = await play("ffa_jungle_coop3", [[a1, a2], [c]]);
+      assert.ok(team(a1) === team(a2) && team(a2) === team(c), "party of 2 + solo: one team of 3");
+    });
+    await test("test hook: two parties of 2 share a Quads team (they fit) but never a Trios one", async () => {
+      let team = await play("ffa_jungle_coop4", [[a1, a2], [b1, b2]]);
+      assert.strictEqual(new Set([a1, a2, b1, b2].map(team)).size, 1, "Quads: 2 + 2 = one team of 4");
+      team = await play("ffa_jungle_coop3", [[a1, a2], [b1, b2]]);
+      assert.strictEqual(team(a1), team(a2));
+      assert.strictEqual(team(b1), team(b2));
+      assert.notStrictEqual(team(a1), team(b1), "Trios: two parties of 2 on two teams");
+    });
+    await test("test hook: refused behind a proxy header and for a player not logged in; an empty party list queues solo", async () => {
       for (const h of [{ "X-Forwarded-For": "203.0.113.9" }, { Forwarded: "for=203.0.113.9" }, { "X-Real-IP": "203.0.113.9" }]) {
         const r = await hook({ userID: a1.userID, queueName: "ffa_jungle_coop2" }, h);
         assert.strictEqual(r.status, 404, "behind a proxy: " + JSON.stringify(h));
       }
       assert.strictEqual((await hook({ userID: "steam:76561190000000001", queueName: "ffa_jungle_coop2" })).json.error, "not-logged-in");
+      const r = await hook({ userID: a1.userID, queueName: "ffa_jungle_coop2", party: ["steam:76561190000000001"] });
+      assert.deepStrictEqual([r.status, r.json.error], [409, "not-logged-in"]);
+      const team = await play("ffa_jungle_coop2", [[a1], [c]]);
+      assert.strictEqual(team(a1), team(c), "two solos paired (a1 left its party)");
     });
   } finally {
     if (hg) hg.stop();

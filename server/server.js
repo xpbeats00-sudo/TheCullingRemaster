@@ -1132,15 +1132,56 @@ app.get('/api/news', (req, res) => res.json({ news: [] }));
 // request comes from loopback; the operator check), and never with
 // NODE_ENV=production (the service), whatever the switch says.
 const testHooks = (req) => process.env.CULLING_TEST_HOOKS === '1' && process.env.NODE_ENV !== 'production' && operator(req);
+//
+// With `party: [userID, ...]` the leader (userID) and those players are made
+// one real party first, through the friends and party code a menu uses
+// (friends, invite, accept; anyone else in the leader's party leaves it), and
+// the leader's queue then takes the whole party, as PLAY does. `party: []`
+// queues the player alone (out of any party). netplay_run.py --party uses it.
 app.post('/api/test/join-mm', (req, res) => {
   if (!testHooks(req)) return res.status(404).json({});
   const body = req.body || {};
   const socket = typeof body.userID === 'string' ? socketsByUser.get(body.userID) : null;
   if (!socket) return res.status(409).json({ error: 'not-logged-in', users: [...socketsByUser.keys()] });
-  log('test hook: join-mm', body.userID, body.queueName);
+  let party = null;
+  if (Array.isArray(body.party)) {
+    party = testParty(body.userID, body.party);
+    if (party.error) return res.status(409).json(party);
+  }
+  log('test hook: join-mm', body.userID, body.queueName, party ? 'party ' + party.members.length : '');
   startLocalMatch(socket, body.queueName);
-  res.json({ ok: true });
+  res.json(Object.assign({ ok: true }, party || {}));
 });
+
+// The test hook's party: exactly `leader` plus `members`, all logged in.
+function testParty(leader, list) {
+  const members = [...new Set(list.filter((id) => typeof id === 'string' && id !== leader))].slice(0, friends.limits.maxParty - 1);
+  for (const id of [leader].concat(members)) if (!liveSocket(id)) return { error: 'not-logged-in', userID: id };
+  const touched = new Set([leader].concat(members));
+  let p = friends.party(leader);
+  if (p && p.leader !== leader) { p.members.forEach((id) => touched.add(id)); friends.leave(leader); p = null; }
+  if (p) {
+    for (const id of p.members.slice()) if (id !== leader && !members.includes(id)) { touched.add(id); friends.leave(id); }
+  }
+  if (!members.length && friends.party(leader)) friends.leave(leader);
+  for (const id of members) {
+    const now = friends.party(leader);
+    if (now && now.members.includes(id)) continue;
+    const old = friends.party(id);
+    if (old) old.members.forEach((m) => touched.add(m));
+    if (!friends.areFriends(leader, id)) {
+      friends.request(leader, id);
+      friends.accept(id, leader);
+    }
+    const inv = friends.invite(leader, id);
+    if (inv.error) return { error: 'invite-' + inv.error, userID: id };
+    const acc = friends.acceptInvite(id, inv.partyId);
+    if (acc.error) return { error: 'accept-' + acc.error, userID: id };
+  }
+  for (const id of touched) notifyFriends(id);
+  const now = friends.party(leader);
+  return { partyId: now ? now.id : null, members: now ? now.members.slice() : [leader] };
+}
 
 app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: true, users: socketsByUser.size }, activity.summary())));
 
