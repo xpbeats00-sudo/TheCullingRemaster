@@ -803,6 +803,17 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
     struct line l;
     struct join_table *t = join_table();
     t->pend = 0;
+    /* A real host (the pre-match mode) without its control folder can't
+     * check tickets: it lets nobody in (it used to let everyone in). */
+    if (prematch_expected() > 0 && !ctl_on()) {
+        set_fstring((struct fstring *)error, "Server not ready");
+        t->refused++;
+        if ((t->refused <= 32 || t->refused % 100 == 0) && trace_begin(&l, "prelogin-refused")) {
+            put_s(&l, " no control folder (CULLING_NETPLAY_CONTROL)");
+            trace_end(&l);
+        }
+        return;
+    }
     if (ctl_on()) {
         ticket_check((struct fstring *)options, uid, (struct fstring *)error);
         if (((struct fstring *)error)->num) {

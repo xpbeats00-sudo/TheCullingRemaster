@@ -284,6 +284,34 @@ static int scenario_players(char **v)
     return 0;
 }
 
+/* M1: a real host (CULLING_NETPLAY_PREMATCH) whose control folder isn't
+ * there lets nobody in. argv: a ticket and its user (the test leaves the
+ * variable unset, or names a missing folder). */
+static int scenario_nocontrol(char **v)
+{
+    CHECK(strcmp(login(new_conn(), v[0], steam_of(v[1])), "Server not ready") == 0);
+    CHECK(strcmp(login_opts(new_conn(), "?Name=Player", steam_of(v[1])), "") != 0);
+    CHECK(game_prelogins == 0 && base_prelogins == 0);
+    printf("ok    no control folder on a real host: every login refused, ticket or not\n");
+    return 0;
+}
+
+/* M5: a login the game's own PreLogin refuses doesn't join: its ticket isn't
+ * used and no used-<n> is written. argv: a ticket and its user. */
+static int scenario_gamerefuses(char **v)
+{
+    char buf[512];
+    game_refuses = 1;
+    CHECK(strcmp(login(new_conn(), v[0], steam_of(v[1])), "Match is over!") == 0);
+    CHECK(read_file("used-1", buf, sizeof(buf)) < 0);
+    printf("ok    refused by the game's PreLogin: not in the join table, no used-1\n");
+    game_refuses = 0;
+    CHECK(strcmp(login(new_conn(), v[0], steam_of(v[1])), "") == 0);
+    CHECK(read_file("used-1", buf, sizeof(buf)) > 0);
+    printf("ok    the same ticket lets the player in once the game does\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -293,6 +321,10 @@ int main(int argc, char **argv)
         return scenario_tickets(argv + 2);
     if (!strcmp(argv[1], "players") && argc >= 7)
         return scenario_players(argv + 2);
+    if (!strcmp(argv[1], "nocontrol") && argc >= 4)
+        return scenario_nocontrol(argv + 2);
+    if (!strcmp(argv[1], "gamerefuses") && argc >= 4)
+        return scenario_gamerefuses(argv + 2);
     printf("FAIL unknown scenario %s\n", argv[1]);
     return 2;
 }

@@ -482,6 +482,7 @@ def run_scenario(exe, name, args, env, ctl, tickets=()):
             f.write("".join("%s %d %s\n" % (sha(tok), team, user) for tok, team, user in tickets))
     e = {k: v for k, v in os.environ.items() if not k.startswith("CULLING_NETPLAY_")}
     e.update({"CULLING_NETPLAY_CONTROL": ctl}, **env)
+    e = {k: v for k, v in e.items() if v is not None}       # None: the variable unset
     r = subprocess.run([exe, name] + list(args), capture_output=True, text=True, env=e, timeout=120)
     for ln in r.stdout.splitlines():
         print("      " + ln)
@@ -511,6 +512,9 @@ def test_native():
         tc = ta.replace("v1.", "v1.c")
         run_scenario(exe, "players", [ta, ua, tb, ub, tc], {"CULLING_NETPLAY_PREMATCH": "2"}, ctl,
                      [(ta, 1, ua), (tb, 2, ub), (tc, 3, "acct:not-a-steam-id")])
+        print("native: no control folder (M1)")
+        run_scenario(exe, "nocontrol", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_CONTROL": None}, ctl)
+        run_scenario(exe, "nocontrol", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_CONTROL": os.path.join(tmp, "missing")}, ctl)
         print("native: pass")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
