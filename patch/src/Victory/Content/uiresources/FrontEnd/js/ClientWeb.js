@@ -171,6 +171,10 @@ var Matchmaking = {
   // Remaster: the player asked to leave this search or pregame lobby; a
   // match-ready that still arrives for it is ignored. Cleared on the next queue.
   LeaveRequested: false,
+  // Remaster: the server acked that leave. A join (join-mm-ack, its lobby)
+  // that still arrives after it is the queue request crossing the cancel:
+  // the menu leaves again (leave-mm is idempotent on the server).
+  LeaveAcked: false,
   ShowQueueTimeScheduled : false,
   ShowQueueTime : false,
   UseLegacyMatchmaking : false,
@@ -1295,6 +1299,17 @@ function ConnectWebsocket()
       });
 }
 
+// Remaster: a join that arrived after the server acked the player's leave
+// (the queue request crossed the cancel): leave again, once per ack, so the
+// player isn't left queued with the pill on "Leaving...". 1 if it did.
+function RemasterLeaveAgainIfAcked() {
+    if (!Matchmaking.LeaveRequested || !Matchmaking.LeaveAcked || !socketConnection) return false;
+    console.log("Joined after the leave was acked: leaving again");
+    Matchmaking.LeaveAcked = false;
+    socketConnection.emit("leave-mm", { queueName: Matchmaking.LastQueue });
+    return true;
+}
+
 function LeaveMatchmaking() {
     if (!LobbyData.IsInLobby)
     {
@@ -1305,6 +1320,7 @@ function LeaveMatchmaking() {
 
         if (IsOnline()) {
             Matchmaking.LeaveRequested = true;
+            Matchmaking.LeaveAcked = false;
             socketConnection.emit("leave-mm", params);
         }
         else {
@@ -1681,12 +1697,14 @@ function BindClientwebEvents(deferred) {
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
+      RemasterLeaveAgainIfAcked();
   });
   socketConnection.on("join-mm-group", function (msg) {
       console.log("Group leader just queued us!");
       // Remaster: the leader's queue, so this menu shows the party's mode.
       if (msg && typeof msg.queueName == "string") Matchmaking.LastQueue = msg.queueName;
       Matchmaking.LeaveRequested = false;
+      Matchmaking.LeaveAcked = false;
       Matchmaking.SetMatchmaking(true);
       Matchmaking.MatchmakingState = "IN QUEUE";
       StartedMatchmaking();
@@ -1694,6 +1712,7 @@ function BindClientwebEvents(deferred) {
   });
   socketConnection.on("leave-mm-ack", function () {
       console.log("Server confirms we left the matchmaking queue.");
+      if (Matchmaking.LeaveRequested) Matchmaking.LeaveAcked = true;
       Matchmaking.SetMatchmaking(false);
       StoppedMatchmaking();
   });
@@ -1735,6 +1754,11 @@ function BindClientwebEvents(deferred) {
           console.log("match-ready:: ignored, the player asked to leave");
           Matchmaking.SetMatchmaking(false);
           StoppedMatchmaking();
+          // Remaster: tell the server, so it drops the match's ticket (and a
+          // pending ranked match) instead of waiting for a result.
+          if (socketConnection) {
+              socketConnection.emit("match-declined", { nonce: msg && msg.nonce, queueName: Matchmaking.LastQueue });
+          }
           return;
       }
       // Local server: "offline:<map>" means play a local match against bots.
@@ -2145,6 +2169,7 @@ function BindClientwebEvents(deferred) {
   });
   // Remaster: who is in the matchmaking lobby (MatchLobby.js).
   socketConnection.on("remaster-lobby", function (msg) {
+    if (RemasterLeaveAgainIfAcked()) return;
     if (window.RemasterLobby && Matchmaking.IsMatchmaking) window.RemasterLobby.show(msg);
   });
   // Remaster: a party change the player should know about (a member offline too long left it).
@@ -2805,6 +2830,7 @@ function DoQueueMatchmaking(GameType, ticket, userid)
         //We're matchmaking once we try to queue - this way we can show
         //a queuing message if the actual server ack is running slow
         Matchmaking.LeaveRequested = false;
+        Matchmaking.LeaveAcked = false;
         Matchmaking.SetMatchmaking(true);
         Matchmaking.MatchmakingState = "QUEUING";
         // Remaster: the lobby pill shows "Joining" until the server's lobby arrives (MatchLobby.js).

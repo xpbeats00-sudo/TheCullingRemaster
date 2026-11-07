@@ -11,6 +11,10 @@
 //   notice; never after a refusal retrying can't help (until Retry); a
 //   socket's events are bound once, and a replaced socket can't close the
 //   next one.
+// - the cancel race: a match-ready ignored because the player asked to leave
+//   is declined to the server (match-declined, with its nonce); a join that
+//   arrives after the leave was acked (join-mm-ack, remaster-lobby) leaves
+//   again, once per ack, so the pill doesn't stick on "Leaving...".
 // The functions are the shipped ones (the whole file is run).
 // usage: node test_clientweb.js
 "use strict";
@@ -178,6 +182,8 @@ const ctx = {
   CancelCustomGameInviteAcceptModal: noop, ShowCustomGameInviteAcceptFailure: noop
 };
 ctx.Math.random = () => 0.5;
+const lobbyShown = [];
+ctx.RemasterLobby = { show: (m) => lobbyShown.push(m), hide: noop, notice: noop, isShown: () => false, joining: noop, refresh: noop };
 ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext("Array.prototype.containsString = function (s) { return this.indexOf(s) >= 0; };", ctx);
@@ -434,6 +440,72 @@ test("a replaced socket's late disconnect doesn't close the current one", () => 
   fire(s, "error", "late");
   assert.strictEqual(run("socketConnection"), s2);
   assert.strictEqual(run("IsOnline()"), true);
+});
+
+// ---------------------------------------------------------------- the cancel race
+function queuedThenLeave() {
+  reset();
+  const s = signIn();
+  run("Matchmaking.LastQueue = 'ffa_jungle_coop2'; Matchmaking.LeaveRequested = false; Matchmaking.LeaveAcked = false;" +
+      "Matchmaking.SetMatchmaking(true); LobbyData.IsInLobby = false;");
+  fire(s, "join-mm-ack");
+  run("LeaveMatchmaking()");
+  assert.strictEqual(emits(s, "leave-mm").length, 1);
+  return s;
+}
+test("match-ready after Cancel: ignored, and declined to the server with its nonce", () => {
+  const s = queuedThenLeave();
+  engineCalls.length = 0;
+  fire(s, "match-ready", { gameServer: "duo:0", nonce: "n-123", serverNonce: "s" });
+  const d = emits(s, "match-declined");
+  assert.strictEqual(d.length, 1);
+  assert.strictEqual(d[0][1].nonce, "n-123");
+  assert.strictEqual(d[0][1].queueName, "ffa_jungle_coop2");
+  assert.ok(!engineCalls.some((c) => c[0] == "StartTraining"), "the match isn't opened");
+  assert.strictEqual(run("Matchmaking.IsMatchmaking"), false);
+});
+test("match-ready without a Cancel: opened, nothing declined", () => {
+  reset();
+  const s = signIn();
+  engineCalls.length = 0;
+  fire(s, "match-ready", { gameServer: "duo:1", nonce: "n-9" });
+  assert.strictEqual(emits(s, "match-declined").length, 0);
+  assert.ok(engineCalls.some((c) => c[0] == "StartTraining"));
+});
+test("join-mm-ack after the leave was acked: leaves again (once per ack), then out of the queue", () => {
+  const s = queuedThenLeave();
+  fire(s, "leave-mm-ack");
+  assert.strictEqual(run("Matchmaking.IsMatchmaking"), false);
+  fire(s, "join-mm-ack");                 // the queue request crossed the cancel
+  assert.strictEqual(emits(s, "leave-mm").length, 2);
+  fire(s, "join-mm-ack");
+  assert.strictEqual(emits(s, "leave-mm").length, 2, "not again before the next ack");
+  fire(s, "leave-mm-ack");
+  assert.strictEqual(run("Matchmaking.IsMatchmaking"), false);
+  assert.strictEqual(run("Matchmaking.LeaveRequested"), true, "a late match-ready is still ignored");
+});
+test("remaster-lobby after the leave was acked: leaves again, the pill isn't shown", () => {
+  const s = queuedThenLeave();
+  fire(s, "leave-mm-ack");
+  lobbyShown.length = 0;
+  run("Matchmaking.SetMatchmaking(true)");
+  fire(s, "remaster-lobby", { state: "searching", players: [] });
+  assert.strictEqual(emits(s, "leave-mm").length, 2);
+  assert.strictEqual(lobbyShown.length, 0);
+});
+test("join-mm-ack before the leave's ack (the normal order): no second leave", () => {
+  const s = queuedThenLeave();
+  fire(s, "join-mm-ack");
+  fire(s, "leave-mm-ack");
+  assert.strictEqual(emits(s, "leave-mm").length, 1);
+});
+test("a new search (the party leader's join-mm-group) forgets the old leave", () => {
+  const s = queuedThenLeave();
+  fire(s, "leave-mm-ack");
+  fire(s, "join-mm-group", { queueName: "ffa_jungle_coop2" });
+  fire(s, "join-mm-ack");
+  assert.strictEqual(emits(s, "leave-mm").length, 1);
+  assert.strictEqual(run("Matchmaking.LeaveRequested"), false);
 });
 
 console.log("all %d ClientWeb connection tests passed", passed);
