@@ -24,6 +24,11 @@ const { createReconnect } = require("./lib/reconnect");
 const { createSerial, createExclusive } = require("./lib/serial");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
+const localhttp = require("./lib/localhttp");
+
+// Plain http to localhost (a local test server) only in a dev run: the
+// installed launcher takes https addresses only (lib/localhttp.js).
+localhttp.allow(!app.isPackaged);
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
 const UPDATES = () => path.join(app.getPath("userData"), "launcher-updates");

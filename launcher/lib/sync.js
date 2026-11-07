@@ -32,7 +32,7 @@
 // The manifest comes from the network, so it is trusted only after its
 // signature verifies, every path must stay inside the game folder (never the
 // launcher's own state folder) and every URL must be https (http only for
-// localhost, for testing).
+// localhost, for testing, and never in the installed launcher: lib/localhttp.js).
 
 "use strict";
 
@@ -42,6 +42,7 @@ const crypto = require("crypto");
 const { Readable, Transform } = require("stream");
 const { pipeline } = require("stream/promises");
 const RELEASE_KEY = require("./releasekey");
+const localhttp = require("./localhttp");
 
 const STATE_DIR = ".remaster";
 const STATE_FILE = "sync-state.json";
@@ -112,8 +113,7 @@ class ConnectionLost extends SyncPaused {
 
 function checkUrl(u) {
   const url = new URL(u);
-  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
+  if (!localhttp.ok(url)) {
     throw new SyncError("refusing non-https URL " + url.href);
   }
   return url;

@@ -109,6 +109,7 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
 
 (async () => {
   try {
+    require("../lib/localhttp").allow(false);           // main.js decides, from app.isPackaged
     require("../main.js");
     for (let i = 0; i < 20 && !win; i++) await tick();
     assert.ok(win, "the window was created");
@@ -144,6 +145,12 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
         assert.ok(!/unsafe-inline|unsafe-eval/.test(csp), page + ": no unsafe-*");
         assert.ok(!/<script>[^<]/.test(html) && !/ on[a-z]+="/.test(html), page + ": no inline script or handlers");
       }
+    });
+
+    await test("plain http to this PC follows app.isPackaged (allowed only in a dev run)", () => {
+      assert.strictEqual(require("../lib/localhttp").allowed(), !electron.app.isPackaged);
+      const src = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+      assert.match(src, /localhttp\.allow\(!app\.isPackaged\)/);
     });
 
     await test("IPC from anything but the launcher's window is refused", async () => {
