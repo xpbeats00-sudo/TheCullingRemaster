@@ -221,6 +221,35 @@ function seasonClamp(p) {
 // A win (or a ranked placement) needs the match to have run this long: the
 // ticket starts when the match is sent, so an instant "victory" is refused.
 const MIN_MATCH_SECONDS = parseInt(process.env.CULLING_MIN_MATCH_SECONDS || '120', 10);
+// Match pay is bounded by what a real match could earn (FULL_AUDIT_2026-11-06
+// P0 #1: instant fake results paid kills, damage, XP and credits). A result
+// shorter than MIN_MATCH_SECONDS pays nothing; kills and damage can't come
+// faster than these rates (the ticket's elapsed time includes loading and the
+// pod countdown, so real players are far inside them); and match credits and
+// XP stop at a daily cap (UTC day). 0 turns a limit off.
+const intEnv = (name, def) => {
+  const v = parseInt(process.env[name], 10);
+  return Number.isFinite(v) && v >= 0 ? v : def;
+};
+const PAY = {
+  secondsPerKill: intEnv('CULLING_SECONDS_PER_KILL', 20),
+  damagePerSecond: intEnv('CULLING_DAMAGE_PER_SECOND', 10),
+  dailyCredits: intEnv('CULLING_DAILY_MATCH_CREDITS', 8000),
+  dailyXP: intEnv('CULLING_DAILY_MATCH_XP', 40000)
+};
+// What is left of today's match credits and XP for a player; take() records
+// what was paid. The day's totals live on the profile (p.matchPay).
+function dailyPay(p, now = Date.now()) {
+  const day = new Date(now).toISOString().slice(0, 10);
+  if (!p.matchPay || typeof p.matchPay !== 'object' || p.matchPay.day !== day) p.matchPay = { day, credits: 0, xp: 0 };
+  const t = p.matchPay;
+  const left = (cap, used) => (cap > 0 ? Math.max(0, cap - (Number(used) || 0)) : Infinity);
+  return {
+    credits: (n) => Math.min(n, left(PAY.dailyCredits, t.credits)),
+    xp: (n) => Math.min(n, left(PAY.dailyXP, t.xp)),
+    take(credits, xp) { t.credits = (Number(t.credits) || 0) + credits; t.xp = (Number(t.xp) || 0) + xp; }
+  };
+}
 // The menu logging in again this long after a match started means that match
 // is over: a ticket still open then had no result (quit or crash).
 const ABANDON_GRACE_MS = parseInt(process.env.CULLING_ABANDON_GRACE_MS || '60000', 10);
@@ -541,8 +570,10 @@ app.post('/api/matchresult', (req, res) => {
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
-  activity.match(userID);
-  if (claim.ticket.map === SHOWDOWN.map) return showdownMatchResult(res, claim, body, userID);
+  if (claim.ticket.map === SHOWDOWN.map) {
+    activity.match(userID);
+    return showdownMatchResult(res, claim, body, userID);
+  }
   const p = getProfile(userID);
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
   // Infinity/NaN credits or XP into profiles.json.
@@ -554,19 +585,29 @@ app.post('/api/matchresult', (req, res) => {
   // every contestant but your own team.
   const rankedMode = claim.ticket.ranked ? ranked.modeId(claim.ticket.rankedMode) : null;
   const teamSize = rankedMode ? ranked.MODES[rankedMode].teamSize : 1;
-  const maxKills = teamSize > 1 ? teamContestants(claim.ticket.map) - teamSize : field - 1;
+  // Every other contestant at most, and no faster than PAY.secondsPerKill.
+  const maxKills = Math.min(teamSize > 1 ? teamContestants(claim.ticket.map) - teamSize : field - 1,
+    PAY.secondsPerKill > 0 ? Math.floor(claim.elapsed / PAY.secondsPerKill) : Infinity);
+  // Within what 15 can take, and no faster than PAY.damagePerSecond.
+  const maxDamage = Math.min(5000, PAY.damagePerSecond > 0 ? claim.elapsed * PAY.damagePerSecond : Infinity);
   const r = {
     victory: !tooShort && (body.victory === true || body.victory === 'true'),
-    // Every other contestant at most; damage within what 15 can take.
     kills: bounded(parseInt(body.kills, 10), maxKills),
-    damage: bounded(Number(body.damage), 5000),
+    damage: bounded(Number(body.damage), maxDamage),
     // No longer than the match has actually run.
     timeAlive: bounded(Number(body.timeAlive), Math.min(4 * 3600, claim.elapsed + 30)),
     func: bounded(parseInt(body.func, 10), 1e6)
   };
   const startXP = p.stats.xp;
-  const earned = matchXP(r);
-  const credits = matchCredits(r);
+  // Too short to be a real match: nothing paid and nothing on the career
+  // (ranked still scores it as last place, below). Otherwise within the day's cap.
+  const today = dailyPay(p);
+  const fullXP = matchXP(r), fullCredits = matchCredits(r);
+  const earned = tooShort ? 0 : today.xp(fullXP);
+  const credits = tooShort ? 0 : today.credits(fullCredits);
+  if (tooShort) log('match result too short', userID, Math.round(claim.elapsed) + ' s', 'nothing paid');
+  else if (earned < fullXP || credits < fullCredits) log('match result over the daily cap', userID, credits + ' credits', earned + ' XP');
+  today.take(credits, earned);
   p.cullCredits += credits;
   let rankedResult = null;
   // Only the result of the ranked match itself scores it: a Solo, Duo or
@@ -621,25 +662,7 @@ app.post('/api/matchresult', (req, res) => {
     log('level', userID, s.level, '->', level);
     s.level = level;
   }
-  s.gamesPlayed += 1;
-  s.kills += r.kills;
-  s.wins += r.victory ? 1 : 0;
-  s.totalDamage += Math.round(r.damage);
-  s.minutesAlive += Math.round(r.timeAlive / 60);
-  s.funcEarned += r.func;
-  // Tickets saved by an older server have no mode: Solo. (This read a
-  // `showdown` variable that no longer exists here, so such a result was a 500
-  // after its ticket was taken and its XP and credits added: SERVER_AUDIT_2 F4.)
-  const mode = claim.ticket.mode || 'ffa';
-  if (mode !== SHOWDOWN.queue) {
-    if (!p.modes || typeof p.modes !== 'object') p.modes = {};
-    const m = p.modes[mode] || (p.modes[mode] = { played: 0, wins: 0, kills: 0, damage: 0, minutesAlive: 0 });
-    m.played += 1;
-    m.wins += r.victory ? 1 : 0;
-    m.kills += r.kills;
-    m.damage += Math.round(r.damage);
-    m.minutesAlive += Math.round(r.timeAlive / 60);
-  }
+  if (!tooShort) careerMatch(userID, p, r, claim.ticket.mode);
   p.lastMatch = Object.assign({ at: Date.now(), xpEarned: earned }, r);
   saveProfiles();
   log('match result', userID, JSON.stringify(r), `+${earned} XP (${startXP} -> ${s.xp}), +${credits} credits`);
@@ -650,6 +673,32 @@ app.post('/api/matchresult', (req, res) => {
   setPresence(userID, 'menu');
   res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: null });
 });
+
+// A real match on the career: games, kills, wins, damage and time, overall and
+// per mode, and the launcher's matches-today count.
+function careerMatch(userID, p, r, ticketMode) {
+  const s = p.stats;
+  activity.match(userID);
+  s.gamesPlayed += 1;
+  s.kills += r.kills;
+  s.wins += r.victory ? 1 : 0;
+  s.totalDamage += Math.round(r.damage);
+  s.minutesAlive += Math.round(r.timeAlive / 60);
+  s.funcEarned += r.func;
+  // Tickets saved by an older server have no mode: Solo. (This read a
+  // `showdown` variable that no longer exists here, so such a result was a 500
+  // after its ticket was taken and its XP and credits added: SERVER_AUDIT_2 F4.)
+  const mode = ticketMode || 'ffa';
+  if (mode !== SHOWDOWN.queue) {
+    if (!p.modes || typeof p.modes !== 'object') p.modes = {};
+    const m = p.modes[mode] || (p.modes[mode] = { played: 0, wins: 0, kills: 0, damage: 0, minutesAlive: 0 });
+    m.played += 1;
+    m.wins += r.victory ? 1 : 0;
+    m.kills += r.kills;
+    m.damage += Math.round(r.damage);
+    m.minutesAlive += Math.round(r.timeAlive / 60);
+  }
+}
 
 // The match result of a Showdown match: the end of the series (the patched
 // exe plays every round in the match; this result names the round it ends,
@@ -678,8 +727,10 @@ function showdownMatchResult(res, claim, body, userID) {
   if (paid) {
     const r = seriesPayout(paid, { kills: body.kills, damage: body.damage, timeAlive: body.timeAlive,
       maxTime: Math.min(4 * 3600, claim.elapsed + 30) });
-    earned = r.xp;
-    credits = r.credits;
+    const today = dailyPay(p);
+    earned = today.xp(r.xp);
+    credits = today.credits(r.credits);
+    today.take(credits, earned);
     p.cullCredits += credits;
     st.xp = Math.min(seasonXPCap(), st.xp + earned);
     const level = Math.min(SEASON.maxLevel, levelForXP(st.xp) || st.level);
