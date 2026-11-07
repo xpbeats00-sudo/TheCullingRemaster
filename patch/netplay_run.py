@@ -414,7 +414,7 @@ def menu_chain(a):
             write_ids("host")              # the agent's host reads it when it starts
         # 3. Queue them (the PLAY -> Solo a player would press).
         for u in users:
-            st, r = http_json("POST", base + "/api/test/join-mm", {"userID": u, "queueName": "ffa_jungle"})
+            st, r = http_json("POST", base + "/api/test/join-mm", {"userID": u, "queueName": a.queue})
             log("queued", u, st, r)
         t0 = time.time()
         while not os.path.exists(os.path.join(ctl, "assignment.json")):
@@ -545,6 +545,7 @@ def main():
     ap.add_argument("--agent-host", action="store_true", help="with --menu: the game-server agent starts (and stops) the host")
     ap.add_argument("--client-exe", help="with --menu --agent-host: the clients run this exe (a released client) as the"
                     " install's Victory.exe; the host runs the netplay exe as VictoryHost.exe (-FuncVictoryExe)")
+    ap.add_argument("--queue", default="ffa_jungle", help="with --menu: the queue the menus join (ffa_jungle Solo, ffa_jungle_coop2 Duos)")
     ap.add_argument("--headless-host", action="store_true", help="with --agent-host: the host runs headless (-nullrhi -nosound)")
     ap.add_argument("--restore", metavar="OUT", help="put back what an interrupted run into OUT changed, and exit")
     ap.add_argument("--menu", action="store_true", help="with --backend-repo: the clients start at their menus, are queued"

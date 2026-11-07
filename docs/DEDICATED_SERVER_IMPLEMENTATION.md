@@ -174,6 +174,26 @@ In one earlier run Player One died 4 s after Player Two, with the pair 300 units
 
 Fixed on the way: the agent looked for a host process named `Victory.exe`. It found none, declared the host never started and aborted a running match; it now looks for the exe it launched.
 
+## Teams: Duos (2026-11-06)
+
+For a team assignment the agent opens the game's pairs mode (`VictoryGameMode_CoopRanked`, `make_duo.py`), with `?TeamSize=N` for Trios/Quads, and sets `CULLING_NETPLAY_TEAMSIZE` for the host. The host:
+- **puts every joined player on their team:** the team the backend assigned, from their ticket (the agent answers `ok <team> <userID>`);
+- **fills the other places with bots:** N to a team, in PlayerArray order, with the game's `AVictoryPlayerState::SetTeamNum`. It does this every tick until the match ends, and also when a record's team (the scoreboard's source) differs: the bot spawned during the countdown kept team 1 on the scoreboard after its player state went to 2;
+- **ends the match** when the living contestants are all on one team, or no human is left;
+- **writes each player's team placement:** 1 plus the teams that outlived theirs. The agent reports it as the match's `teams`.
+
+The host's own spectator isn't sent to the clients. A local match's teams come from the Remaster module's pairing by PlayerArray index (`patch_exe.py` fix 4); the host exe doesn't have that module.
+
+**In game** (two players queued Duos, `--queue ffa_jungle_coop2`; the backend made them one team):
+- **teams on the host:** the two players on team 1, the bots in pairs on 2 to 8 (`h1 h1 b2 b2 … b8 b8`);
+- **scoreboards:** the same teams on the host and on both test-build clients;
+- **the end:** the match played on until one team was left;
+- **the result:** team 1 won and both players were paid a team victory (`team place 1`; 2,008 and 1,755 XP).
+
+The same with the released 1.3.12 clients: teams and result the same, and no crashes.
+
+**Open: released clients pair teams themselves.** Fix 4's stub runs on every scoreboard refresh in a pairs match on a client too, and sets each player state's team there by its index in the client's own PlayerArray. That overrides the host's team on that client, and the server won't send it again unless it changes. In these runs the client's order matched the host's teams: both players on team 1, joined first, then the bots in team order. With players on different teams (a party and a solo, or Trios) a client may show the wrong teammate. The fix is in the client, for the next release: skip the local pairing when connected to a server (NetMode client), and leave the server's teams alone. It hasn't been made yet: it changes the released client.
+
 ## On the VPS (not done: needs the owner)
 
 Nothing below has been run on the VPS. It's the plan, and the list of what blocks real players.
@@ -181,7 +201,7 @@ Nothing below has been run on the VPS. It's the plan, and the list of what block
 **Blockers before players use it:**
 1. ~~The host's own player is a contestant.~~ Fixed (2026-11-06), see "No player for the host" below.
 2. ~~Clients ran the netplay test exe in every test.~~ Released 1.3.12 clients join and play (2026-11-06), see "Released clients" below.
-3. **Solo only.** The agent refuses team modes; Duos and up need the team layout passed to the host.
+3. ~~Solo only.~~ Duos work (2026-11-06), see "Teams" below. Trios and Quads are wired the same way but not run in game. Released clients' own local pairing may show a wrong teammate when players are on different teams (see there).
 4. **Capacity unmeasured:** the CPU, memory and bandwidth of a headless host with 16 contestants.
 5. **The menu's server.** Released builds should point `RemasterServer.js` at the live backend, and their `FrontEnd.html` must load it. The test copy's page doesn't (it falls back to `127.0.0.1:8000`). Check this in the release pak.
 6. **The host's Steam ID:** a dedicated test ID, not a player's.
@@ -205,7 +225,7 @@ Nothing below has been run on the VPS. It's the plan, and the list of what block
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless. `--client-exe <exe>` gives the clients another exe (a released client) while the host runs the netplay exe as `VictoryHost.exe`.
+Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless. `--queue ffa_jungle_coop2` queues Duos. `--client-exe <exe>` gives the clients another exe (a released client) while the host runs the netplay exe as `VictoryHost.exe`.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.

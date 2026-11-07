@@ -101,14 +101,21 @@ const pending = new Set();  // verify requests being answered
 // ---- the host game (with --launcher) -----------------------------------------
 
 const MODE = "/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C";
+const PAIRS = "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C";   // make_duo.py MODE
 const MAPS = { 0: "Jungle_P", 1: "Jungle2_P" };      // custom_match.py URLS: 0 Jungle, 1 Prison
 let host = null;                                     // { launcher, pid, matchId, stopAt }
 
 // The URL a route-B host opens for this assignment, or null (not supported).
+// Solo: the normal mode; Duos: the pairs mode; Trios, Quads: the pairs mode with
+// ?TeamSize= (make_duo.py TEAM_URLS). The host puts players on the assigned teams
+// (CULLING_NETPLAY_TEAMSIZE).
 function hostUrl(a) {
   const map = MAPS[a.mapIndex || 0];
-  if (!map || (a.teamSize || 1) !== 1) return null;  // Solo only, for now
-  return map + "?listen?bIsLanMatch?bEnableBots=true?game=" + MODE + "?servernonce=" + a.serverNonce;
+  const size = a.teamSize || 1;
+  if (!map || size < 1 || size > 4) return null;
+  const mode = size === 1 ? MODE : PAIRS;
+  return map + "?listen?bIsLanMatch?bEnableBots=true?game=" + mode + (size > 2 ? "?TeamSize=" + size : "")
+    + "?servernonce=" + a.serverNonce;
 }
 
 // The host game the launcher started: its child process named after the exe
@@ -138,7 +145,7 @@ function startHost(a) {
   if (o.victoryExe) args.push("-FuncVictoryExe=" + o.victoryExe);
   if (o.steamSettings) args.push("-FuncSteamSettingsDir=" + o.steamSettings);
   const env = Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1", CULLING_NETPLAY_PREMATCH: String(a.players),
-    CULLING_NETPLAY_CONTROL: o.control });
+    CULLING_NETPLAY_CONTROL: o.control, CULLING_NETPLAY_TEAMSIZE: String(a.teamSize || 1) });
   if (o.hostTrace) env.CULLING_NETPLAY_TRACE = o.hostTrace;
   const launcher = spawn(o.launcher, args, { cwd: path.dirname(o.launcher), env, stdio: "ignore" });
   host = { launcher: launcher.pid, pid: null, matchId: a.matchId, stopAt: 0, since: Date.now() };
@@ -274,11 +281,24 @@ function resultBody(text) {
   }
   const body = { matchId: assignment.matchId, duration: sinceReady, players };
   if ((assignment.teamSize || 1) > 1) {
-    // Team placement: the best placement of any member.
-    const best = new Map();
-    for (const p of players) if (p.joined) best.set(p.team, Math.min(best.get(p.team) || field, p.placement));
-    const order = [...best.entries()].sort((a, b) => a[1] - b[1]);
-    body.teams = order.map(([team], i) => ({ team, placement: i + 1, outcome: i === 0 ? "won" : "out" }));
+    // Team placement: the host's (its rank among all the match's teams, bots'
+    // teams too), else the best placement of any member, ranked among the
+    // players' own teams.
+    const teamsCount = assignment.teamsCount || Math.ceil(field / assignment.teamSize);
+    const hostPlace = new Map();
+    for (const [userID, f] of byUser) {
+      const team = players.find((p) => p.userID === userID).team;
+      const tp = parseInt(f.team_placement, 10);
+      if (tp > 0) hostPlace.set(team, Math.min(teamsCount, tp));
+    }
+    if (hostPlace.size) {
+      body.teams = [...hostPlace.entries()].map(([team, placement]) => ({ team, placement, outcome: placement === 1 ? "won" : "out" }));
+    } else {
+      const best = new Map();
+      for (const p of players) if (p.joined) best.set(p.team, Math.min(best.get(p.team) || field, p.placement));
+      const order = [...best.entries()].sort((a, b) => a[1] - b[1]);
+      body.teams = order.map(([team], i) => ({ team, placement: i + 1, outcome: i === 0 ? "won" : "out" }));
+    }
   }
   return body;
 }

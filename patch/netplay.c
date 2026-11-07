@@ -314,6 +314,7 @@ static void set_fstring(struct fstring *e, const char *msg)
 
 static i32 login_seq;               /* verify requests made */
 static i32 last_verified;           /* the request PreLogin just passed (0 none) */
+static i32 last_team;               /* its team, from the agent's "ok <team> <userID>" */
 
 /* PreLogin with the agent: the ticket from ?Nonce= in the login options
  * (the stock menu's ConnectToServer opens "<server>?Nonce=<nonce>", VA
@@ -352,6 +353,9 @@ static void ticket_check(struct fstring *options, struct fstring *error)
         if (ctl_read(name, ans, sizeof(ans)) > 0) {
             if (ans[0] == 'o' && ans[1] == 'k') {
                 last_verified = login_seq;
+                last_team = 0;
+                for (k = 3; ans[k] >= '0' && ans[k] <= '9'; k++)
+                    last_team = last_team * 10 + (ans[k] - '0');
                 return;
             }
             set_fstring(error, "Match ticket refused");
@@ -366,7 +370,7 @@ static void ticket_check(struct fstring *options, struct fstring *error)
  * a pointer: indexing a static array directly makes the compiler address it
  * from __ImageBase, which this position-independent blob doesn't have. */
 #define MAX_JOINS          64
-struct join_table { void *conn[MAX_JOINS]; void *ps[MAX_JOINS]; i32 seq[MAX_JOINS]; u32 died[MAX_JOINS]; i32 n; u32 start; };
+struct join_table { void *conn[MAX_JOINS]; void *ps[MAX_JOINS]; i32 seq[MAX_JOINS]; i32 team[MAX_JOINS]; u32 died[MAX_JOINS]; i32 n; u32 start; };
 static struct join_table join_store;
 __declspec(noinline) static struct join_table *join_table(void) { return &join_store; }
 
@@ -601,6 +605,7 @@ void np_notify_control(void *notify, void *conn, u8 type, void *bunch)
     if (server && type == 5 && conn && last_verified && join_table()->n < MAX_JOINS) {
         struct join_table *t = join_table();
         t->conn[t->n] = conn;
+        t->team[t->n] = last_team;
         t->seq[t->n++] = last_verified;
     }
     if (trace_begin(&l, "control-done")) {
@@ -911,6 +916,9 @@ static i32 count_pickups(void *ctx)
 
 /* The actors replicated: the game state, its player states, every
  * controller and every pawn in the world (no relevancy culling yet). */
+#define O_PS_FLAGS         0x42c       /* bit 0 bIsSpectator, bit 1 bOnlySpectator, bit 2 bIsABot */
+#define O_PS_CONTESTANT    0x5b4
+
 static i32 collect(u8 *world, u8 **out, u8 *kind)
 {
     i32 n = 0, i, num, pass;
@@ -922,7 +930,8 @@ static i32 collect(u8 *world, u8 **out, u8 *kind)
         out[n++] = gs;
         num = F(gs, O_GS_PLAYERS + 8, i32);
         for (i = 0; ps && i < num && n < MAX_REP; i++)
-            if (ps[i]) {
+            /* not the host's own player (made an only-spectator, host_no_player) */
+            if (ps[i] && !(F(ps[i], O_PS_FLAGS, u32) & 2)) {
                 kind[n] = 0;
                 out[n++] = ps[i];
             }
@@ -1174,6 +1183,7 @@ static void host_damage(u8 **conns, i32 nconn, u32 now)
 #define REC_PS             0x10        /* the player state (the struct's own property list, VA 0x1404c6400 on) */
 #define REC_ALIVE          0x28        /* bIsAlive (the game's IsAlive-by-record reads this byte, VA 0x140240301) */
 #define REC_DEATH_ORDER    0x5c
+#define REC_TEAM           0x40        /* TeamNumber (the record struct's property list; showdown_rounds.c REC_TEAM) */
 #define REC_KILLER_NAME    0x60        /* FString */
 #define REC_KILL_POINTS    0x84
 #define REC_VICTIMS        0xe0        /* TArray: players this one killed */
@@ -1313,6 +1323,7 @@ static void trace_scoreboard(u8 *world, const char *tag)
             if (!c)
                 put_s(&l, "(empty)");
             put_s(&l, F(e, SB_ALIVE, u8) ? "+" : "-");
+            put_d(&l, (u64)(u32)F(e, 0x20, i32));       /* PlayerTeam */
         }
         trace_end(&l);
     }
@@ -1439,6 +1450,124 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
  * order is the record count, the first to die 1). The player state is kept
  * from the first tick after the join, so a player who left still counts. */
 #define REC_WINNER         0x29        /* bIsWinner (DetermineMatchWinner sets it; byte after bIsAlive) */
+
+/* ---- teams in a shared match (Duos, Trios, Quads) ------------------------
+ *
+ * CULLING_NETPLAY_TEAMSIZE=N (the agent sets it from the assignment, with the
+ * pairs mode VictoryGameMode_CoopRanked): every joined player is put on the
+ * team the backend assigned (its ticket's, from the agent's answer) and the
+ * bots fill the other places, N to a team, in PlayerArray order, with the
+ * game's AVictoryPlayerState::SetTeamNum (it also writes the record and the
+ * scoreboard entry). Every tick until the match ends, so a late bot or a
+ * refresh can't leave anyone elsewhere. (A local match's teams are the
+ * Remaster module's pairing by PlayerArray index, patch_exe.py fix 4; the
+ * host exe doesn't have that module.) */
+#define R_SET_TEAM_NUM     0x24e7e0    /* AVictoryPlayerState::SetTeamNum(ps, int32, bool) */
+#define O_PS_TEAM          0x490       /* VictoryPlayerState TeamNumber */
+#define MAX_TEAMS          16
+typedef void (*set_team_fn)(void *ps, i32 team, u8 b);
+static const u16 teamsize_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','A','M','S','I','Z','E',0 };
+static i32 team_n = -1;
+
+static i32 team_size_env(void)
+{
+    u16 v[8];
+    u32 n, i;
+    if (team_n < 0) {
+        n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(teamsize_var, v, 8);
+        team_n = 0;
+        for (i = 0; n > 0 && n < 4 && i < n && v[i] >= '0' && v[i] <= '9'; i++)
+            team_n = team_n * 10 + (v[i] - '0');
+    }
+    return team_n;
+}
+
+/* The player state's team, or its record's (the scoreboard's source), isn't
+ * team. The record is made when the player is first counted, with the team
+ * it had then: in game the bot spawned during the start countdown kept
+ * team 1 on the scoreboard after its player state went to 2. */
+static i32 team_differs(u8 *ps, u8 *world, i32 team)
+{
+    u8 *r = record_of(world, ps);
+    return F(ps, O_PS_TEAM, i32) != team || (r && F(r, REC_TEAM, i32) != team);
+}
+
+static void host_teams(u8 *world)
+{
+    struct join_table *t = join_table();
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 **ps = gs ? F(gs, O_GS_PLAYERS, u8 **) : 0;
+    i32 size = team_size_env(), i, k, num = gs ? F(gs, O_GS_PLAYERS + 8, i32) : 0;
+    i32 used[MAX_TEAMS + 1];
+    if (size < 2 || !ps)
+        return;
+    for (k = 0; k <= MAX_TEAMS; k++)
+        used[k] = 0;
+    for (i = 0; i < t->n; i++)
+        if (t->ps[i] && t->team[i] > 0 && t->team[i] <= MAX_TEAMS) {
+            used[t->team[i]]++;
+            if (team_differs((u8 *)t->ps[i], world, t->team[i]))
+                FN(R_SET_TEAM_NUM, set_team_fn)(t->ps[i], t->team[i], 1);
+        }
+    for (i = 0; i < num; i++) {
+        u8 *p = ps[i];
+        if (!p || !(F(p, O_PS_FLAGS, u32) & 4) || (F(p, O_PS_FLAGS, u32) & 2))
+            continue;                                    /* bots only */
+        for (k = 1; k <= MAX_TEAMS && used[k] >= size; k++)
+            ;
+        if (k > MAX_TEAMS)
+            break;
+        used[k]++;
+        if (team_differs(p, world, k))
+            FN(R_SET_TEAM_NUM, set_team_fn)(p, k, 1);
+    }
+    {
+        /* Every 5 s: each player state's team in PlayerArray order (h human,
+         * b bot, s the host's spectator) and the joined players' own. */
+        static u32 teams_trace;
+        u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+        struct line l;
+        if (now - teams_trace >= 5000 && trace_begin(&l, "teams")) {
+            teams_trace = now;
+            for (i = 0; i < t->n; i++) {
+                kv_s(&l, "join_team", t->team[i]);
+                kv(&l, "join_ps", (u64)t->ps[i], 1);
+            }
+            put_s(&l, " order=");
+            for (i = 0; i < num && i < 40; i++) {
+                u32 fl = ps[i] ? F(ps[i], O_PS_FLAGS, u32) : 0;
+                l.b[l.n++] = (char)((fl & 2) ? 's' : (fl & 4) ? 'b' : 'h');
+                put_d(&l, ps[i] ? (u64)(u32)F(ps[i], O_PS_TEAM, i32) : 0);
+            }
+            trace_end(&l);
+        }
+    }
+}
+
+/* Each player's team placement for the result: 1 + the teams that outlived
+ * theirs (a team lasts until its last member's death order; alive at the end
+ * is last of all). */
+static i32 team_placement(u8 *world, i32 team)
+{
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 *recs = gs ? F(gs, O_GS_RECORDS, u8 *) : 0;
+    i32 num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0, i, k, last[MAX_TEAMS + 1], place = 1;
+    for (k = 0; k <= MAX_TEAMS; k++)
+        last[k] = -1;
+    for (i = 0; recs && i < num; i++) {
+        u8 *r = recs + (u64)i * REC_SIZE;
+        i32 tm = F(r, REC_TEAM, i32), o = F(r, REC_ALIVE, u8) || F(r, REC_WINNER, u8) ? 0x7fffffff : F(r, REC_DEATH_ORDER, i32);
+        if (tm > 0 && tm <= MAX_TEAMS && o > last[tm])
+            last[tm] = o;
+    }
+    if (team <= 0 || team > MAX_TEAMS || last[team] < 0)
+        return 0;
+    for (k = 1; k <= MAX_TEAMS; k++)
+        if (k != team && last[k] > last[team])
+            place++;
+    return place;
+}
+
 static i32 result_done;
 static i32 host_sb_removed;        /* the host's scoreboard rows taken out (host_scoreboard_row) */
 #define SB_PLAYER_ID       0x10        /* FString */
@@ -1542,6 +1671,12 @@ static void ctl_result(u8 *driver, u8 *world)
         }
         q = put_str(q, " winner=");
         q = put_dec(q, F(r, REC_WINNER, u8));
+        if (team_size_env() > 1) {
+            q = put_str(q, " team=");
+            q = put_dec(q, F(r, REC_TEAM, i32));
+            q = put_str(q, " team_placement=");
+            q = put_dec(q, team_placement(world, F(r, REC_TEAM, i32)));
+        }
         q = put_str(q, " alive=");
         q = put_dec(q, F(r, REC_ALIVE, u8));
         q = put_str(q, "\n");
@@ -2014,8 +2149,6 @@ static void client_attack(u8 *driver)
  * in the game state is taken out (the scoreboard and the placements come
  * from the records). */
 #define R_CLS_PC           0x303820    /* AShooterPlayerController::StaticClass getter (package name) */
-#define O_PS_FLAGS         0x42c       /* bit 0 bIsSpectator, bit 1 bOnlySpectator */
-#define O_PS_CONTESTANT    0x5b4
 #define VT_UNPOSSESS       0x650       /* AController::UnPossess */
 #define VT_DESTROY         0x290       /* AActor::K2_DestroyActor */
 typedef void (*vcall_fn)(void *obj);
@@ -2210,7 +2343,7 @@ static i32 end_traced;
 u8 np_should_end(void *gm)
 {
     u8 *g = (u8 *)gm, *gs, **ps;
-    i32 i, n, alive = 0, humans = 0;
+    i32 i, n, alive = 0, humans = 0, team = -1, teams = 0, size = team_size_env();
     u8 end;
     struct line l;
     if (prematch_expected() <= 0 || !g || state_code(F(g, O_GM_MATCH_STATE, u32)) != 2)
@@ -2231,12 +2364,38 @@ u8 np_should_end(void *gm)
         alive++;
         if (!(flags & 4))
             humans++;
+        if (F(p, O_PS_TEAM, i32) != team) {
+            team = F(p, O_PS_TEAM, i32);
+            teams++;
+        }
     }
-    end = (u8)(alive <= 1 || humans == 0);
+    /* Teams: the match goes on while two teams have someone alive. (teams
+     * counts changes along PlayerArray; host_teams keeps a team's members
+     * together there only for bots, so check every pair instead.) */
+    if (size > 1) {
+        i32 j, one = 1;
+        u8 *first = 0;
+        for (j = 0; ps && j < n; j++) {
+            u8 *p = ps[j];
+            u32 fl;
+            if (!p)
+                continue;
+            fl = F(p, O_PS_FLAGS, u32);
+            if ((fl & 1) || !F(p, O_PS_CONTESTANT, u8) || FN(R_PS_HAS_LEFT, ps_bool_fn)(p) || !FN(R_PS_IS_ALIVE, ps_bool_fn)(p))
+                continue;
+            if (!first)
+                first = p;
+            else if (F(p, O_PS_TEAM, i32) != F(first, O_PS_TEAM, i32) || F(p, O_PS_TEAM, i32) <= 0)
+                one = 0;
+        }
+        end = (u8)(alive == 0 || one || humans == 0);
+    } else
+        end = (u8)(alive <= 1 || humans == 0);
     if (end && !end_traced && trace_begin(&l, "match-end-rule")) {
         end_traced = 1;
         kv_s(&l, "alive", alive);
         kv_s(&l, "humans", humans);
+        kv_s(&l, "team_size", size);
         kv(&l, "stock_would_end", FN(R_FFA_SHOULD_END, gm_bool_fn)(gm), 0);
         trace_end(&l);
     }
@@ -2268,8 +2427,10 @@ void np_tick_flush(void *driver, float dt)
         u8 *gm = world ? F(world, O_WORLD_AUTH_GM, u8 *) : 0;
         if (gm && prematch_expected() > 0) {
             prematch_tick((u8 *)driver, world, gm);  /* the real pre-match phase; no no-end flag */
-            if (match_state(world) != 3)
+            if (match_state(world) != 3) {
                 host_no_player((u8 *)driver, world);
+                host_teams(world);
+            }
             if (!extra_bot && host_player_gone && prematch_released && match_state(world) == 1) {
                 struct line l;
                 u8 *gs = F(world, O_W_GAMESTATE, u8 *);
