@@ -324,8 +324,25 @@ const hasProfile = (userID) => typeof userID === 'string' && Object.prototype.ha
 // SAVE_DELAY_MS, off the request path. See store.js. Compact JSON: the whole
 // file is serialized on the event loop for each write, and indenting made it
 // ~70% larger and ~50% slower to produce.
-const profileStore = new CoalescedJsonFile(PROFILE_FILE, () => JSON.stringify(profiles), {
-  delayMs: SAVE_DELAY_MS,
+// Once a serialize takes over 50 ms (a big file), writes come every 5 s
+// instead (performance review P5). One JSON file has a ceiling: past
+// CULLING_PROFILES_WARN_BYTES (200 MB) the log says so loudly, at most hourly.
+// The lasting fix is a database (SQLite, one row per profile, written as it
+// changes): a documented follow-up, not done here.
+const PROFILES_WARN_BYTES = intEnv('CULLING_PROFILES_WARN_BYTES', 200 * 1024 * 1024);
+let profilesWarnedAt = 0;
+function serializeProfiles() {
+  const text = JSON.stringify(profiles);
+  if (text.length > PROFILES_WARN_BYTES && Date.now() - profilesWarnedAt > 3600 * 1000) {
+    profilesWarnedAt = Date.now();
+    metrics.error('profilesFileLarge');
+    log('WARNING: profiles.json is ' + (text.length / 1048576).toFixed(1) + ' MB (over ' + (PROFILES_WARN_BYTES / 1048576).toFixed(1)
+      + ' MB): every save serializes all of it on the event loop. Move the profiles to a database.');
+  }
+  return text;
+}
+const profileStore = new CoalescedJsonFile(PROFILE_FILE, serializeProfiles, {
+  delayMs: SAVE_DELAY_MS, slowSerializeMs: 50, slowDelayMs: Math.max(SAVE_DELAY_MS, 5000),
   onError: (e) => { metrics.error('save'); log('saving profiles failed:', e.message); }
 });
 function saveProfiles() {

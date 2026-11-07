@@ -78,10 +78,16 @@ function writeAtomicSync(file, text) {
 
 class CoalescedJsonFile {
   // serialize: () => string (the whole file's contents, read at write time).
-  constructor(file, serialize, { delayMs = 1000, onError = () => {}, now = Date.now } = {}) {
+  // slowSerializeMs / slowDelayMs: once a serialize took longer than
+  // slowSerializeMs (a big file: it blocks the event loop), writes come at
+  // most every slowDelayMs instead of delayMs, until one is fast again
+  // (performance review P5). 0: off.
+  constructor(file, serialize, { delayMs = 1000, onError = () => {}, now = Date.now, slowSerializeMs = 0, slowDelayMs = 0 } = {}) {
     this.file = file;
     this.serialize = serialize;
     this.delayMs = delayMs;
+    this.slowSerializeMs = slowSerializeMs;
+    this.slowDelayMs = slowDelayMs;
     this.onError = onError;
     this.now = now;
     this.dirty = false;
@@ -109,10 +115,17 @@ class CoalescedJsonFile {
     this.schedule();
   }
 
+  // The interval writes keep now: delayMs, or slowDelayMs after a slow serialize.
+  currentDelayMs() {
+    const slow = this.slowSerializeMs > 0 && this.slowDelayMs > this.delayMs && this.stats.lastSerializeMs > this.slowSerializeMs;
+    return slow ? this.slowDelayMs : this.delayMs;
+  }
+
   schedule() {
     if (this.timer || this.writing || !this.dirty) return;
-    // At most one write per delayMs: wait out the rest of the interval.
-    const wait = Math.max(0, Math.min(this.delayMs, this.lastWriteAt + this.delayMs - this.now()));
+    // At most one write per interval: wait out the rest of it.
+    const delay = this.currentDelayMs();
+    const wait = Math.max(0, Math.min(delay, this.lastWriteAt + delay - this.now()));
     this.timer = setTimeout(() => { this.timer = null; this.writeAsync(); }, Math.max(wait, 1));
     // The pending write must not keep a stopping process alive; flushSync covers it.
     if (this.timer.unref) this.timer.unref();
