@@ -174,5 +174,52 @@ test('cancelMatch drops the pending match unscored: no last place, nothing count
   assert.strictEqual(R.cancelMatch(p, 'duo', next.match.id), false, 'another mode is left alone');
 });
 
+test('the entry\'s delta is the change applied, after the 1399 cap and the floor of 0', () => {
+  const p = profile();
+  R.ensure(p);
+  Object.assign(p.ranked, { rating: 1399, mmr: 1000, matches: 10 });
+  const { match } = R.startMatch(p);
+  const top = R.finishMatch(p, { matchId: match.id, placement: 1 }).entry;
+  assert.deepStrictEqual([top.ratingBefore, top.ratingAfter, top.delta], [1399, 1399, 0], 'a win at the cap: +0');
+  Object.assign(p.ranked, { rating: 3, mmr: 100 });      // bots around 100: last place would cost ~11
+  const low = R.startMatch(p).match;
+  const bottom = R.finishMatch(p, { matchId: low.id, placement: 16 }).entry;
+  assert.deepStrictEqual([bottom.ratingAfter, bottom.delta], [0, -3], 'last place near 0: -3, not the full loss');
+});
+
+// A ranked match running when the season ends (Season 1 ends 2027-02-01).
+const AFTER_S1 = Date.parse('2027-02-01T00:10:00Z');
+function pendingAtRollover() {
+  const p = profile();
+  const start = Date.parse('2027-01-31T23:55:00Z');
+  R.ensure(p, start);
+  Object.assign(p.ranked, { rating: 1100, mmr: 1100, matches: 8, wins: 2, peakRating: 1100 });
+  const { match } = R.startMatch(p, start);
+  assert.strictEqual(p.ranked.season, 'S1');
+  return { p, match };
+}
+
+test('a match pending at the season rollover is scored into the old season as last place, not dropped', () => {
+  const { p } = pendingAtRollover();
+  R.summary(p, AFTER_S1);
+  const old = p.ranked.past[0];
+  assert.strictEqual(p.ranked.season, 'S2');
+  assert.strictEqual(p.ranked.pending, null);
+  assert.strictEqual(old.season, 'S1');
+  assert.strictEqual(old.matches, 9, 'the abandoned match counted');
+  assert.ok(old.rating < 1100, 'as last place: ' + old.rating);
+});
+
+test('a result for a match pending at the rollover is scored into the old season with its placement', () => {
+  const { p, match } = pendingAtRollover();
+  const out = R.finishMatch(p, { matchId: match.id, placement: 1, field: 16 }, AFTER_S1);
+  assert.ok(out.entry && !out.error, JSON.stringify(out));
+  assert.strictEqual(out.entry.placement, 1);
+  const old = p.ranked.past[0];
+  assert.deepStrictEqual([old.season, old.matches, old.wins], ['S1', 9, 3]);
+  assert.ok(old.rating > 1100, 'the win counted: ' + old.rating);
+  assert.deepStrictEqual([p.ranked.season, p.ranked.matches, p.ranked.pending], ['S2', 0, null], 'the new season starts fresh');
+});
+
 if (failures) { console.log(failures + ' failing'); process.exit(1); }
 console.log('all ranked tests passed');

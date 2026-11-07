@@ -219,7 +219,12 @@ function record(profile, mode = 'solo') {
 // season. Profiles from before the team modes have no rankedTeams: it is
 // added, with only the modes played, when a team mode is first used; Solo's
 // record (profile.ranked) is never touched by another mode.
-function ensure(profile, now = Date.now(), mode = 'solo') {
+// A match still pending from the season that ended is scored into that season
+// as last place before the new one starts (it used to be dropped, penalty and
+// all); `grant` gives the old season's tier rewards it may complete.
+// opts.keepSeason: leave the record in its season (finishMatch scoring a
+// result that started last season, then rolling over itself).
+function ensure(profile, now = Date.now(), mode = 'solo', grant = null, opts = {}) {
   const id = modeId(mode);
   let r;
   if (id === 'solo') {
@@ -241,7 +246,10 @@ function ensure(profile, now = Date.now(), mode = 'solo') {
   if (!Number.isFinite(r.peakRating)) { r.peakRating = r.rating; r.peakTier = tierFor(r.rating).name; }
   if (r.pending !== null && !isRecord(r.pending)) r.pending = null;
   const season = seasonAt(now);
-  if (r.season !== season.id) rollover(r, season);
+  if (r.season !== season.id && !opts.keepSeason) {
+    if (isRecord(r.pending)) apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant, id);
+    rollover(r, season);
+  }
   // Profiles from before the season caps (or imported): brought within them.
   if (r.rating > CONFIG.maxRating) r.rating = CONFIG.maxRating;
   if (r.mmr > CONFIG.maxRating) r.mmr = CONFIG.maxRating;
@@ -258,10 +266,12 @@ function apply(r, match, result, now, grant, mode = 'solo') {
   const order = opponentsFor(match.id, match.mmr, match.field);
   const k = isPlacement(r) ? CONFIG.kProvisional : CONFIG.kEstablished;
   const before = r.rating;
-  const delta = Math.round(ratingChange(before, result.placement, order, k));
+  const change = Math.round(ratingChange(before, result.placement, order, k));
   const mmrDelta = ratingChange(r.mmr, result.placement, order, CONFIG.kMMR);
   const tierBefore = tierFor(before).name;
-  r.rating = Math.min(CONFIG.maxRating, Math.max(0, before + delta));
+  r.rating = Math.min(CONFIG.maxRating, Math.max(0, before + change));
+  // What was really applied (a win at the cap or a loss near 0 moves less).
+  const delta = r.rating - before;
   r.mmr = Math.min(CONFIG.maxRating, Math.max(0, r.mmr + mmrDelta));
   r.matches += 1;
   if (result.placement === 1) r.wins += 1;
@@ -321,7 +331,7 @@ function apply(r, match, result, now, grant, mode = 'solo') {
 // (teamField); Solo starts at the stock 16 and the result may say more.
 function startMatch(profile, now = Date.now(), grant, opts = {}) {
   const mode = modeId(opts.mode);
-  const r = ensure(profile, now, mode);
+  const r = ensure(profile, now, mode, grant);
   let abandoned = null;
   if (r.pending) {
     abandoned = apply(r, r.pending, { placement: r.pending.field, abandoned: true }, now, grant, mode);
@@ -343,9 +353,21 @@ function startMatch(profile, now = Date.now(), grant, opts = {}) {
 // first result stands. Invalid results are rejected without changing anything.
 // A team match's placement is the team's, 1..its number of teams; its field is
 // the one it started with (a result can't change it).
+// A result for a match that started last season (pending at the rollover) is
+// scored into that season, then the new season starts.
 function finishMatch(profile, result, now = Date.now(), grant, mode = 'solo') {
   mode = modeId(mode);
-  const r = ensure(profile, now, mode);
+  const stored = record(profile, mode);
+  const season = seasonAt(now);
+  const late = Boolean(stored && isRecord(stored.pending) && stored.season !== season.id
+    && (!result.matchId || result.matchId === stored.pending.id));
+  const r = ensure(profile, now, mode, grant, { keepSeason: late });
+  const out = finishPending(r, result, now, grant, mode);
+  if (late && r.season !== season.id) rollover(r, season);
+  return out;
+}
+
+function finishPending(r, result, now, grant, mode) {
   if (result.matchId && Object.prototype.hasOwnProperty.call(r.processed, result.matchId)) {
     const entry = r.history.find((h) => h.matchId === result.matchId) || { matchId: result.matchId };
     return { entry, duplicate: true };

@@ -1339,16 +1339,24 @@ const lobbies = new MatchLobbies({
   onError: (e, lobby, where) => lobbyFailed(e, lobby, where)
 });
 
+// A ranked record's rating this season, within the season cap, or null (none,
+// or last season's: a record is only brought to the new season when played).
+function seasonRating(rec) {
+  return rec && Number.isFinite(rec.rating) && rec.season === ranked.CONFIG.season.id
+    ? Math.min(ranked.CONFIG.maxRating, rec.rating) : null;
+}
+
 // What other players see of someone in a lobby: no IDs, nothing private.
 // `playlist`: the lobby's; a ranked team playlist shows that mode's rank (none
-// before the player's first match in it), anything else the Solo rank.
+// before the player's first match in it), anything else the Solo rank; this
+// season's only.
 function lobbyCard(userID, playlist) {
   const p = peekProfile(userID);
   const key = accounts.keyForUserID(userID);
   const a = key ? accounts.get(key) : null;
   const teamMode = ranked.modeForPlaylist(playlist);
   const rec = teamMode && teamMode !== 'solo' ? ranked.record(p, teamMode) : p && p.ranked;
-  const rating = rec && Number.isFinite(rec.rating) ? Math.min(ranked.CONFIG.maxRating, rec.rating) : null;
+  const rating = seasonRating(rec);
   return {
     name: a ? a.username : 'Player',
     level: p && p.stats ? Math.min(SEASON.maxLevel, p.stats.level || 1) : 1,
@@ -1927,9 +1935,10 @@ function playerCard(userID, viewer) {
   });
   // What they are doing now: for themselves, their friends and their party only.
   if (viewer && mayWatch(viewer, userID)) card.status = statusOf(userID);
+  // Ranked Solo this season (null: not played this season), like the team modes.
   const r = p.ranked;
-  if (r && Number.isFinite(r.rating)) {
-    const rating = Math.min(ranked.CONFIG.maxRating, r.rating);
+  const rating = seasonRating(r);
+  if (rating !== null && (r.matches || 0) > 0) {
     card.ranked = {
       season: { id: ranked.CONFIG.season.id, name: ranked.CONFIG.season.name },
       tier: ranked.tierFor(rating).name, rating,
