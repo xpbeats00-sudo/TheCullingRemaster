@@ -264,7 +264,7 @@ def finish_chain(a, chain, result):
             shutil.copy2(src, os.path.join(a.out, name))
     finished = os.path.join(a.out, "finished.json")
     result["chain"] = {"assignment": chain["assignment"]["matchId"],
-                       "verify": [l for l in read(os.path.join(a.out, "agent.log")).splitlines() if '"verify"' in l],
+                       "ticket_uses": [l for l in read(os.path.join(a.out, "agent.log")).splitlines() if "\"ticket-used\"" in l],
                        "finished": json.load(open(finished)) if os.path.exists(finished) else None}
     os.environ.pop("CULLING_NETPLAY_PREMATCH", None)
     os.environ.pop("CULLING_NETPLAY_CONTROL", None)

@@ -7,13 +7,18 @@
 //     (the assignment), written to <control>/assignment.json for whoever
 //     starts the host game (patch/netplay_run.py in the test);
 //   - posts `ready` once the host game writes <control>/listening;
-//   - answers the host's PreLogin: <control>/verify-<n>.req holds a player's
-//     ticket (?Nonce=, as the stock client sends it); the agent asks `verify-ticket` and writes
-//     verify-<n>.ans: "ok <team> <userID>" or "deny <reason>";
+//   - writes <control>/tickets.txt for the host's PreLogin, which checks a
+//     player's ticket (?Nonce=, as the stock client sends it) locally: one
+//     line per ticket still good, "<SHA-256> <team> <userID>", from the
+//     assignment's tickets (the ready answer and every heartbeat), written
+//     to a temp file and renamed over it. No round trip at PreLogin;
+//   - confirms each use the host reports (<control>/used-<n>: "<hash>
+//     <userID>") with the backend's `ticket-used`, which keeps every ticket
+//     single use;
 //   - posts the one `result` once the host writes <control>/result.done
 //     (result.txt: each joined player's placement, kills, damage and time
-//     alive, by the verify request it passed with; roster players who never
-//     joined are reported joined: false).
+//     alive, by userID; roster players who never joined are reported
+//     joined: false).
 //
 // The game talks to the agent only through those files (the host module is a
 // no-CRT blob with no network or crypto of its own).
@@ -95,8 +100,44 @@ let heartbeatMs = 2000;
 let assignment = null;      // the match being run
 let readyPosted = false;
 let resultPosted = false;
-const verified = new Map(); // verify request n -> {userID, team}
-const pending = new Set();  // verify requests being answered
+const verified = new Map(); // used-<n> -> {userID, team}: the players the host let in
+const confirming = new Set(); // used-<n> being confirmed
+const tickets = new Map();  // SHA-256 -> {id, userID, team, until (local ms), used}
+let ticketsText = null;     // what tickets.txt holds
+const SAFE_USER = /^[\x21-\x7e]{1,47}$/;
+
+// A file the host reads: written whole to a temp file, then renamed over it
+// (the host opens with delete sharing, so the rename never waits on it).
+function atomicWrite(file, text) {
+  const tmp = file + ".tmp";
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
+
+// The assignment's tickets (only once the match runs): kept by hash.
+function takeTickets(list) {
+  if (!Array.isArray(list)) return;
+  for (const t of list) {
+    if (!t || typeof t.hash !== "string" || !/^[0-9a-f]{64}$/.test(t.hash) || typeof t.userID !== "string") continue;
+    const had = tickets.get(t.hash);
+    tickets.set(t.hash, { id: t.id, userID: t.userID, team: parseInt(t.team, 10) || 0,
+      until: Date.now() + Math.max(0, parseInt(t.expiresInMs, 10) || 0), used: !!t.used || !!(had && had.used) });
+  }
+  writeTickets();
+}
+
+// tickets.txt: every ticket not used and not expired. Not written before the
+// match runs (the host refuses logins while there is none).
+function writeTickets() {
+  if (!assignment || !readyPosted) return;
+  const now = Date.now();
+  const text = [...tickets.entries()].filter(([, t]) => !t.used && t.until > now && SAFE_USER.test(t.userID))
+    .map(([hash, t]) => hash + " " + t.team + " " + t.userID + "\n").join("");
+  if (text === ticketsText) return;
+  atomicWrite(ctl("tickets.txt"), text);
+  ticketsText = text;
+  log("tickets", { count: text ? text.split("\n").length - 1 : 0 });
+}
 
 // ---- the host game (with --launcher) -----------------------------------------
 
@@ -187,7 +228,7 @@ async function watchHost() {
 // A fresh control folder for a new match: the host numbers its verify requests from 1.
 function clearControl() {
   for (const f of fs.readdirSync(o.control))
-    if (/^(listening|verify-\d+\.(req|ans)|result\.(txt|done|posted)|host\.(pid|func\.log))$/.test(f)) {
+    if (/^(listening|tickets\.(txt|txt\.tmp)|used-\d+|result\.(txt|done|posted)|host\.(pid|func\.log))$/.test(f)) {
       try { fs.unlinkSync(ctl(f)); } catch { /* in use */ }
     }
 }
@@ -198,6 +239,8 @@ function drop() {
   assignment = null;
   readyPosted = false;
   verified.clear();
+  tickets.clear();
+  ticketsText = null;
 }
 
 function take(a) {
@@ -206,12 +249,14 @@ function take(a) {
     if (assignment && readyPosted) drop();
     return;
   }
-  if (assignment && assignment.matchId === a.matchId) return;
+  if (assignment && assignment.matchId === a.matchId) { takeTickets(a.tickets); return; }
   assignment = a;
   readyPosted = false;
   resultPosted = false;
   verified.clear();
-  pending.clear();
+  confirming.clear();
+  tickets.clear();
+  ticketsText = null;
   if (o.launcher) { stopHost("new match"); clearControl(); }
   fs.writeFileSync(ctl("assignment.json"), JSON.stringify(a, null, 1));
   log("assignment", { matchId: a.matchId, playlist: a.playlist, players: a.players, bots: a.bots, field: a.field,
@@ -238,22 +283,26 @@ async function heartbeat() {
 async function postReady() {
   const r = await call("ready", { matchId: assignment.matchId });
   readyPosted = r.status === 200;
-  log("ready", { status: r.status, json: r.json });
+  log("ready", { status: r.status, tickets: r.json && r.json.assignment ? (r.json.assignment.tickets || []).length : null,
+    error: r.json && r.json.error });
+  if (readyPosted && r.json && r.json.assignment && r.json.assignment.matchId === assignment.matchId) takeTickets(r.json.assignment.tickets);
 }
 
-async function answer(n) {
-  pending.add(n);
-  const ticket = fs.readFileSync(ctl("verify-" + n + ".req"), "utf8").trim();
+// used-<n> from the host: "<hash> <userID>\n" (the newline: written whole).
+// The player is in; the backend is told (ticket-used), which uses the ticket
+// up there too. A refusal is logged (the host already let the player in).
+async function confirmUse(n) {
+  confirming.add(n);
   let text;
-  try {
-    const r = assignment ? await call("verify-ticket", { matchId: assignment.matchId, ticket }) : { status: 503, json: { error: "no-match" } };
-    if (r.status === 200 && r.json && r.json.ok) {
-      verified.set(n, { userID: r.json.userID, team: r.json.team });
-      text = "ok " + r.json.team + " " + r.json.userID;
-    } else text = "deny " + ((r.json && r.json.error) || "status-" + r.status);
-  } catch (e) { text = "deny backend-error"; }
-  fs.writeFileSync(ctl("verify-" + n + ".ans"), text);
-  log("verify", { request: n, answer: text, ticketLength: ticket.length });
+  try { text = fs.readFileSync(ctl("used-" + n), "utf8"); } catch { confirming.delete(n); return; }
+  if (!text.endsWith("\n")) { confirming.delete(n); return; }     // still being written: next poll
+  const [hash, userID] = text.trim().split(/\s+/);
+  const t = tickets.get(hash);
+  if (t) { t.used = true; writeTickets(); }
+  verified.set(n, { userID: t ? t.userID : userID, team: t ? t.team : 0, hash });
+  let r;
+  try { r = await call("ticket-used", { matchId: assignment.matchId, hash, userID }); } catch (e) { r = { status: 0, json: { error: e.message } }; }
+  log("ticket-used", { n, userID, status: r.status, ok: !!(r.json && r.json.ok), error: r.json && r.json.error });
 }
 
 // result.txt -> the backend's result body (section 4.4).
@@ -262,10 +311,13 @@ function resultBody(text) {
   const lines = text.split(/\r?\n/).filter(Boolean);
   const head = Object.assign({}, ...lines.filter((l) => !l.startsWith("player ")).map(kv));
   const byUser = new Map();
+  const roster = new Set(assignment.teams.flatMap((t) => t.players.map((p) => p.userID)));
   for (const l of lines.filter((l) => l.startsWith("player "))) {
     const f = kv(l);
+    // By the userID the host recorded from the player's ticket; else by its used-<n>.
     const v = verified.get(parseInt(f.n, 10));
-    if (v && f.record !== "0") byUser.set(v.userID, f);
+    const userID = f.user && roster.has(f.user) ? f.user : v ? v.userID : null;
+    if (userID && f.record !== "0") byUser.set(userID, f);
   }
   const field = assignment.field || parseInt(head.field, 10) || 16;
   const sinceReady = Math.max(1, parseInt(head.elapsed, 10) || 0);
@@ -316,9 +368,12 @@ async function postResult() {
 async function poll() {
   try {
     if (assignment && !readyPosted && exists("listening")) await postReady();
-    for (const f of fs.readdirSync(o.control)) {
-      const m = /^verify-(\d+)\.req$/.exec(f);
-      if (m && !pending.has(+m[1]) && !exists("verify-" + m[1] + ".ans")) answer(+m[1]).catch((e) => log("verify-error", { error: e.message }));
+    if (assignment && readyPosted) {
+      writeTickets();                       // drops tickets that expired
+      for (const f of fs.readdirSync(o.control)) {
+        const m = /^used-(\d+)$/.exec(f);
+        if (m && !confirming.has(+m[1])) confirmUse(+m[1]).catch((e) => log("ticket-used-error", { error: e.message }));
+      }
     }
     if (assignment && readyPosted && !resultPosted && exists("result.done")) await postResult();
     if (o.launcher) await watchHost();

@@ -213,15 +213,13 @@ struct fstring { void *data; i32 num; i32 max; };
  * (gameserver/agent.js), which speaks the backend's signed game-server API.
  * The host and the agent talk through small files there:
  *   listening            the host writes it once it listens (the agent posts ready)
- *   verify-<n>.req/.ans  PreLogin: the player's ticket (?Nonce=), the
- *                        agent's answer "ok <team>" or "deny <reason>"
+ *   tickets.txt          the agent: the match's tickets, by hash (PreLogin's check)
+ *   used-<n>             the host: a ticket used ("<hash> <userID>")
  *   result.txt + .done   at the end of the match: each joined player's result
  * Without the variable nothing here runs. */
-#define IAT_SLEEP          0x253f220
 #define IAT_READFILE       0x253f260
 #define IAT_CLOSEHANDLE    0x253f330
 #define R_STRING_RESIZE    0x1a3420    /* TArray<TCHAR>::ResizeForCopy(NewMax, PrevMax) */
-typedef void (*sleep_fn)(u32 ms);
 typedef i32 (*readfile_fn)(void *h, void *buf, u32 n, u32 *got, void *ovl);
 typedef i32 (*closehandle_fn)(void *h);
 typedef void (*resize_fn)(struct fstring *s, i32 new_max, i32 prev_max);
@@ -319,21 +317,175 @@ static void set_fstring(struct fstring *e, const char *msg)
         ((u16 *)e->data)[i] = (u16)(u8)msg[i];
 }
 
-static i32 login_seq;               /* verify requests made */
-static i32 last_verified;           /* the request PreLogin just passed (0 none) */
-static i32 last_team;               /* its team, from the agent's "ok <team> <userID>" */
+/* ---- tickets: checked locally (no wait on the game thread) ---------------
+ *
+ * The agent writes <control>/tickets.txt (a temp file renamed over it) from
+ * the backend's assignment, one line per ticket the match still accepts:
+ *   <SHA-256 of the ticket: 64 lowercase hex> <team> <userID>
+ * PreLogin takes the ticket from ?Nonce= in the login options (the stock
+ * menu's ConnectToServer opens "<server>?Nonce=<nonce>", VA 0x1401dce90),
+ * hashes it and looks the hash up there: one small local file read. (The old
+ * check asked the backend through the agent and slept the game thread up to
+ * 8 s per login, so looping logins froze a running match.) A ticket lets one
+ * player in once: the join table keeps the hashes used. Each use goes to the
+ * agent as used-<n> ("<hash> <userID>\n"), which it confirms with the
+ * backend (ticket-used). A refusal costs a hash and a file read; refusals
+ * are traced only at first (32), then every 100th. */
 
-/* PreLogin with the agent: the ticket from ?Nonce= in the login options
- * (the stock menu's ConnectToServer opens "<server>?Nonce=<nonce>", VA
- * 0x1401dce90), checked by the backend through the agent (up to 8 s); a
- * missing ticket, a refusal or no answer refuses the login. */
+/* SHA-256 (FIPS 180-4). The round constants are read through a pointer: a
+ * static array indexed directly is addressed from __ImageBase, which this
+ * position-independent blob doesn't have. Byte copies and fills go through
+ * volatile pointers so the compiler doesn't turn them into memcpy/memset. */
+static const u32 sha_k_data[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2 };
+__declspec(noinline) static const u32 *sha_k(void) { return sha_k_data; }
+#define ROR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void sha_block(u32 *h, const u8 *p)
+{
+    const u32 *k = sha_k();
+    u32 w[64], a, b, c, d, e, f, g, hh, t1, t2;
+    i32 i;
+    for (i = 0; i < 16; i++)
+        w[i] = (u32)p[4 * i] << 24 | (u32)p[4 * i + 1] << 16 | (u32)p[4 * i + 2] << 8 | (u32)p[4 * i + 3];
+    for (i = 16; i < 64; i++) {
+        u32 s0 = ROR32(w[i - 15], 7) ^ ROR32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        u32 s1 = ROR32(w[i - 2], 17) ^ ROR32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    a = h[0]; b = h[1]; c = h[2]; d = h[3]; e = h[4]; f = h[5]; g = h[6]; hh = h[7];
+    for (i = 0; i < 64; i++) {
+        t1 = hh + (ROR32(e, 6) ^ ROR32(e, 11) ^ ROR32(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
+        t2 = (ROR32(a, 2) ^ ROR32(a, 13) ^ ROR32(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+        hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+
+/* The SHA-256 of msg[0..len) as 64 lowercase hex characters and a NUL. */
+static void sha256_hex(const char *msg, u32 len, char *out)
+{
+    u32 h[8], pos = 0, i, rem;
+    u8 block[64];
+    volatile u8 *vb = block;
+    u64 bits = (u64)len * 8;
+    h[0] = 0x6a09e667; h[1] = 0xbb67ae85; h[2] = 0x3c6ef372; h[3] = 0xa54ff53a;
+    h[4] = 0x510e527f; h[5] = 0x9b05688c; h[6] = 0x1f83d9ab; h[7] = 0x5be0cd19;
+    for (; len - pos >= 64; pos += 64)
+        sha_block(h, (const u8 *)msg + pos);
+    rem = len - pos;
+    for (i = 0; i < rem; i++)
+        vb[i] = (u8)msg[pos + i];
+    vb[rem] = 0x80;
+    for (i = rem + 1; i < 64; i++)
+        vb[i] = 0;
+    if (rem >= 56) {
+        sha_block(h, block);
+        for (i = 0; i < 64; i++)
+            vb[i] = 0;
+    }
+    for (i = 0; i < 8; i++)
+        vb[56 + i] = (u8)(bits >> (56 - 8 * i));
+    sha_block(h, block);
+    for (i = 0; i < 64; i++) {
+        u32 v = (h[i / 8] >> (28 - 4 * (i % 8))) & 15;
+        out[i] = (char)(v < 10 ? '0' + v : 'a' + v - 10);
+    }
+    out[64] = 0;
+}
+
+/* Who joined, with which ticket. Reached through a pointer: indexing a
+ * static array directly makes the compiler address it from __ImageBase,
+ * which this position-independent blob doesn't have. */
+#define MAX_JOINS          64
+#define USER_MAX           48          /* a userID ("steam:" + 17 digits) and room to spare */
+struct join_entry {
+    void *conn, *ps;
+    i32 seq, team;
+    u32 died;
+    char hash[65];                     /* the ticket's SHA-256: used once */
+    char user[USER_MAX];               /* the ticket's userID */
+};
+struct join_table {
+    struct join_entry e[MAX_JOINS];
+    i32 n;
+    u32 start;
+    /* The login PreLogin just let in (np_notify_control adds it once the
+     * stock login handling is done): 1 while valid. */
+    i32 pend;
+    i32 pend_team;
+    char pend_hash[65];
+    char pend_user[USER_MAX];
+    u32 refused;                       /* logins refused (the trace is capped) */
+};
+static struct join_table join_store;
+__declspec(noinline) static struct join_table *join_table(void) { return &join_store; }
+
+/* Ticket files are small: 16 players' lines are ~1.5 KB. */
+#define TICKETS_MAX        8192
+static char tickets_store[TICKETS_MAX];
+__declspec(noinline) static char *tickets_buf(void) { return tickets_store; }
+
+/* The ticket with this hash in tickets.txt: 1 (its team and userID), 0 not
+ * there, -1 no file (the agent hasn't written one: the match isn't ready). */
+static i32 ticket_lookup(const char *hash, i32 *team, char *user)
+{
+    char *buf = tickets_buf(), *p;
+    i32 n = ctl_read("tickets.txt", buf, TICKETS_MAX), k, u;
+    if (n < 0)
+        return -1;
+    for (p = buf; *p; ) {
+        for (k = 0; k < 64 && p[k] == hash[k]; k++)
+            ;
+        if (k == 64 && p[64] == ' ') {
+            *team = 0;
+            for (p += 65; *p >= '0' && *p <= '9'; p++)
+                *team = *team * 10 + (*p - '0');
+            if (*p == ' ')
+                p++;
+            for (u = 0; u < USER_MAX - 1 && p[u] > 0x20 && p[u] < 0x7f; u++)
+                user[u] = p[u];
+            user[u] = 0;
+            return 1;
+        }
+        while (*p && *p != '\n')
+            p++;
+        if (*p)
+            p++;
+    }
+    return 0;
+}
+
+static i32 str_same(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void str_copy(char *dst, const char *src, i32 max)
+{
+    i32 i;
+    for (i = 0; i < max - 1 && src[i]; i++)
+        ((volatile char *)dst)[i] = src[i];
+    dst[i] = 0;
+}
+
+/* PreLogin's ticket check: the ticket from ?Nonce=, known (tickets.txt)
+ * and not used yet. On success the login is pending (join_table pend). */
 static void ticket_check(struct fstring *options, struct fstring *error)
 {
     const char *key = "?nonce=";       /* matched case-insensitively */
+    struct join_table *t = join_table();
     u16 *o = (u16 *)options->data;
-    char name[32], req[400], ans[200], *q;
-    i32 i, k, start = -1, len, n = options->num, waited;
-    last_verified = 0;
+    char tok[400], hash[65], user[USER_MAX];
+    i32 i, k, start = -1, len, n = options->num, team = 0, found;
     for (i = 0; o && i < n && start < 0; i++) {
         for (k = 0; key[k] && i + k < n && (o[i + k] | (o[i + k] >= 'A' && o[i + k] <= 'Z' ? 0x20 : 0)) == (u16)key[k]; k++)
             ;
@@ -344,42 +496,59 @@ static void ticket_check(struct fstring *options, struct fstring *error)
         set_fstring(error, "No match ticket");
         return;
     }
-    for (len = 0; start + len < n && o[start + len] && o[start + len] != '?' && len < (i32)sizeof(req) - 2; len++)
-        req[len] = (char)o[start + len];
-    req[len] = 0;
-    login_seq++;
-    q = put_str(name, "verify-");
-    q = put_dec(q, login_seq);
-    put_str(q, ".req");
-    if (!ctl_write(name, req, (u32)len)) {
-        set_fstring(error, "Server error (ticket)");
+    for (len = 0; start + len < n && o[start + len] && o[start + len] != '?' && len < (i32)sizeof(tok) - 2; len++)
+        tok[len] = (char)o[start + len];
+    tok[len] = 0;
+    if (t->n >= MAX_JOINS) {
+        set_fstring(error, "Server full");
         return;
     }
-    put_str(q, ".ans");
-    for (waited = 0; waited < 8000; waited += 20) {
-        if (ctl_read(name, ans, sizeof(ans)) > 0) {
-            if (ans[0] == 'o' && ans[1] == 'k') {
-                last_verified = login_seq;
-                last_team = 0;
-                for (k = 3; ans[k] >= '0' && ans[k] <= '9'; k++)
-                    last_team = last_team * 10 + (ans[k] - '0');
-                return;
-            }
-            set_fstring(error, "Match ticket refused");
+    sha256_hex(tok, (u32)len, hash);
+    found = ticket_lookup(hash, &team, user);
+    if (found < 0) {
+        set_fstring(error, "Server not ready");
+        return;
+    }
+    if (!found) {
+        set_fstring(error, "Match ticket refused");
+        return;
+    }
+    for (i = 0; i < t->n; i++)
+        if (str_same(t->e[i].hash, hash)) {
+            set_fstring(error, "Match ticket already used");
             return;
         }
-        (*(sleep_fn *)(image_base() + IAT_SLEEP))(20);
-    }
-    set_fstring(error, "Match ticket not checked in time");
+    t->pend = 1;
+    t->pend_team = team;
+    str_copy(t->pend_hash, hash, 65);
+    str_copy(t->pend_user, user, USER_MAX);
 }
 
-/* Which verify request each joined connection passed with. Reached through
- * a pointer: indexing a static array directly makes the compiler address it
- * from __ImageBase, which this position-independent blob doesn't have. */
-#define MAX_JOINS          64
-struct join_table { void *conn[MAX_JOINS]; void *ps[MAX_JOINS]; i32 seq[MAX_JOINS]; i32 team[MAX_JOINS]; u32 died[MAX_JOINS]; i32 n; u32 start; };
-static struct join_table join_store;
-__declspec(noinline) static struct join_table *join_table(void) { return &join_store; }
+/* A joined player: in the table, and its ticket's use reported to the agent. */
+static void add_join(void *conn)
+{
+    struct join_table *t = join_table();
+    struct join_entry *e;
+    char name[24], buf[140], *q;
+    if (!t->pend || t->n >= MAX_JOINS)
+        return;
+    e = &t->e[t->n++];
+    e->conn = conn;
+    e->ps = 0;
+    e->team = t->pend_team;
+    e->seq = t->n;
+    e->died = 0;
+    str_copy(e->hash, t->pend_hash, 65);
+    str_copy(e->user, t->pend_user, USER_MAX);
+    t->pend = 0;
+    q = put_str(name, "used-");
+    put_dec(q, e->seq);
+    q = put_str(buf, e->hash);
+    q = put_str(q, " ");
+    q = put_str(q, e->user);
+    q = put_str(q, "\n");
+    ctl_write(name, buf, (u32)(q - buf));
+}
 
 static void *find_game_net_driver(void *engine, void *world)
 {
@@ -563,16 +732,19 @@ static i32 prematch_expected(void)
 void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
 {
     struct line l;
+    struct join_table *t = join_table();
+    t->pend = 0;
     if (ctl_on()) {
         ticket_check((struct fstring *)options, (struct fstring *)error);
         if (((struct fstring *)error)->num) {
-            if (trace_begin(&l, "prelogin-refused")) {
+            t->refused++;
+            if ((t->refused <= 32 || t->refused % 100 == 0) && trace_begin(&l, "prelogin-refused")) {
                 /* The options as given (printable ASCII, the first 300
                  * characters): where a client's ticket did or didn't land. */
                 struct fstring *o = (struct fstring *)options;
                 u16 *c = (u16 *)o->data;
                 i32 i;
-                kv(&l, "request", (u64)login_seq, 0);
+                kv(&l, "refused", (u64)t->refused, 0);
                 kv(&l, "options_len", (u64)(o->num > 0 ? o->num : 0), 0);
                 put_s(&l, " options=");
                 for (i = 0; c && i < o->num && c[i] && i < 300 && l.n < sizeof(l.b) - 2; i++)
@@ -591,7 +763,7 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
     if (trace_begin(&l, "prelogin")) {
         kv(&l, "error_len", (u64)((struct fstring *)error)->num, 0);
         kv(&l, "game_checks", prematch_expected() > 0, 0);
-        kv(&l, "ticket_request", (u64)last_verified, 0);
+        kv(&l, "ticket", (u64)t->pend, 0);
         trace_end(&l);
     }
 }
@@ -609,14 +781,11 @@ void np_notify_control(void *notify, void *conn, u8 type, void *bunch)
         trace_end(&l);
     }
     if (server && type == 5)
-        last_verified = 0;
+        join_table()->pend = 0;
     FN(R_NOTIFY_CONTROL, notify_control_fn)(notify, conn, type, bunch);
-    if (server && type == 5 && conn && last_verified && join_table()->n < MAX_JOINS) {
-        struct join_table *t = join_table();
-        t->conn[t->n] = conn;
-        t->team[t->n] = last_team;
-        t->seq[t->n++] = last_verified;
-    }
+    if (server && type == 5 && conn)
+        add_join(conn);
+    join_table()->pend = 0;
     if (trace_begin(&l, "control-done")) {
         kv(&l, "type", type, 0);
         kv(&l, "state", conn ? (u64)F(conn, O_CONN_STATE, i32) : 0, 0);
@@ -1538,14 +1707,14 @@ static void host_teams(u8 *world)
     for (k = 0; k <= MAX_TEAMS; k++)
         used[k] = 0;
 #ifdef NETPLAY_TEST
-    if (t->n >= 2 && t->team[1] == t->team[0] && env_on(split_var, &split_state))
-        t->team[1] = t->team[0] + 1;
+    if (t->n >= 2 && t->e[1].team == t->e[0].team && env_on(split_var, &split_state))
+        t->e[1].team = t->e[0].team + 1;
 #endif
     for (i = 0; i < t->n; i++)
-        if (t->ps[i] && t->team[i] > 0 && t->team[i] <= MAX_TEAMS) {
-            used[t->team[i]]++;
-            if (team_differs((u8 *)t->ps[i], world, t->team[i]))
-                FN(R_SET_TEAM_NUM, set_team_fn)(t->ps[i], t->team[i], 1);
+        if (t->e[i].ps && t->e[i].team > 0 && t->e[i].team <= MAX_TEAMS) {
+            used[t->e[i].team]++;
+            if (team_differs((u8 *)t->e[i].ps, world, t->e[i].team))
+                FN(R_SET_TEAM_NUM, set_team_fn)(t->e[i].ps, t->e[i].team, 1);
         }
     for (i = 0; i < num; i++) {
         u8 *p = ps[i];
@@ -1568,8 +1737,8 @@ static void host_teams(u8 *world)
         if (now - teams_trace >= 5000 && trace_begin(&l, "teams")) {
             teams_trace = now;
             for (i = 0; i < t->n; i++) {
-                kv_s(&l, "join_team", t->team[i]);
-                kv(&l, "join_ps", (u64)t->ps[i], 1);
+                kv_s(&l, "join_team", t->e[i].team);
+                kv(&l, "join_ps", (u64)t->e[i].ps, 1);
             }
             put_s(&l, " order=");
             for (i = 0; i < num && i < 40; i++) {
@@ -1642,17 +1811,17 @@ static void ctl_track_joins(u8 *driver, u8 *world)
     if (!t->start && match_state(world) == 2)
         t->start = now;
     for (i = 0; i < t->n; i++) {
-        u8 *r = t->ps[i] ? record_of(world, (u8 *)t->ps[i]) : 0;
-        if (t->start && !t->died[i] && r && !F(r, REC_ALIVE, u8))
-            t->died[i] = now;
+        u8 *r = t->e[i].ps ? record_of(world, (u8 *)t->e[i].ps) : 0;
+        if (t->start && !t->e[i].died && r && !F(r, REC_ALIVE, u8))
+            t->e[i].died = now;
     }
     for (i = 0; i < t->n; i++) {
-        if (t->ps[i])
+        if (t->e[i].ps)
             continue;
         for (c = 0; conns && c < nconn; c++)
-            if (conns[c] == t->conn[i]) {
+            if (conns[c] == t->e[i].conn) {
                 u8 *pc = F(conns[c], O_CONN_PC, u8 *);
-                t->ps[i] = pc ? F(pc, O_C_PLAYERSTATE, u8 *) : 0;
+                t->e[i].ps = pc ? F(pc, O_C_PLAYERSTATE, u8 *) : 0;
             }
     }
 }
@@ -1679,9 +1848,11 @@ static void ctl_result(u8 *driver, u8 *world)
     q = put_dec(q, gs ? F(gs, O_GS_ELAPSED, i32) : 0);
     q = put_str(q, "\n");
     for (i = 0; i < t->n && q - buf < (i32)sizeof(buf) - 200; i++) {
-        r = t->ps[i] ? record_of(world, (u8 *)t->ps[i]) : 0;
+        r = t->e[i].ps ? record_of(world, (u8 *)t->e[i].ps) : 0;
         q = put_str(q, "player n=");
-        q = put_dec(q, t->seq[i]);
+        q = put_dec(q, t->e[i].seq);
+        q = put_str(q, " user=");
+        q = put_str(q, t->e[i].user);
         if (!r) {
             q = put_str(q, " record=0\n");
             continue;
@@ -1701,7 +1872,7 @@ static void ctl_result(u8 *driver, u8 *world)
         q = put_dec(q, F(r, REC_VICTIMS + 8, i32) + F(r, REC_BOT_VICTIMS, i32));
         {
             u8 *sb = scoreboard_entry(world, r);
-            u32 end = t->died[i] ? t->died[i] : (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+            u32 end = t->e[i].died ? t->e[i].died : (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
             q = put_str(q, " damage=");
             q = put_dec(q, sb ? F(sb, SB_DAMAGE, i32) : 0);
             q = put_str(q, " alive_s=");

@@ -29,6 +29,8 @@ import netplay_blob as NP  # noqa: E402
 import build_netplay  # noqa: E402
 
 IMAGE_BASE = 0x140000000
+HERE = os.path.dirname(os.path.abspath(__file__))
+HARNESS = os.path.join(HERE, "test_netplay_native.c")
 STUB_VA = 0x14143E6F0            # the shared "xor al,al; ret" the stock Listen call targets
 
 
@@ -260,7 +262,7 @@ def test_real_exe(path):
     iat = _iat_names(data, sects)
     want = {"IAT_WRITEFILE": "WriteFile", "IAT_GETENVW": "GetEnvironmentVariableW",
             "IAT_CREATEFILEW": "CreateFileW", "IAT_GETTICKCOUNT": "GetTickCount",
-            "IAT_SLEEP": "Sleep", "IAT_READFILE": "ReadFile", "IAT_CLOSEHANDLE": "CloseHandle"}
+            "IAT_READFILE": "ReadFile", "IAT_CLOSEHANDLE": "CloseHandle"}
     import re as _re
     for macro, fn in want.items():
         slot = int(_re.search(r"#define %s\s+(0x[0-9a-f]+)" % macro, src).group(1), 16)
@@ -433,8 +435,86 @@ def test_real_exe(path):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---- the module's code itself, against fake game objects --------------------
+
+def build_harness(tmp):
+    """test_netplay_native.exe: the harness linked with netplay.c compiled
+    with the blob's own flags (the release build)."""
+    import subprocess
+    cl = build_netplay.find_cl()
+    env = dict(os.environ, PATH=os.path.dirname(cl) + os.pathsep + os.environ.get("PATH", ""))
+    vc = os.path.abspath(os.path.join(os.path.dirname(cl), "..", "..", ".."))
+    kits = r"C:\Program Files (x86)\Windows Kits\10"
+    inc, lib = [os.path.join(vc, "include")], [os.path.join(vc, "lib", "x64")]
+    vers = sorted(os.listdir(os.path.join(kits, "Include"))) if os.path.isdir(os.path.join(kits, "Include")) else []
+    for sub in ("ucrt", "um", "shared"):
+        if vers:
+            inc.append(os.path.join(kits, "Include", vers[-1], sub))
+            lib.append(os.path.join(kits, "Lib", vers[-1], sub, "x64"))
+    env["INCLUDE"] = os.pathsep.join(p for p in inc + [env.get("INCLUDE", "")] if p)
+    env["LIB"] = os.pathsep.join(p for p in lib + [env.get("LIB", "")] if p)
+    obj = os.path.join(tmp, "netplay.obj")
+    exe = os.path.join(tmp, "test_netplay_native.exe")
+    for cmd in ([cl] + build_netplay.CL_FLAGS + ["/Fo" + obj, build_netplay.SOURCE],
+                [cl, "/nologo", "/O1", "/W3", "/Fe" + exe, "/Fo" + os.path.join(tmp, "harness.obj"), HARNESS, obj]):
+        r = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, text=True)
+        assert r.returncode == 0, "build failed:\n" + r.stdout + r.stderr
+    return exe
+
+
+def run_scenario(exe, name, args, env, ctl, tickets=()):
+    """One harness process: a fresh control folder with tickets.txt (lines
+    "<sha256> <team> <userID>"), the module's environment, and the scenario."""
+    import subprocess
+    shutil.rmtree(ctl, ignore_errors=True)
+    os.makedirs(ctl)
+    if tickets:
+        with open(os.path.join(ctl, "tickets.txt"), "w", newline="\n") as f:
+            f.write("".join("%s %d %s\n" % (sha(tok), team, user) for tok, team, user in tickets))
+    e = {k: v for k, v in os.environ.items() if not k.startswith("CULLING_NETPLAY_")}
+    e.update({"CULLING_NETPLAY_CONTROL": ctl}, **env)
+    r = subprocess.run([exe, name] + list(args), capture_output=True, text=True, env=e, timeout=120)
+    for ln in r.stdout.splitlines():
+        print("      " + ln)
+    assert r.returncode == 0, "scenario %s failed (%d): %s" % (name, r.returncode, r.stdout[-400:] + r.stderr[-400:])
+
+
+def sha(text):
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_native():
+    tmp = tempfile.mkdtemp()
+    try:
+        exe = build_harness(tmp)
+        ctl = os.path.join(tmp, "control")
+        # Real-looking tickets (connticket.js's format): the module hashes the ?Nonce= value.
+        ta = "v1.eyJtIjoiYWJjIiwidSI6InN0ZWFtOjc2NTYxMTk3OTYwMjY2OTAyIn0.Zm9yZ2VkLW5vdC1yZWFsbHktYS1tYWMtYnV0LWxvbmc"
+        tb = "v1.eyJtIjoiYWJjIiwidSI6InN0ZWFtOjc2NTYxMTk3OTYwMjY2OTAzIn0.c2Vjb25kLXBsYXllcnMtdGlja2V0LW1hYy1oZXJlLW9r" + "x" * 150
+        ua, ub = "steam:76561197960266902", "steam:76561197960266903"
+        forged = ta[:-4] + "AAAA"
+        print("native: tickets (H1)")
+        run_scenario(exe, "tickets", [ta, sha(ta), ua, tb, sha(tb), ub, forged], {"CULLING_NETPLAY_PREMATCH": "2"}, ctl,
+                     [(ta, 1, ua), (tb, 2, ub)])
+        assert len(tb) > 200, "a ticket over three SHA-256 blocks"
+        print("native: pass")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_no_sleep():
+    # The module never sleeps: no call through kernel32's Sleep import slot
+    # (the old ticket check slept the game thread up to 8 s per login).
+    for test in (False, True):
+        assert struct.pack("<I", 0x253F220) not in PN.blob(test).BLOB, "the module references the Sleep import slot"
+    print("no sleep: pass (neither build references kernel32 Sleep)")
+
+
 if __name__ == "__main__":
     test_blob_is_position_independent()
+    test_no_sleep()
+    test_native()
     test_switches_only_in_the_test_build()
     test_stack_frames()
     test_trampolines()
