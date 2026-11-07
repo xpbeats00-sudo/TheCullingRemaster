@@ -256,8 +256,10 @@ const A = "steam:76561190000000801";
       assert.strictEqual(res.json.stats.kills, (before.stats.kills || 0) + 4, "a kill per round won at most");
       assert.ok(res.json.stats.totalDamage - (before.stats.totalDamage || 0) <= 5 * PAYOUT.damagePerRound);
       assert.deepStrictEqual(srv.profiles()[A].showdown, { won: 1, lost: 0 });
+      // The ticket was used: a repeat gets the same answer and pays nothing more.
       const again = await matchResult({ victory: true, showdownRound: 5 });
-      assert.notStrictEqual(again.status, 200, "the ticket was used");
+      assert.deepStrictEqual(again.json, res.json, "the stored answer");
+      assert.strictEqual(srv.profiles()[A].stats.gamesPlayed, res.json.stats.gamesPlayed, "paid once");
     });
 
     await test("the death that loses the series: the match result counts its round first", async () => {

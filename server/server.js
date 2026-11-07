@@ -564,6 +564,30 @@ function matchXP(r) {
     + (r.victory ? 1500 : 0);
 }
 
+// The answers to results already paid, by the ticket's player and address
+// (hashed): the HUD retries a post whose answer it didn't get (a slow first
+// post), and a repeat within RESULT_REPLY_MS gets the same answer (200, same
+// body) instead of a 409 that the HUD shows as "wasn't saved". Nothing is
+// paid again. Found the way the ticket was: by token, else by address (and
+// the HUD's nickname on a shared address), so another player still gets 409.
+const RESULT_REPLY_MS = 10 * 60 * 1000;
+const MAX_RESULT_REPLIES = 2000;
+const resultReplies = new Map();     // userID + '|' + ipHash -> { userID, ipHash, at, body }, oldest first
+function rememberResult(userID, ipHash, body) {
+  const key = userID + '|' + ipHash;
+  resultReplies.delete(key);
+  resultReplies.set(key, { userID, ipHash, at: Date.now(), body: JSON.parse(JSON.stringify(body)) });
+  while (resultReplies.size > MAX_RESULT_REPLIES) resultReplies.delete(resultReplies.keys().next().value);
+}
+function repeatedResult(userID, ipHash, nick) {
+  const cutoff = Date.now() - RESULT_REPLY_MS;
+  for (const [k, r] of resultReplies) { if (r.at >= cutoff) break; resultReplies.delete(k); }
+  if (userID) return resultReplies.get(userID + '|' + ipHash) || null;
+  const mine = [...resultReplies.values()].filter((r) => r.ipHash === ipHash
+    && (!nick || String(usernameOf(r.userID) || '').toLowerCase() === nick));
+  return mine.length === 1 ? mine[0] : null;
+}
+
 // Posted by the in-match HUD (patched hud.js) when you die or win. Paid once
 // per match a player's menu started (the HUD has no token, so the ticket is
 // found by address when needed).
@@ -572,16 +596,21 @@ app.post('/api/matchresult', (req, res) => {
   // Players sharing an address are told apart by the in-game name the HUD
   // sends (their Remaster account name).
   const nick = typeof body.nickname === 'string' ? body.nickname.trim().toLowerCase() : '';
-  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req),
+  const tokenUser = userFromRequest(req);
+  const ipHash = accounts.hashIp(requestIp(req));
+  const claim = tickets.claim({ userID: tokenUser, ip: requestIp(req),
     pick: nick ? (t) => String(usernameOf(t.userID) || '').toLowerCase() === nick : null });
   if (claim.error) {
+    const again = claim.error === 'no-match' ? repeatedResult(tokenUser, ipHash, nick) : null;
+    if (again) { log('match result repeated', again.userID, 'the stored answer'); return res.json(again.body); }
     log('match result rejected', claim.error, requestIp(req));
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
+  const send = (out) => { rememberResult(userID, ipHash, out); res.json(out); };
   if (claim.ticket.map === SHOWDOWN.map) {
     activity.match(userID);
-    return showdownMatchResult(res, claim, body, userID);
+    return showdownMatchResult(send, claim, body, userID);
   }
   const p = getProfile(userID);
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
@@ -683,7 +712,7 @@ app.post('/api/matchresult', (req, res) => {
   // A new level can unlock airdrops: the menu gets them without a restart.
   if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
   setPresence(userID, 'menu');
-  res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: null });
+  send({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: null });
 });
 
 // A real match on the career: games, kills, wins, damage and time, overall and
@@ -722,7 +751,7 @@ function careerMatch(userID, p, r, ticketMode) {
 // (its match's ticket time) or a forfeit with no round played pays nothing and
 // puts nothing on the career, kills and damage are bounded by the series' time
 // at the PAY rates, and the daily cap applies.
-function showdownMatchResult(res, claim, body, userID) {
+function showdownMatchResult(send, claim, body, userID) {
   const p = getProfile(userID);
   const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const victory = claim.elapsed >= SHOWDOWN.minSeconds && (body.victory === true || body.victory === 'true');
@@ -779,7 +808,7 @@ function showdownMatchResult(res, claim, body, userID) {
     log('showdown round', userID, view.round, victory ? 'won' : 'lost', view.wins + '-' + view.losses);
   }
   setPresence(userID, 'menu');
-  res.json({ startXP, xpEarned: earned, stats: st, credits, ranked: null,
+  send({ startXP, xpEarned: earned, stats: st, credits, ranked: null,
     showdown: view ? showdownState(view.over ? 'over' : 'round-over', view) : null });
 }
 

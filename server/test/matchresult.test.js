@@ -37,8 +37,15 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.strictEqual(p.stats.totalDamage, 0, "non-finite damage counts as none");
       assert.ok(p.lastMatch.timeAlive <= 40, "time alive capped to the real match length: " + p.lastMatch.timeAlive);
       assert.ok(p.stats.funcEarned <= 1e6);
+      // The HUD retries a post whose answer it didn't get: the same answer,
+      // nothing paid again (a 409 here read as "your result wasn't saved").
       const replay = await srv.request("POST", "/api/matchresult", { kills: 50 });
-      assert.strictEqual(replay.status, 409, "the same match can't pay twice");
+      assert.strictEqual(replay.status, 200, "a repeat gets the first answer");
+      assert.deepStrictEqual(replay.json, r.json, "the same answer");
+      const p2 = srv.profiles()[A];
+      assert.deepStrictEqual([p2.stats.kills, p2.cullCredits, p2.stats.xp], [0, p.cullCredits, p.stats.xp], "the same match can't pay twice");
+      const other = await srv.request("POST", "/api/matchresult", { kills: 50 }, { Authorization: "Bearer " + await srv.login(B) });
+      assert.strictEqual(other.status, 409, "another player gets no answer of A's");
     });
 
     await test("the HUD's level report goes to the player whose result was just paid", async () => {

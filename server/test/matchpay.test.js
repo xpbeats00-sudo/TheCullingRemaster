@@ -58,8 +58,10 @@ async function showdown(srv, sock, rounds, body = {}, waitMs = 0) {
       assert.strictEqual(p.stats.gamesPlayed, before.stats.gamesPlayed, "not a game played");
       assert.strictEqual(p.stats.kills, before.stats.kills, "no kills on the career");
       assert.strictEqual(p.stats.wins, before.stats.wins, "no win");
+      // The ticket is used up: a repeat gets the same answer, nothing more.
       const again = await srv.request("POST", "/api/matchresult", FAKE);
-      assert.strictEqual(again.status, 409, "the ticket is still used up");
+      assert.deepStrictEqual([again.status, again.json], [200, r.json], "the stored answer");
+      assert.strictEqual(srv.profiles()[A].cullCredits, before.cullCredits, "still nothing paid");
     });
   });
 
