@@ -1124,13 +1124,16 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
 
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
-// Test hook (CULLING_TEST_HOOKS=1, loopback only; off by default and never
-// set on the VPS): queues a logged-in player's own menu socket as if they
-// had pressed PLAY, so a test can drive real game menus without clicking.
+// Test hook (CULLING_TEST_HOOKS=1; off by default and never set on the
+// VPS): queues a logged-in player's own menu socket as if they had pressed
+// PLAY, so a test can drive real game menus without clicking.
 // netplay2/patch/netplay_run.py --menu uses it for shared-match joins.
+// Only for a direct loopback caller (no proxy header: behind Caddy every
+// request comes from loopback; the operator check), and never with
+// NODE_ENV=production (the service), whatever the switch says.
+const testHooks = (req) => process.env.CULLING_TEST_HOOKS === '1' && process.env.NODE_ENV !== 'production' && operator(req);
 app.post('/api/test/join-mm', (req, res) => {
-  const ip = String(req.socket.remoteAddress || '');
-  if (process.env.CULLING_TEST_HOOKS !== '1' || !/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(ip)) return res.status(404).json({});
+  if (!testHooks(req)) return res.status(404).json({});
   const body = req.body || {};
   const socket = typeof body.userID === 'string' ? socketsByUser.get(body.userID) : null;
   if (!socket) return res.status(409).json({ error: 'not-logged-in', users: [...socketsByUser.keys()] });

@@ -678,6 +678,68 @@ function sharedVars(extra = {}) {
     srv.stop();
   }
 
+  // ------------------------------------------------------------ the test hook: parties queued as PLAY
+  // CULLING_TEST_HOOKS=1 (netplay_run.py --party): POST /api/test/join-mm
+  // with a party list forms a real party (the friends and party code) and
+  // queues it from its leader's menu socket. Loopback only, no proxy header,
+  // never with NODE_ENV=production.
+  const hp = await freePort();
+  const hsrv = startServer({ vars: sharedVars({ CULLING_SHARED_PLAYLISTS: "coop2,coop3,coop4", CULLING_GAMESERVER_POOL: "gsh@127.0.0.1:" + hp,
+    CULLING_TEST_HOOKS: "1", CULLING_LOBBY_GATHER_MS: "600" }) });
+  let hw = null, hg = null;
+  try {
+    await hsrv.ready();
+    hw = await people(hsrv);
+    afterFailure = async () => { for (const p of hw.players) if (p.socket && p.socket.connected) p.socket.emit("leave-mm"); await sleep(1500); };
+    hg = await new FakeGameServer({ backend: "http://127.0.0.1:" + hsrv.port, serverId: "gsh", secret: serverSecret(MASTER, "gsh"), port: hp, heartbeatMs: 250 }).start();
+    const ps = [];
+    for (const n of ["Hook Ant", "Hook Bee", "Hook Cat", "Hook Dog", "Hook Eel"]) ps.push(await hw.player(n));
+    const [a1, a2, b1, b2, c] = ps;
+    const hook = (body, headers) => hsrv.request("POST", "/api/test/join-mm", body, headers);
+    // Queues groups ([leader, ...members]) through the hook, plays the match
+    // out (the fake server's result) and returns each player's team.
+    async function play(queueName, groups) {
+      const everyone = groups.flat();
+      clear(...everyone);
+      const readies = everyone.map((p) => waitFor(p, "match-ready", () => true, 8000));
+      for (const [leader, ...members] of groups) {
+        const r = await hook({ userID: leader.userID, queueName, party: members.map((m) => m.userID) });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+        assert.deepStrictEqual(r.json.members.slice().sort(), [leader, ...members].map((p) => p.userID).sort(), "the party as asked");
+      }
+      const got = await Promise.all(readies);
+      assert.strictEqual(new Set(got.map((m) => m.matchId)).size, 1, "one match for everyone");
+      assert.ok(got.every((m) => m.netplay && m.gameServer === "127.0.0.1:" + hp));
+      for (let i = 0; i < 40 && !(hg.assignment && hg.assignment.matchId === got[0].matchId && hg.readyPosted); i++) await sleep(25);
+      const team = new Map();
+      for (const t of hg.assignment.teams) for (const p of t.players) team.set(p.userID, t.team);
+      for (const [i, p] of everyone.entries()) assert.strictEqual(got[i].team, team.get(p.userID), "match-ready's team is the server's");
+      const r = await hg.result({ players: Object.fromEntries(everyone.map((p) => [p.userID, { joined: true }])) });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+      await sleep(300);
+      return (p) => team.get(p.userID);
+    }
+    await test("test hook: refused behind a proxy header; a player not logged in", async () => {
+      for (const h of [{ "X-Forwarded-For": "203.0.113.9" }, { Forwarded: "for=203.0.113.9" }, { "X-Real-IP": "203.0.113.9" }]) {
+        const r = await hook({ userID: a1.userID, queueName: "ffa_jungle_coop2" }, h);
+        assert.strictEqual(r.status, 404, "behind a proxy: " + JSON.stringify(h));
+      }
+      assert.strictEqual((await hook({ userID: "steam:76561190000000001", queueName: "ffa_jungle_coop2" })).json.error, "not-logged-in");
+    });
+  } finally {
+    if (hg) hg.stop();
+    if (hw) for (const p of hw.players) if (p.socket) p.socket.close();
+    hsrv.stop();
+  }
+  const prod = startServer({ vars: { NODE_ENV: "production", CULLING_TEST_HOOKS: "1" } });
+  try {
+    await prod.ready();
+    await test("test hook: never with NODE_ENV=production", async () => {
+      const r = await prod.request("POST", "/api/test/join-mm", { userID: "steam:76561190000000001", queueName: "ffa_jungle" });
+      assert.strictEqual(r.status, 404);
+    });
+  } finally { prod.stop(); }
+
   // ------------------------------------------------------------ launch mode
   const lp = [await freePort(), await freePort()];
   const fakePath = path.join(__dirname, "fake_gameserver.js");
