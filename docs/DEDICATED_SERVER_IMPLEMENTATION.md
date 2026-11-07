@@ -192,7 +192,14 @@ The host's own spectator isn't sent to the clients. A local match's teams come f
 
 The same with the released 1.3.12 clients: teams and result the same, and no crashes.
 
-**Open: released clients pair teams themselves.** Fix 4's stub runs on every scoreboard refresh in a pairs match on a client too, and sets each player state's team there by its index in the client's own PlayerArray. That overrides the host's team on that client, and the server won't send it again unless it changes. In these runs the client's order matched the host's teams: both players on team 1, joined first, then the bots in team order. With players on different teams (a party and a solo, or Trios) a client may show the wrong teammate. The fix is in the client, for the next release: skip the local pairing when connected to a server (NetMode client), and leave the server's teams alone. It hasn't been made yet: it changes the released client.
+**Released clients paired teams themselves: fixed in the client (branch `client-server-teams`, for 1.3.13).** Fix 4's stub runs on every scoreboard refresh in a pairs match, on a client too, and sets each player state's team by its index in the client's own PlayerArray. That overrode the host's teams on that client. The fix: the refresh now calls a pre-stub that runs the stub only when the GameState has authority (AActor::Role +0x118 == 3, a local match); on a network client it only sorts, so the server's replicated teams stand. `PATCHED_SHA256` is now 20b48ea5…, and `test_patch_exe.py` (stand-ins and the real exe) and the exe-related release tests pass.
+
+In game, with the host putting the two players on different teams (`CULLING_NETPLAY_TEAM_SPLIT=1`, as a party and a solo would be: `s0 h1 h2 b1 b2 b3 b3 …`):
+- **1.3.12 clients:** each teammate panel showed the *other player*, the bug;
+- **the fixed client:** each showed a bot (Bongzilla, Arky), its own team's;
+- **a local Duo with the fixed exe** (no server): still paired a bot teammate ("Mandroid 5000").
+
+No crashes. Not yet released: it ships with the next client release.
 
 ## On the VPS (not done: needs the owner)
 
@@ -201,7 +208,7 @@ Nothing below has been run on the VPS. It's the plan, and the list of what block
 **Blockers before players use it:**
 1. ~~The host's own player is a contestant.~~ Fixed (2026-11-06), see "No player for the host" below.
 2. ~~Clients ran the netplay test exe in every test.~~ Released 1.3.12 clients join and play (2026-11-06), see "Released clients" below.
-3. ~~Solo only.~~ Duos work (2026-11-06), see "Teams" below. Trios and Quads are wired the same way but not run in game. Released clients' own local pairing may show a wrong teammate when players are on different teams (see there).
+3. ~~Solo only.~~ Duos work (2026-11-06), see "Teams" below. Trios and Quads are wired the same way but not run in game. Clients up to 1.3.12 may show a wrong teammate when players are on different teams; fixed for the next client release (branch `client-server-teams`, see there).
 4. **Capacity unmeasured:** the CPU, memory and bandwidth of a headless host with 16 contestants.
 5. **The menu's server.** Released builds should point `RemasterServer.js` at the live backend, and their `FrontEnd.html` must load it. The test copy's page doesn't (it falls back to `127.0.0.1:8000`). Check this in the release pak.
 6. **The host's Steam ID:** a dedicated test ID, not a player's.

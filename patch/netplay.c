@@ -1468,6 +1468,11 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
 typedef void (*set_team_fn)(void *ps, i32 team, u8 b);
 static const u16 teamsize_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','A','M','S','I','Z','E',0 };
 static i32 team_n = -1;
+/* CULLING_NETPLAY_TEAM_SPLIT=1 (a test): the second joined player goes to
+ * team 2 whatever the backend said, so the players are on different teams,
+ * as a party and a solo would be (two solos get one team in Duos). */
+static const u16 split_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','A','M','_','S','P','L','I','T',0 };
+static i32 split_state = 1;
 
 static i32 team_size_env(void)
 {
@@ -1503,6 +1508,8 @@ static void host_teams(u8 *world)
         return;
     for (k = 0; k <= MAX_TEAMS; k++)
         used[k] = 0;
+    if (t->n >= 2 && t->team[1] == t->team[0] && env_on(split_var, &split_state))
+        t->team[1] = t->team[0] + 1;
     for (i = 0; i < t->n; i++)
         if (t->ps[i] && t->team[i] > 0 && t->team[i] <= MAX_TEAMS) {
             used[t->team[i]]++;
