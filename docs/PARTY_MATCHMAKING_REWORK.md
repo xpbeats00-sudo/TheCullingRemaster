@@ -83,7 +83,7 @@ The stock menu ignores this event: nothing in `ClientWeb.js` handles it yet. Sho
 
 ## 4. Game-server API (game server → backend)
 
-`POST /api/gameserver/<action>`, where the action is `register`, `heartbeat`, `ready`, `abort`, `verify-ticket` or `result`. The routes exist only when shared matches are on. With them off, the URL is an unknown one, as today (`200 {}`, nothing done).
+`POST /api/gameserver/<action>`, where the action is `register`, `heartbeat`, `ready`, `abort`, `verify-ticket`, `ticket-used` or `result`. The routes exist only when shared matches are on. With them off, the URL is an unknown one, as today (`200 {}`, nothing done).
 
 ### 4.1 Authentication (every request)
 
@@ -104,12 +104,15 @@ Refusals: `401 {error}`, where error is one of `unknown-server`, `body-must-be-t
 |---|---|---|
 | `register` | `{serverId, host, port, version}` | `{ok, heartbeatMs, assignment \| null}`. A pool server registering while it had a match restarted: that match is lost (`server-restarted`). |
 | `heartbeat` | `{serverId, matchId \| null, state, players, bots, cpu, memMB, tickMs, tickRate, kbpsOut, kbpsIn}` (numbers optional; kept for capacity measurement) | `{ok, heartbeatMs, assignment \| null, cancel}`. `assignment` is the match to run (pull model: the backend never connects to a game server). `cancel` names a match the server reports that is no longer its own. A running server reporting another match, or none, has dropped its match (`server-dropped-match`). |
-| `ready` | `{serverId, matchId}` | `{ok}`. The map is loaded and players can join. Players are sent in now. |
+| `ready` | `{serverId, matchId}` | `{ok, assignment}`. The map is loaded and players can join. Players are sent in now; the answer's assignment already has their `tickets` (below), so the server can let them in before its next heartbeat. |
 | `abort` | `{serverId, matchId, reason}` | `{ok}`. The server can't run the match. It is cancelled (`server-aborted:<reason>`). |
-| `verify-ticket` | `{serverId, matchId, ticket, userID?}` | `200 {ok, userID, username, team, party}` or `403 {ok: false, error}`. Errors: `match-not-running`, `malformed`, `bad-signature`, `expired`, `used`, `revoked`, `wrong-match`, `wrong-server`, `wrong-user`, `not-in-match`. A passing ticket is used up. |
+| `verify-ticket` | `{serverId, matchId, ticket, userID?}` | `200 {ok, userID, username, team, party}` or `403 {ok: false, error}`. Errors: `match-not-running`, `malformed`, `bad-signature`, `expired`, `used`, `revoked`, `wrong-match`, `wrong-server`, `wrong-user`, `not-in-match`, `already-joined` (the player is in already; the joined flag survives a backend restart). A passing ticket is used up. The route-B host doesn't use it (a round trip at PreLogin blocks the game thread): it checks tickets by hash, then confirms with `ticket-used`. |
+| `ticket-used` | `{serverId, matchId, hash, userID?}` | The server let a player in by its ticket's SHA-256 (from the assignment's `tickets`). `200 {ok, userID, username, team, party}`: the ticket is used up here too and the player counts as joined; `403 {ok: false, error}`: `match-not-running`, `malformed`, `not-in-match`, `wrong-user`, `used`, `expired`. |
 | `result` | section 4.4 | `200 {ok, paid, noShow: [userID], ignored: [userID]}`, `400 {error}` (malformed, nothing paid), `409 {error: "already-reported" \| "match-not-running"}` |
 
 ### 4.3 The assignment (what a game server is told)
+
+Once the match runs, the assignment also has `tickets`: one per player sent in, `{id, hash, userID, team, expiresInMs, used}`, `hash` the SHA-256 (hex) of the player's ticket. Never the tickets themselves (they go only to their players).
 
 ```json
 { "matchId": "9f2c...", "playlist": "coop2", "map": "jungle", "mapIndex": 0, "matchUrl": "duo:0",
