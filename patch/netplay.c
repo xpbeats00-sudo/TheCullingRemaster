@@ -354,12 +354,39 @@ static u64 match_over(void *notify)
 #define R_BASE_PRELOGIN    0x1343270
 typedef void (*prelogin_fn)(void *gm, void *options, void *address, void *uid, void *error);
 
+/* CULLING_NETPLAY_PREMATCH=N: a real pre-match phase. The host holds its
+ * match in WaitingToStart (the warmup countdown stays full) until N players
+ * have joined, then lets the game's own 15 s countdown run, so every player
+ * spawns into a pod at the start. With it, the two test-only bypasses are
+ * off: the game's own PreLogin runs (it refuses once the match is over) and
+ * the no-end flag isn't set. 0 or unset: the old test host. */
+#define R_GAME_PRELOGIN    0x245320    /* FreeForAll's stock PreLogin slot target (AShooterGameMode::PreLogin) */
+static const u16 prematch_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','P','R','E','M','A','T','C','H',0 };
+static i32 prematch_n = -1;
+
+static i32 prematch_expected(void)
+{
+    u16 v[8];
+    u32 n, i;
+    if (prematch_n < 0) {
+        n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(prematch_var, v, 8);
+        prematch_n = 0;
+        for (i = 0; n > 0 && n < 4 && i < n && v[i] >= '0' && v[i] <= '9'; i++)
+            prematch_n = prematch_n * 10 + (v[i] - '0');
+    }
+    return prematch_n;
+}
+
 void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
 {
     struct line l;
-    FN(R_BASE_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
+    if (prematch_expected() > 0)
+        FN(R_GAME_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
+    else
+        FN(R_BASE_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
     if (trace_begin(&l, "prelogin")) {
         kv(&l, "error_len", (u64)((struct fstring *)error)->num, 0);
+        kv(&l, "game_checks", prematch_expected() > 0, 0);
         trace_end(&l);
     }
 }
@@ -1082,6 +1109,12 @@ static void trace_scoreboard(u8 *world, const char *tag)
  * Every game traces the match state (AGameState::MatchState, +0x440) and
  * the winner. */
 #define O_GS_MATCH_STATE   0x440       /* AGameState::MatchState (FName) */
+#define O_GM_MATCH_STATE   0x4a0       /* AGameMode::MatchState (FName); its bitfield bools follow */
+#define O_GM_NUM_PLAYERS   0x4b0       /* AGameMode::NumPlayers, then NumBots */
+#define O_GM_WARMUP        0x598       /* AShooterGameMode::WarmupTime */
+#define O_GM_NO_END        0x74d       /* AShooterGame_FreeForAll: while set, its end-of-match check never ends the match (showdown_rounds.c GM_NO_END) */
+#define O_GS_REMAINING     0x4e0       /* AShooterGameState::RemainingTime */
+#define O_GS_ELAPSED       0x4e8       /* seconds InProgress (showdown_rounds.c GS_ELAPSED) */
 #define REC_FLAGS          0x28        /* bIsAlive, then the record's other bools (bIsWinner among them) */
 static const u16 end_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','E','N','D',0 };
 static const u16 ms_waiting[] = { 'W','a','i','t','i','n','g','T','o','S','t','a','r','t',0 };
@@ -1093,6 +1126,18 @@ static u32 end_at;
 static u64 state_names[4];
 
 /* 1 WaitingToStart, 2 InProgress, 3 WaitingPostMatch, 4 LeavingMap, 0 other, -1 no game state */
+static i32 state_code(u32 name)
+{
+    i32 i;
+    for (i = 0; i < 4; i++) {
+        if (!state_names[i])
+            FN(R_FNAME, fname_fn)(&state_names[i], i == 0 ? ms_waiting : i == 1 ? ms_progress : i == 2 ? ms_post : ms_leaving, 1);
+        if ((u32)state_names[i] == name)
+            return i + 1;
+    }
+    return 0;
+}
+
 static i32 match_state(u8 *world)
 {
     u8 *gs = world ? F(world, O_W_GAMESTATE, u8 *) : 0;
@@ -1233,11 +1278,28 @@ static void server_replicate(u8 *driver)
     struct rep_stats st = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     struct line l;
     u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
-    if (now - last_alive >= 5000 && trace_begin(&l, "host-alive")) {
+    if (now - last_alive >= 2000 && trace_begin(&l, "host-alive")) {
         last_alive = now;
         kv(&l, "clients", (u64)(nconn > 0 ? nconn : 0), 0);
         kv(&l, "state0", nconn > 0 && conns && conns[0] ? (u64)F(conns[0], O_CONN_STATE, i32) : 0, 0);
         kv(&l, "world", (u64)world, 1);
+        {
+            u8 *gm = world ? F(world, O_WORLD_AUTH_GM, u8 *) : 0;
+            u8 *gs = world ? F(world, O_W_GAMESTATE, u8 *) : 0;
+            if (gm) {
+                kv_s(&l, "gm_state", state_code(F(gm, O_GM_MATCH_STATE, u32)));
+                kv(&l, "gm_flags", (u64)F(gm, O_GM_MATCH_STATE + 8, u32), 1);
+                kv_s(&l, "players", F(gm, O_GM_NUM_PLAYERS, i32));
+                kv_s(&l, "bots", F(gm, O_GM_NUM_PLAYERS + 4, i32));
+                kv_s(&l, "warmup", F(gm, O_GM_WARMUP, i32));
+                kv_s(&l, "no_end", F(gm, O_GM_NO_END, u8));
+            }
+            if (gs) {
+                kv_s(&l, "gs_state", match_state(world));
+                kv_s(&l, "remaining", F(gs, O_GS_REMAINING, i32));
+                kv_s(&l, "elapsed", F(gs, O_GS_ELAPSED, i32));
+            }
+        }
         trace_end(&l);
     }
     if (!world || nconn <= 0 || now - last_rep < REP_PERIOD_MS)
@@ -1588,17 +1650,59 @@ static void client_attack(u8 *driver)
 }
 
 /* Replaces the Steam driver's vtable slot +0x278 (TickFlush). */
-#define O_GM_NO_END        0x74d       /* AShooterGame_FreeForAll: while set, its end-of-match check never ends the match (showdown_rounds.c GM_NO_END) */
+
+static u32 prematch_since, prematch_trace;
+static i32 prematch_released;
+#define PREMATCH_MAX_MS    180000      /* start anyway after 3 minutes */
+
+static void prematch_tick(u8 *driver, u8 *world, u8 *gm)
+{
+    u8 *gs = F(gm, O_GM_GAMESTATE, u8 *);
+    u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
+    i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), c, joined = 0, expect = prematch_expected();
+    u32 now = (*(gettickcount_fn *)(image_base() + IAT_GETTICKCOUNT))();
+    struct line l;
+    (void)world;
+    if (!gs || prematch_released || state_code(F(gm, O_GM_MATCH_STATE, u32)) != 1)
+        return;
+    if (!prematch_since)
+        prematch_since = now;
+    for (c = 0; conns && c < nconn; c++)
+        if (conns[c] && F(conns[c], O_CONN_STATE, i32) == 3 && F(conns[c], O_CONN_PC, u8 *))
+            joined++;
+    if (joined < expect && now - prematch_since < PREMATCH_MAX_MS) {
+        F(gs, O_GS_REMAINING, i32) = F(gm, O_GM_WARMUP, i32);   /* hold the warmup countdown full */
+        if (now - prematch_trace >= 2000 && trace_begin(&l, "prematch-hold")) {
+            prematch_trace = now;
+            kv_s(&l, "joined", joined);
+            kv_s(&l, "expect", expect);
+            kv_s(&l, "remaining", F(gs, O_GS_REMAINING, i32));
+            trace_end(&l);
+        }
+        return;
+    }
+    prematch_released = 1;
+    if (trace_begin(&l, "prematch-start")) {
+        kv_s(&l, "joined", joined);
+        kv_s(&l, "expect", expect);
+        kv_s(&l, "held_ms", (i32)(now - prematch_since));
+        kv_s(&l, "remaining", F(gs, O_GS_REMAINING, i32));
+        trace_end(&l);
+    }
+}
 
 void np_tick_flush(void *driver, float dt)
 {
     if (driver && driver == listen_driver && !F(driver, O_ND_SERVERCONN, void *)) {
-        /* The host's match ended by itself ~35 s after listening, with or
-         * without a client (in game: the listen socket closed, the world
-         * left), so the test host holds it open. */
+        /* Without CULLING_NETPLAY_PREMATCH: the host's match ended by itself
+         * ~35 s after listening, with or without a client (in game: the
+         * listen socket closed, the world left), so the test host holds it
+         * open with the no-end flag. */
         u8 *world = F(driver, O_ND_WORLD, u8 *);
         u8 *gm = world ? F(world, O_WORLD_AUTH_GM, u8 *) : 0;
-        if (gm && end_phase < 2)
+        if (gm && prematch_expected() > 0)
+            prematch_tick((u8 *)driver, world, gm);  /* the real pre-match phase; no no-end flag */
+        else if (gm && end_phase < 2)
             F(gm, O_GM_NO_END, u8) = 1;
         else if (gm && end_phase == 2 && F(gm, O_GM_NO_END, u8))
             F(gm, O_GM_NO_END, u8) = 0;             /* released once (CULLING_NETPLAY_END) */

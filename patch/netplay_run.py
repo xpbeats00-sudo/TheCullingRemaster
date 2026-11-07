@@ -243,6 +243,8 @@ def main():
                 "PASS: %s" % lines if host in pids else "FAIL: owners %s, lines %s" % (sorted(pids), lines))
         log(result["steps"])
 
+        if host and host in pids and a.no_client:
+            time.sleep(a.after_join)          # a lone host: watch its match for --after-join seconds
         if host and host in pids and not a.no_client:
             set_window(settings_bytes, 970)
             if ids_bytes is not None:

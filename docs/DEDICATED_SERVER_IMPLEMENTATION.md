@@ -46,7 +46,18 @@ Players who join after the pods opened stand in pods that never open; in a real 
   **Not done:**
   - what the players see at the end (their end screen; desktop capture shows only the title art over the game windows);
   - where the players go when the host leaves (their menu or an error);
-  - the backend side: posting the results, placement and XP to the server from the host (`shared-match-backend`), and a real pre-match phase that waits for the expected players instead of the no-end flag and PreLogin bypass. |
+  - the backend side: posting the results, placement and XP to the server from the host (`shared-match-backend`).
+
+  **A real pre-match phase works** (2026-11-06). The host's match begins in WaitingToStart with a 15 s warmup (AShooterGameMode::WarmupTime +0x598, counted down in AShooterGameState::RemainingTime +0x4e0), then goes InProgress with a 25-minute clock. With `CULLING_NETPLAY_PREMATCH=N` the host keeps that warmup full until N players have joined, with a 3-minute limit, then lets the game's own countdown run. Both test-only bypasses are off in this mode: the game's own PreLogin runs (it refuses once a match is over), and the no-end flag isn't set. In game with N=2:
+  - **the hold:** the host held for 92 s and 113 s while the players arrived;
+  - **logins:** both players passed the game's own login checks;
+  - **the start:** 15 s after the second join, InProgress with 3 players;
+  - **pods:** each player spawned in a pod of their own, (29675, 33265) and (-11652, -39847), shuffling about 120 units inside until the doors opened 10 to 17 s after the start. They then walked out (thousands of units by +90 s). Before, a player who joined after the start stood in a pod that never opened;
+  - **no early end:** the match kept going (73 s and more) without the no-end flag.
+
+  **A whole match with no bypasses** (PREMATCH=2 plus the attack and end tests): pre-match hold, countdown, start, Player One beats Player Two (100, 91, ... 12, dead), the host clears the rest, WaitingPostMatch. Player One is the winner (1st of 16), and the scoreboards are identical on all three games. No game crashed.
+
+  Still the test's: the expected count comes from the environment, not the backend's ticket, and the pair teleport and eliminations are test switches. |
 | 7 | A headless host on the VPS (`-nullrhi`) | BLOCKED on 3 | |
 
 ## Milestone 3: how the host sends its world
@@ -65,7 +76,7 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 - **`CallPreReplication`** (it refreshes each character's replicated movement) runs only with `CULLING_NETPLAY_PREREP=1`. It ran safely in game, but stays opt-in until more runs back it.
 - **On a client** the same hook writes a trace every 2 s: its channels, controller and pawn, and every pawn with its position.
 
-**The host's own match ended by itself** about 35 s after it started listening, with or without a client: the listen socket closed and the world left. That first looked like crashes. The test host now sets FreeForAll's no-end flag (+0x74d); a lone host then stayed up 139 s and more. The likely cause is that the game's server-side match logic runs on a listen server and finds no network players. A real host will need the proper pre-match flow (wait for the expected players, then start), using the backend's player list.
+**Without `CULLING_NETPLAY_PREMATCH`, the host's own match ended by itself** about 35 s after it started listening, with or without a client: the listen socket closed and the world left. That first looked like crashes. The test host now sets FreeForAll's no-end flag (+0x74d); a lone host then stayed up 139 s and more. The likely cause is that the game's server-side match logic runs on a listen server and finds no network players. A real host will need the proper pre-match flow (wait for the expected players, then start), using the backend's player list.
 
 ## What the module changes (each edit checked against the stock bytes by `test_netplay.py`)
 
@@ -78,7 +89,7 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
    The game net driver is **USteamNetDriver**. Its InitListen opens a Steam (emulator) P2P socket unless the URL has `?bIsLanMatch`, and on this launch path that option doesn't reach it. So `np_listen` takes the driver's own LAN branch itself: `bIsPassthrough` (+0x438) = 1, then `UIpNetDriver::InitListen` (0x1422d9800), a plain UDP socket. In game, without this: `ok=1` but no UDP port.
 2. **Three slots of UWorld's FNetworkNotify vtable** (accepting, accepted, control message): pass-through trace hooks. They only write when `CULLING_NETPLAY_TRACE` names a file.
 3. **FreeForAll's PreLogin slot** (0x1425a7fe0) goes to `np_prelogin`. The game's PreLogin refuses every login with "Match is over!" while its game state says so (in game: `match_over=1` 28 s after the host started, because a local match starts at once). The test host skips that one refusal and runs only the engine's checks (`AGameModeBase::PreLogin`).
-   - **For shared matches proper:** the host should hold its match in the pre-match phase until the players the backend expects have joined, and then this goes away.
+   - **With `CULLING_NETPLAY_PREMATCH=N`** the host holds the pre-match phase until N players have joined, and this slot runs the game's own PreLogin (`AShooterGameMode::PreLogin`, the stock target), so nothing is skipped.
 4. **The Steam driver's TickFlush slot** (0x142e0ac10): `np_tick_flush`, the loop above.
 5. **`UWorld::InternalGetNetMode`** (0x1416848f0) and its two inlined copies. This client build folded "has a NetDriver" into "is a client", so a hosting world would call itself a client. They now ask the driver: `UNetDriver::GetNetMode` is IsServer ? (GIsClient ? ListenServer : Dedicated) : Client. For every world a stock client has, the result is unchanged.
 
@@ -93,7 +104,7 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`. `--shots N` saves a desktop screenshot every N seconds after the joins.
+Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.
