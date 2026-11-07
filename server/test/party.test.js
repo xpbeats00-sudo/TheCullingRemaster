@@ -214,6 +214,22 @@ async function run(srv, label) {
       assert.deepStrictEqual([ready(L).length, ready(M).length], [0, 0], "nobody was sent into a match");
     });
 
+    await test("a member starting a custom match while the party is queued stops the party's search first", async () => {
+      clear(L, M);
+      L.socket.emit("join-mm", { queueName: "ffa_jungle_coop2" });
+      await waitFor(M, "join-mm-group");
+      const created = waitFor(M, "lobby-update");
+      M.socket.emit("lobby-create", { mapName: "Jungle/Jungle_P" });
+      await created;
+      const lout = waitFor(L, "leave-mm-group"), custom = waitFor(M, "match-ready");
+      M.socket.emit("lobby-start-match");
+      assert.strictEqual((await lout).reason, "party-member-cancelled", "the leader is told");
+      await custom;
+      await sleep(1100);
+      assert.deepStrictEqual([ready(L).length, ready(M).length], [0, 1], "no party match for the leader alone; the member's custom match only");
+      await finish(M);
+    });
+
     await test("repeated queue attempts: queue, cancel, queue... the last one is the party's only match", async () => {
       clear(L, M);
       for (let i = 0; i < 3; i++) {

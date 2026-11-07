@@ -12,8 +12,8 @@ let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function withServer(vars, fn) {
-  const srv = startServer({ vars });
+async function withServer(vars, fn, profiles) {
+  const srv = startServer({ vars, profiles });
   let sock = null;
   try {
     await srv.ready();
@@ -24,7 +24,7 @@ async function withServer(vars, fn) {
       if (waitMs) await sleep(waitMs);
       return srv.request("POST", "/api/matchresult", body);
     };
-    await fn(srv, play);
+    await fn(srv, play, sock);
   } finally {
     if (sock) sock.close();
     srv.stop();
@@ -32,6 +32,17 @@ async function withServer(vars, fn) {
 }
 
 const FAKE = { victory: true, kills: 99, damage: 1e9, timeAlive: 99999, placement: 1 };
+
+// A Showdown series: queued, `rounds` rounds won as the HUD reports them,
+// then the match result that ends it.
+async function showdown(srv, sock, rounds, body = {}, waitMs = 0) {
+  const ready = next(sock, "match-ready");
+  sock.emit("join-mm", { queueName: "showdown" });
+  await ready;
+  if (waitMs) await sleep(waitMs);
+  for (let n = 1; n <= rounds; n++) await srv.request("POST", "/api/showdown/round", { round: n, result: "W" });
+  return srv.request("POST", "/api/matchresult", Object.assign({ victory: rounds >= 4, kills: 99, damage: 1e9, timeAlive: 99999 }, body));
+}
 
 (async () => {
   await test("a result shorter than the minimum match pays nothing and counts nothing", async () => {
@@ -47,8 +58,10 @@ const FAKE = { victory: true, kills: 99, damage: 1e9, timeAlive: 99999, placemen
       assert.strictEqual(p.stats.gamesPlayed, before.stats.gamesPlayed, "not a game played");
       assert.strictEqual(p.stats.kills, before.stats.kills, "no kills on the career");
       assert.strictEqual(p.stats.wins, before.stats.wins, "no win");
+      // The ticket is used up: a repeat gets the same answer, nothing more.
       const again = await srv.request("POST", "/api/matchresult", FAKE);
-      assert.strictEqual(again.status, 409, "the ticket is still used up");
+      assert.deepStrictEqual([again.status, again.json], [200, r.json], "the stored answer");
+      assert.strictEqual(srv.profiles()[A].cullCredits, before.cullCredits, "still nothing paid");
     });
   });
 
@@ -94,6 +107,104 @@ const FAKE = { victory: true, kills: 99, damage: 1e9, timeAlive: 99999, placemen
       assert.strictEqual(srv.profiles()[A].cullCredits - start.cullCredits, 215);
       assert.strictEqual(srv.profiles()[A].stats.gamesPlayed - start.stats.gamesPlayed, 1);
     });
+  });
+
+  await test("a custom match pays half the credits and XP of the same result in a normal match", async () => {
+    await withServer({}, async (srv, play, sock) => {
+      const start = srv.profiles()[A];
+      const update = next(sock, "lobby-update");
+      sock.emit("lobby-create", { mapName: "Jungle/Jungle_P" });
+      await update;
+      const ready = next(sock, "match-ready");
+      sock.emit("lobby-start-match");
+      await ready;
+      const r = await srv.request("POST", "/api/matchresult", { kills: 3, damage: 800, timeAlive: 0, victory: false });
+      assert.strictEqual(r.status, 200);
+      // Half of 215 credits and 1500 XP (the normal match above).
+      assert.strictEqual(r.json.credits, 107);
+      assert.strictEqual(r.json.xpEarned, 750);
+      assert.strictEqual(srv.profiles()[A].cullCredits - start.cullCredits, 107);
+      assert.strictEqual(srv.profiles()[A].stats.xp - start.stats.xp, 750);
+    });
+  });
+
+  // Showdown results go through their own path (showdownMatchResult): the
+  // same limits (FULL_AUDIT_2026-11-06 round 2: instant "W" rounds paid the
+  // daily cap in ~15 s and unlimited career wins and kills).
+  await test("a Showdown series shorter than the minimum match pays nothing and counts nothing", async () => {
+    await withServer({ CULLING_MIN_MATCH_SECONDS: "60" }, async (srv, play, sock) => {
+      const before = srv.profiles()[A];
+      const r = await showdown(srv, sock, 4);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.json.credits, 0);
+      assert.strictEqual(r.json.xpEarned, 0);
+      const p = srv.profiles()[A];
+      assert.strictEqual(p.cullCredits, before.cullCredits, "no credits");
+      assert.strictEqual(p.stats.xp, before.stats.xp, "no XP");
+      assert.strictEqual(p.stats.gamesPlayed, before.stats.gamesPlayed, "not a game played");
+      assert.strictEqual(p.stats.wins, before.stats.wins, "no win");
+      assert.strictEqual(p.stats.kills, before.stats.kills, "no kills on the career");
+      assert.ok(!(p.showdown && p.showdown.won), "no series won on the record");
+    });
+  });
+
+  await test("a Showdown forfeit with no round played pays nothing", async () => {
+    await withServer({}, async (srv, play, sock) => {
+      const before = srv.profiles()[A];
+      const r = await showdown(srv, sock, 0, { victory: false });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.json.credits, 0);
+      assert.strictEqual(r.json.xpEarned, 0);
+      const p = srv.profiles()[A];
+      assert.strictEqual(p.cullCredits, before.cullCredits);
+      assert.strictEqual(p.stats.gamesPlayed, before.stats.gamesPlayed);
+    });
+  });
+
+  await test("Showdown kills and damage are bounded by how long the series ran", async () => {
+    await withServer({ CULLING_MIN_MATCH_SECONDS: "1", CULLING_SECONDS_PER_KILL: "1", CULLING_DAMAGE_PER_SECOND: "10" },
+      async (srv, play, sock) => {
+        const r = await showdown(srv, sock, 4, {}, 1600);
+        assert.strictEqual(r.status, 200);
+        assert.ok(r.json.credits > 0, "a real series pays");
+        const m = srv.profiles()[A].lastMatch;
+        assert.ok(m.kills >= 1 && m.kills <= 2, "about one kill per second of series: " + m.kills);
+        assert.ok(m.damage > 0 && m.damage <= 25, "about 10 damage per second of series: " + m.damage);
+      });
+  });
+
+  await test("a Showdown round reported too soon after the last one doesn't count", async () => {
+    await withServer({ CULLING_SHOWDOWN_MIN_ROUND_SECONDS: "1" }, async (srv, play, sock) => {
+      const ready = next(sock, "match-ready");
+      sock.emit("join-mm", { queueName: "showdown" });
+      await ready;
+      const round = (n) => srv.request("POST", "/api/showdown/round", { round: n, result: "W" }).then((r) => r.json.counted);
+      assert.strictEqual(await round(1), false, "right after the series started");
+      await sleep(1100);
+      assert.strictEqual(await round(1), true, "a round later");
+      assert.strictEqual(await round(2), false, "right after the round before");
+    });
+  });
+
+  // 100 XP below the season cap (the top of level 14: 79,749 XP).
+  const nearCap = { [A]: { userID: A, cullCredits: 100, premiumCurrency: 0, cardID: 0, economy: 1, owned: [],
+    stats: { xp: 79649, level: 14, kills: 0, wins: 0, gamesPlayed: 0, totalDamage: 0, minutesAlive: 0, funcEarned: 0, rank: 0 } } };
+
+  await test("xpEarned is the XP really added, near the season cap", async () => {
+    await withServer({}, async (srv, play) => {
+      const r = await play({ kills: 3, damage: 800, timeAlive: 0, victory: false });
+      assert.strictEqual(r.json.stats.xp, 79749);
+      assert.strictEqual(r.json.xpEarned, 100, "not the 1500 the match was worth");
+      assert.strictEqual(srv.profiles()[A].lastMatch.xpEarned, 100);
+    }, nearCap);
+  });
+
+  await test("and in a Showdown series", async () => {
+    await withServer({}, async (srv, play, sock) => {
+      const r = await showdown(srv, sock, 4);
+      assert.strictEqual(r.json.stats.xp, 79749);
+      assert.strictEqual(r.json.xpEarned, 100);
+    }, nearCap);
   });
 
   console.log("all %d matchpay tests passed", passed);

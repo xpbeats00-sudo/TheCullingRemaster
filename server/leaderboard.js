@@ -75,7 +75,8 @@ class Leaderboard {
       userID, username,
       level: Math.min(this.maxLevel, s.level || 1),
       cardID: (p && p.cardID) || 0,
-      rank: rating === null ? null : this.ranked.tierFor(rating).name,
+      // This season's tier only (last season's record isn't rolled over until played).
+      rank: thisSeason ? this.ranked.tierFor(rating).name : null,
       games, wins, kills, deaths,
       kd: deaths ? Math.round(kills / deaths * 100) / 100 : kills,
       showdownWon: sd.won || 0, showdownLost: sd.lost || 0,

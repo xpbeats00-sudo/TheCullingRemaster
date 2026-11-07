@@ -24,6 +24,14 @@ server/data/sessions.json*
 releases/
 
 server/data/activity.json*
+# Player data and server secrets (a `git add -A` must never commit them)
+server/data/accounts.json*
+server/data/tickets.json*
+server/data/friends.json*
+server/data/showdown-series.json*
+server/data/ip-hash-secret.txt
+*.pem
+.env
 # Remote Desktop connection files and archives (credentials, game copies)
 *.rdp
 *.rar

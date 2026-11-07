@@ -10,6 +10,8 @@ const os = require("os");
 const path = require("path");
 const { CoalescedJsonFile } = require("../store");
 const { Sessions, MatchTickets, rateLimiter, MAX_TOKENS_PER_USER } = require("../session");
+const { Accounts } = require("../accounts");
+const { startServer } = require("./helpers");
 
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
@@ -185,6 +187,88 @@ const read = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
       assert.strictEqual(Object.keys(p.ranked.processed).length, ranked.CONFIG.processedLength);
       assert.strictEqual(ranked.finishMatch(p, { matchId: lastId, placement: 1 }).duplicate, true, "a recent result still can't count twice");
       assert.strictEqual(p.ranked.history.length, ranked.CONFIG.historyLength);
+    });
+
+    // Performance review P4: a reader holding the file open (antivirus,
+    // backup) made the rename retry with Atomics.wait, blocking the event
+    // loop up to ~340 ms. The periodic write now waits between retries.
+    await test("a periodic write whose rename is refused for a moment waits without blocking the event loop", async () => {
+      const file = path.join(dir, "locked.json");
+      const data = { n: 1 };
+      const store = new CoalescedJsonFile(file, () => JSON.stringify(data), { delayMs: 50 });
+      const rename = fs.renameSync;
+      let refused = 0;
+      fs.renameSync = (from, to) => {
+        if (to === file && refused < 4) { refused++; const e = new Error("busy"); e.code = "EBUSY"; throw e; }
+        return rename(from, to);
+      };
+      let maxGap = 0, last = performance.now();
+      const ticker = setInterval(() => { const t = performance.now(); maxGap = Math.max(maxGap, t - last); last = t; }, 5);
+      try {
+        store.markDirty();
+        await sleep(60);
+        await store.flush();
+        for (let i = 0; i < 50 && read(file).n !== 1; i++) await sleep(20);
+      } finally { fs.renameSync = rename; clearInterval(ticker); }
+      assert.strictEqual(refused, 4, "the rename was refused four times, then done");
+      assert.strictEqual(read(file).n, 1);
+      assert.ok(maxGap < 60, "the event loop never stalled for the retries (20+40+60+80 ms): longest gap " + maxGap.toFixed(1) + " ms");
+      assert.ok(store.stats.maxBlockingMs < 50, "blocking " + store.stats.maxBlockingMs);
+    });
+
+    // Performance review P5: every game login extended the play grant and
+    // rewrote accounts.json; a serialize that slow down the event loop ran
+    // every second; and nothing said when profiles.json grew past what a
+    // single JSON file can carry.
+    await test("a game login extends the play grant in memory, saving it at most once a minute", async () => {
+      let clock = 1e12;
+      const a = new Accounts(path.join(dir, "accounts.json"), { now: () => clock });
+      a.create({ username: "Granted", email: "g@example.com", userID: "steam:76561190000000161", password: "x" });
+      a.grant("steam:76561190000000161", "ip");
+      const changes = a.store.stats.changes;
+      for (let i = 0; i < 10; i++) { clock += 1000; assert.ok(a.useGrant("steam:76561190000000161", "ip")); }
+      assert.strictEqual(a.store.stats.changes, changes, "ten logins in ten seconds: no save");
+      assert.strictEqual(a.grants.get("steam:76561190000000161").until, clock + 12 * 3600 * 1000, "but extended");
+      clock += 61 * 1000;
+      assert.ok(a.useGrant("steam:76561190000000161", "ip"));
+      assert.strictEqual(a.store.stats.changes, changes + 1, "a minute later: saved");
+      a.flushSync();
+      assert.strictEqual(read(path.join(dir, "accounts.json")).grants["steam:76561190000000161"].until, clock + 12 * 3600 * 1000);
+    });
+
+    await test("after a serialize slower than 50 ms the next write waits 5 s, not the usual interval", async () => {
+      const file = path.join(dir, "slow.json");
+      let slow = true;
+      const store = new CoalescedJsonFile(file, () => {
+        const t0 = performance.now();
+        while (slow && performance.now() - t0 < 60) { /* a big file */ }
+        return "{}";
+      }, { delayMs: 100, slowSerializeMs: 50, slowDelayMs: 5000 });
+      store.markDirty();
+      await sleep(300);
+      assert.strictEqual(store.stats.writes, 1);
+      assert.strictEqual(store.currentDelayMs(), 5000);
+      store.markDirty();
+      await sleep(400);
+      assert.strictEqual(store.stats.writes, 1, "not written again 100 ms later");
+      slow = false;
+      store.flushSync();
+      assert.strictEqual(store.currentDelayMs(), 100, "back to the interval once it is fast again");
+    });
+
+    await test("the server warns loudly when profiles.json grows past CULLING_PROFILES_WARN_BYTES (200 MB)", async () => {
+      const srv = startServer({ output: true, vars: { CULLING_PROFILES_WARN_BYTES: "100" } });
+      try {
+        await srv.ready();
+        await srv.login("steam:76561190000000162");
+        await sleep(300);
+        assert.ok(/WARNING: profiles\.json/.test(srv.output()), srv.output().slice(-300));
+      } finally { srv.stop(); }
+    });
+
+    await test("password hashes run on at most one fewer thread than the machine has (1 or 2)", async () => {
+      const { SCRYPT_ACTIVE } = require("../accounts");
+      assert.strictEqual(SCRYPT_ACTIVE, Math.max(1, Math.min(2, os.availableParallelism() - 1)));
     });
 
     console.log("all %d store tests passed", passed);

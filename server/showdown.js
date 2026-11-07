@@ -21,8 +21,11 @@
 const fs = require('fs');
 const { CoalescedJsonFile } = require('./store');
 
+// minRoundMs: a round reported sooner than this after the series started or
+// the round before doesn't count (no real round is that short; the server
+// passes CULLING_SHOWDOWN_MIN_ROUND_SECONDS). 0: no minimum.
 const DEFAULTS = { roundsToWin: 4, idleMs: 30 * 60 * 1000, now: Date.now, file: null, saveDelayMs: 0,
-  onSaveError: () => {} };
+  onSaveError: () => {}, minRoundMs: 0 };
 
 class ShowdownSeries {
   constructor(options = {}) {
@@ -97,6 +100,8 @@ class ShowdownSeries {
     const s = this.current(userID);
     if (!s || !s.inMatch || !s.inRound) return null;
     if (!Number.isInteger(round) || round !== s.rounds.length + 1) return null;
+    const since = this.options.now() - (Number.isFinite(s.lastRoundAt) ? s.lastRoundAt : s.startedAt);
+    if (this.options.minRoundMs > 0 && since < this.options.minRoundMs) return null;
     if (result === 'D') {
       s.rounds.push('draw');
       s.updatedAt = this.options.now();
@@ -106,6 +111,7 @@ class ShowdownSeries {
       return null;
     }
     s.inRound = !s.over;                      // the match goes on to the next round
+    s.lastRoundAt = this.options.now();
     this.save();
     return this.view(s);
   }
@@ -219,7 +225,8 @@ class ShowdownSeries {
 // series counts once on the career (one game, a win only for the series),
 // kills at most one rival per round won (in team Showdown the team size per
 // round won: a round is won by downing every rival), damage at most 200 a
-// round. The same for every team size.
+// round. The same for every team size. report.maxKills / report.maxDamage:
+// further bounds (the server's, from how long the series ran).
 const PAYOUT = { xpBase: 250, xpPerRound: 250, xpWin: 750, creditsBase: 40, creditsPerRound: 20, creditsWin: 120,
   damagePerRound: 200 };
 
@@ -229,10 +236,11 @@ function seriesPayout(view, report) {
   const played = Math.max(1, view.rounds.filter((r) => r !== 'left').length);
   const won = Boolean(view.won);
   const bounded = (v, max) => (Number.isFinite(v) ? Math.min(max, Math.max(0, v)) : 0);
+  const within = (max, extra) => (Number.isFinite(extra) ? Math.min(max, extra) : max);
   return {
     victory: won,
-    kills: bounded(parseInt(report.kills, 10), maxKills),
-    damage: bounded(Number(report.damage), PAYOUT.damagePerRound * played),
+    kills: bounded(parseInt(report.kills, 10), within(maxKills, report.maxKills)),
+    damage: bounded(Number(report.damage), within(PAYOUT.damagePerRound * played, report.maxDamage)),
     timeAlive: bounded(Number(report.timeAlive), report.maxTime || 0),
     func: 0,
     xp: PAYOUT.xpBase + PAYOUT.xpPerRound * roundsWon + (won ? PAYOUT.xpWin : 0),

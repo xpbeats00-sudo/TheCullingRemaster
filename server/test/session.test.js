@@ -43,6 +43,25 @@ try {
     assert.strictEqual(m.claim({ userID: "steam:2", ip: "anything" }).ticket.userID, "steam:2");
   });
 
+  test("tickets keep the address hashed, never raw; one saved raw is hashed when loaded", () => {
+    const fs = require("fs"), os = require("os"), path = require("path");
+    const hashIp = (ip) => "h:" + ip.split("").reverse().join("");
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "culling-tk-")), "tickets.json");
+    const m = new MatchTickets(now, file, { hashIp });
+    const t = m.start("steam:1", "1.2.3.4");
+    assert.ok(!("ip" in t), "no raw address on the ticket");
+    m.flushSync();
+    assert.ok(!fs.readFileSync(file, "utf8").includes("1.2.3.4"), "nor in tickets.json");
+    assert.strictEqual(m.peek({ ip: "1.2.3.4" }).userID, "steam:1", "found by address");
+    fs.writeFileSync(file, JSON.stringify([{ id: "0123456789abcdef", userID: "steam:2", ip: "5.6.7.8", startedAt: clock }]));
+    const loaded = new MatchTickets(now, file, { hashIp });
+    assert.ok(!("ip" in loaded.open.get("steam:2")), "the raw address is dropped");
+    loaded.flushSync();
+    assert.ok(!fs.readFileSync(file, "utf8").includes("5.6.7.8"), "and rewritten without it");
+    assert.strictEqual(loaded.claim({ ip: "5.6.7.8" }).ticket.userID, "steam:2", "still claimed by address");
+    assert.strictEqual(loaded.recentUser("5.6.7.8"), "steam:2");
+  });
+
   test("tickets expire and a new match replaces an unfinished one", () => {
     const m = new MatchTickets(now);
     const first = m.start("steam:1", "1.1.1.1");

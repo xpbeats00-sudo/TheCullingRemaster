@@ -21,6 +21,8 @@ eioParser.encodePayload = function (packets, supportsBinary, callback) {
   if (supportsBinary) return eioParser.encodePayloadAsBinary(packets, callback);
   return stockEncodePayload.call(this, packets, supportsBinary, callback);
 };
+// The same binary frames, built natively instead of byte by byte (eioframing.js).
+eioParser.encodePayloadAsBinary = require('./eioframing').encodePayloadAsBinary;
 
 const HOST = process.env.CULLING_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.CULLING_PORT || '8000', 10);
@@ -58,8 +60,13 @@ const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // over fast, so its result needs 15 s, not the 2 minutes of a normal match. The
 // kits (the same for both sides; the game picks the round's) come from
 // data/showdown.json, written by make_showdown.py.
+// A round reported sooner than minRoundSeconds after the series started or the
+// round before doesn't count (FULL_AUDIT_2026-11-06 round 2: instant "W"
+// rounds); the series' result is held to the match-pay limits (PAY,
+// MIN_MATCH_SECONDS) like any other match.
 const SHOWDOWN = { queue: 'showdown', map: 'arena', format: '1v1', field: 2, roundsToWin: 4,
-  minSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_SECONDS || '15', 10) };
+  minSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_SECONDS || '15', 10),
+  minRoundSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_ROUND_SECONDS || '20', 10) };
 let showdownKit = null, showdownKits = null;
 try {
   const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'showdown.json'), 'utf8'));
@@ -129,7 +136,6 @@ const isForSale = (i) => isCustom(i) && !i.rankedReward;
 const catalogByTid = new Map(catalog.map((i) => [i.tid, i]));
 
 // Short keys are what the game's native parser reads for each type.
-let inventoryTypesCache = null;
 function inventoryTypes() {
   return catalog.map((i) => ({
     tid: i.tid,
@@ -154,30 +160,70 @@ function inventoryTypes() {
 // (patch/make_vfx_camos.py, ".../Katana_XP_VFX_Dark_Matter") work the same way.
 const CAMO_SOURCES = new Set(['xp-camos', 'xp-vfx-camos']);
 const camoKey = (i) => (CAMO_SOURCES.has(i.source) ? String(i.asset).split('_XP_')[1] || null : null);
+// Each catalog item's camo, worked out once (the owned-items list checks all
+// ~5,500 items, and split() per item per login added up: performance review P2).
+const camoByTid = new Map();
+for (const i of catalog) { const key = camoKey(i); if (key) camoByTid.set(i.tid, key); }
 
 function ownedCamos(p) {
   const out = new Set();
   for (const tid of p.owned || []) {
-    const key = camoKey(catalogByTid.get(tid) || {});
+    const key = camoByTid.get(tid);
     if (key) out.add(key);
   }
   return out;
 }
 
-function ownsItem(p, i, camos = ownedCamos(p)) {
-  return (p.owned || []).includes(i.tid) || camos.has(camoKey(i));
+// owned: the player's owned type IDs as a Set (ownedItems checks every
+// catalog item against it).
+function ownsItem(p, i, camos = ownedCamos(p), owned = null) {
+  return (owned ? owned.has(i.tid) : (p.owned || []).includes(i.tid)) || camos.has(camoByTid.get(i.tid) || null);
 }
 
 // Items with an unlockLevel (the airdrops that start locked, from
 // patch/make_airdrop_unlocks.py) are owned once the player reaches it.
 const levelReached = (p, i) => !i.unlockLevel || ((p.stats && p.stats.level) || 1) >= i.unlockLevel;
 
+// The items a profile can own, with what decides it, worked out once.
+const OWNABLE = catalog.filter((i) => !NOT_OWNABLE.has(i.class))
+  .map((i) => ({ tid: i.tid, custom: isCustom(i), unlockLevel: i.unlockLevel || 0, camo: camoByTid.get(i.tid) || null }));
+
 function ownedItems(p) {
   const camos = ownedCamos(p);
-  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && levelReached(p, i) && (!isCustom(i) || ownsItem(p, i, camos)))
-    .map((i) => ({ i: i.tid, q: 1 }));
+  const owned = new Set(p.owned || []);
+  const level = (p.stats && p.stats.level) || 1;
+  const out = [];
+  for (const x of OWNABLE) {
+    if (x.unlockLevel && level < x.unlockLevel) continue;
+    if (x.custom && !owned.has(x.tid) && !(x.camo && camos.has(x.camo))) continue;
+    out.push({ i: x.tid, q: 1 });
+  }
+  return out;
 }
-const entitlements = (p) => ({ data: { items: ownedItems(p) } });
+// What a profile owns depends only on its owned list (which only grows) and
+// its level: the payload is kept per profile until one of them changes.
+const entitlementsKey = (p) => {
+  const o = p.owned || [];
+  return o.length + '|' + ((p.stats && p.stats.level) || 1) + '|' + (o.length ? o[o.length - 1] : '');
+};
+const entitlementsCache = new WeakMap();      // profile -> { key, payload }
+function entitlements(p) {
+  const key = entitlementsKey(p);
+  let c = entitlementsCache.get(p);
+  if (!c || c.key !== key) entitlementsCache.set(p, (c = { key, payload: { data: { items: ownedItems(p) } } }));
+  return c.payload;
+}
+// Sends a menu its owned items (~100 KB): when it asked (get-entitlements), or
+// when they changed since this socket last got them (a login's timed pushes
+// used to send the same list three times). (socket.binary(false), which
+// skips socket.io's walk of the payload for binary data, saved ~0.2 ms here
+// but measured ~1.2 ms slower to arrive on loopback, so it isn't used.)
+function pushEntitlements(socket, p, asked = false) {
+  const key = entitlementsKey(p);
+  if (!asked && socket.entitlementsKey === key) return;
+  socket.entitlementsKey = key;
+  socket.emit('entitlements-response', entitlements(p));
+}
 
 // Cull credits: a starting balance, then earned in matches.
 const STARTING_CREDITS = 10000;
@@ -250,6 +296,9 @@ function dailyPay(p, now = Date.now()) {
     take(credits, xp) { t.credits = (Number(t.credits) || 0) + credits; t.xp = (Number(t.xp) || 0) + xp; }
   };
 }
+// The menu turning a match down this soon after its match-ready (a cancel
+// that crossed it, or match-declined) means the player never went in.
+const DECLINE_WINDOW_MS = intEnv('CULLING_DECLINE_WINDOW_MS', 15000);
 // The menu logging in again this long after a match started means that match
 // is over: a ticket still open then had no result (quit or crash).
 const ABANDON_GRACE_MS = parseInt(process.env.CULLING_ABANDON_GRACE_MS || '60000', 10);
@@ -275,8 +324,25 @@ const hasProfile = (userID) => typeof userID === 'string' && Object.prototype.ha
 // SAVE_DELAY_MS, off the request path. See store.js. Compact JSON: the whole
 // file is serialized on the event loop for each write, and indenting made it
 // ~70% larger and ~50% slower to produce.
-const profileStore = new CoalescedJsonFile(PROFILE_FILE, () => JSON.stringify(profiles), {
-  delayMs: SAVE_DELAY_MS,
+// Once a serialize takes over 50 ms (a big file), writes come every 5 s
+// instead (performance review P5). One JSON file has a ceiling: past
+// CULLING_PROFILES_WARN_BYTES (200 MB) the log says so loudly, at most hourly.
+// The lasting fix is a database (SQLite, one row per profile, written as it
+// changes): a documented follow-up, not done here.
+const PROFILES_WARN_BYTES = intEnv('CULLING_PROFILES_WARN_BYTES', 200 * 1024 * 1024);
+let profilesWarnedAt = 0;
+function serializeProfiles() {
+  const text = JSON.stringify(profiles);
+  if (text.length > PROFILES_WARN_BYTES && Date.now() - profilesWarnedAt > 3600 * 1000) {
+    profilesWarnedAt = Date.now();
+    metrics.error('profilesFileLarge');
+    log('WARNING: profiles.json is ' + (text.length / 1048576).toFixed(1) + ' MB (over ' + (PROFILES_WARN_BYTES / 1048576).toFixed(1)
+      + ' MB): every save serializes all of it on the event loop. Move the profiles to a database.');
+  }
+  return text;
+}
+const profileStore = new CoalescedJsonFile(PROFILE_FILE, serializeProfiles, {
+  delayMs: SAVE_DELAY_MS, slowSerializeMs: 50, slowDelayMs: Math.max(SAVE_DELAY_MS, 5000),
   onError: (e) => { metrics.error('save'); log('saving profiles failed:', e.message); }
 });
 function saveProfiles() {
@@ -358,14 +424,15 @@ const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
   saveDelayMs: SAVE_DELAY_MS,
   onSaveError: (e) => { metrics.error('save'); log('saving sessions failed:', e.message); }
 });
+// Addresses on tickets are kept hashed (accounts.hashIp), never raw.
 const tickets = new MatchTickets(Date.now, path.join(DATA_DIR, 'tickets.json'), {
-  saveDelayMs: SAVE_DELAY_MS,
+  saveDelayMs: SAVE_DELAY_MS, hashIp: (ip) => accounts.hashIp(ip),
   onSaveError: (e) => { metrics.error('save'); log('saving match tickets failed:', e.message); }
 });
 // Showdown series (showdown.js), in data/showdown-series.json so a restart
 // mid-series keeps the score.
 const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin, file: path.join(DATA_DIR, 'showdown-series.json'),
-  saveDelayMs: SAVE_DELAY_MS, onSaveError: (e) => { metrics.error('save'); log('saving showdown series failed:', e.message); } });
+  minRoundMs: SHOWDOWN.minRoundSeconds * 1000, saveDelayMs: SAVE_DELAY_MS, onSaveError: (e) => { metrics.error('save'); log('saving showdown series failed:', e.message); } });
 // Friends (friends.json) and parties (memory); see friends.js.
 // Recent activity for the launcher: matches today, players this week.
 const activity = new Activity(Date.now, path.join(DATA_DIR, 'activity.json'));
@@ -375,6 +442,9 @@ const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
 });
 // Friend requests, removals and party invites per player: one a second, bursts of 20.
 const allowFriendAction = rateLimiter(1, 20);
+// Player cards per player: one a second, bursts of 10 (a card shows a
+// player's record to anyone: this bounds looking names up in bulk).
+const allowPlayerCard = rateLimiter(1, 10);
 // Leaderboard requests per player: one every 2 seconds, bursts of 5.
 const allowLeaderboard = rateLimiter(0.5, 5);
 const allowHttp = rateLimiter(20, 60);
@@ -414,6 +484,12 @@ function normalizeUserID(raw) {
 // A user ID the server will store: short, printable, no control characters.
 const validUserID = (id) => typeof id === 'string' && id.length <= MAX_USERID_LENGTH && /^[\x21-\x7e]+$/.test(id);
 
+// Client text in the log: only letters, digits, _ . - and at most 32 of them
+// (a 1 MB field with newlines could forge lines and roll the logs away).
+const logField = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v).replace(/[^\w.-]/g, '').slice(0, 32) : '');
+// A user ID in a log line about a refusal: a short hash, never the Steam ID.
+const loggedID = (userID) => 'id#' + crypto.createHash('sha256').update(String(userID)).digest('hex').slice(0, 12);
+
 // ---------------------------------------------------------------- HTTP
 
 const app = express();
@@ -443,9 +519,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// errorCode: what the game's menu reads from a refused /api/login (every
+// refusal carries one, so the menu can say why it is offline).
 app.use((req, res, next) => {
-  if (stopping) { res.setHeader('Connection', 'close'); return res.status(503).json({ error: 'stopping' }); }
-  if (!allowHttp(requestIp(req))) return res.status(429).json({ error: 'too-many-requests' });
+  if (stopping) { res.setHeader('Connection', 'close'); return res.status(503).json({ errorCode: 'stopping', error: 'stopping' }); }
+  if (!allowHttp(requestIp(req))) return res.status(429).json({ errorCode: 'rate-limited', error: 'too-many-requests' });
   next();
 });
 
@@ -500,22 +578,24 @@ app.get(['/api', '/api/'], (req, res) => {
 app.post('/api/login', (req, res) => {
   const body = bodyObject(req);
   const userID = normalizeUserID(body.userid);
-  if (!validUserID(userID)) return res.status(400).json({ error: 'invalid-userid' });
+  if (!validUserID(userID)) return res.status(400).json({ errorCode: 'invalid-userid', error: 'invalid-userid' });
   const ipHash = accounts.hashIp(requestIp(req));
   if (REQUIRE_ACCOUNT && !accounts.useGrant(userID, ipHash)) {
-    log('login refused (no play grant)', userID);
+    log('login refused (no play grant)', loggedID(userID));
     return res.status(403).json({ errorCode: 'account-required', error: 'account-required' });
   }
   if (!hasProfile(userID)) {
-    if (Object.keys(profiles).length >= MAX_PROFILES) return res.status(503).json({ error: 'server-full' });
-    if (!allowNewProfile(requestIp(req))) return res.status(429).json({ error: 'too-many-new-players' });
+    if (Object.keys(profiles).length >= MAX_PROFILES) return res.status(503).json({ errorCode: 'server-full', error: 'server-full' });
+    if (!allowNewProfile(requestIp(req))) {
+      return res.status(429).json({ errorCode: 'too-many-new-players', error: 'too-many-new-players' });
+    }
   }
   const token = sessions.issue(userID);
   const p = getProfile(userID);
   // Where this profile last played from (hashed): an account can claim an
   // existing profile only from that address.
   if (p.lastLoginIpHash !== ipHash) { p.lastLoginIpHash = ipHash; saveProfiles(); }
-  log('login', userID, 'authType=' + body.authType, 'appid=' + body.appid, 'build=' + body.build);
+  log('login', userID, 'authType=' + logField(body.authType), 'appid=' + logField(body.appid), 'build=' + logField(body.build));
   res.json({ token, redirect: `${BASE}/api`, userID, build: body.build || '0' });
 });
 
@@ -555,6 +635,30 @@ function matchXP(r) {
     + (r.victory ? 1500 : 0);
 }
 
+// The answers to results already paid, by the ticket's player and address
+// (hashed): the HUD retries a post whose answer it didn't get (a slow first
+// post), and a repeat within RESULT_REPLY_MS gets the same answer (200, same
+// body) instead of a 409 that the HUD shows as "wasn't saved". Nothing is
+// paid again. Found the way the ticket was: by token, else by address (and
+// the HUD's nickname on a shared address), so another player still gets 409.
+const RESULT_REPLY_MS = 10 * 60 * 1000;
+const MAX_RESULT_REPLIES = 2000;
+const resultReplies = new Map();     // userID + '|' + ipHash -> { userID, ipHash, at, body }, oldest first
+function rememberResult(userID, ipHash, body) {
+  const key = userID + '|' + ipHash;
+  resultReplies.delete(key);
+  resultReplies.set(key, { userID, ipHash, at: Date.now(), body: JSON.parse(JSON.stringify(body)) });
+  while (resultReplies.size > MAX_RESULT_REPLIES) resultReplies.delete(resultReplies.keys().next().value);
+}
+function repeatedResult(userID, ipHash, nick) {
+  const cutoff = Date.now() - RESULT_REPLY_MS;
+  for (const [k, r] of resultReplies) { if (r.at >= cutoff) break; resultReplies.delete(k); }
+  if (userID) return resultReplies.get(userID + '|' + ipHash) || null;
+  const mine = [...resultReplies.values()].filter((r) => r.ipHash === ipHash
+    && (!nick || String(usernameOf(r.userID) || '').toLowerCase() === nick));
+  return mine.length === 1 ? mine[0] : null;
+}
+
 // Posted by the in-match HUD (patched hud.js) when you die or win. Paid once
 // per match a player's menu started (the HUD has no token, so the ticket is
 // found by address when needed).
@@ -563,16 +667,21 @@ app.post('/api/matchresult', (req, res) => {
   // Players sharing an address are told apart by the in-game name the HUD
   // sends (their Remaster account name).
   const nick = typeof body.nickname === 'string' ? body.nickname.trim().toLowerCase() : '';
-  const claim = tickets.claim({ userID: userFromRequest(req), ip: requestIp(req),
+  const tokenUser = userFromRequest(req);
+  const ipHash = accounts.hashIp(requestIp(req));
+  const claim = tickets.claim({ userID: tokenUser, ip: requestIp(req),
     pick: nick ? (t) => String(usernameOf(t.userID) || '').toLowerCase() === nick : null });
   if (claim.error) {
+    const again = claim.error === 'no-match' ? repeatedResult(tokenUser, ipHash, nick) : null;
+    if (again) { log('match result repeated', again.userID, 'the stored answer'); return res.json(again.body); }
     log('match result rejected', claim.error, requestIp(req));
     return res.status(409).json({ error: claim.error });
   }
   const userID = claim.ticket.userID;
+  const send = (out) => { rememberResult(userID, ipHash, out); res.json(out); };
   if (claim.ticket.map === SHOWDOWN.map) {
     activity.match(userID);
-    return showdownMatchResult(res, claim, body, userID);
+    return showdownMatchResult(send, claim, body, userID);
   }
   const p = getProfile(userID);
   // Bounded so a malformed report (e.g. "1e999" -> Infinity) can't write
@@ -602,7 +711,10 @@ app.post('/api/matchresult', (req, res) => {
   // Too short to be a real match: nothing paid and nothing on the career
   // (ranked still scores it as last place, below). Otherwise within the day's cap.
   const today = dailyPay(p);
-  const fullXP = matchXP(r), fullCredits = matchCredits(r);
+  // A custom match (its settings are the player's own: more crates, faster
+  // recyclers) pays half, still within the limits above.
+  const rate = claim.ticket.mode === 'custom' ? 0.5 : 1;
+  const fullXP = Math.floor(matchXP(r) * rate), fullCredits = Math.floor(matchCredits(r) * rate);
   const earned = tooShort ? 0 : today.xp(fullXP);
   const credits = tooShort ? 0 : today.credits(fullCredits);
   if (tooShort) log('match result too short', userID, Math.round(claim.elapsed) + ' s', 'nothing paid');
@@ -656,6 +768,8 @@ app.post('/api/matchresult', (req, res) => {
   }
   const s = p.stats;
   s.xp = Math.min(seasonXPCap(), s.xp + earned);
+  // What was really added (less than earned near the season cap).
+  const xpAdded = s.xp - startXP;
   const level = Math.min(SEASON.maxLevel, levelForXP(s.xp) || s.level);
   const levelled = Boolean(level && level !== s.level);
   if (levelled) {
@@ -663,15 +777,15 @@ app.post('/api/matchresult', (req, res) => {
     s.level = level;
   }
   if (!tooShort) careerMatch(userID, p, r, claim.ticket.mode);
-  p.lastMatch = Object.assign({ at: Date.now(), xpEarned: earned }, r);
+  p.lastMatch = Object.assign({ at: Date.now(), xpEarned: xpAdded }, r);
   saveProfiles();
-  log('match result', userID, JSON.stringify(r), `+${earned} XP (${startXP} -> ${s.xp}), +${credits} credits`);
+  log('match result', userID, JSON.stringify(r), `+${xpAdded} XP (${startXP} -> ${s.xp}), +${credits} credits`);
   const socket = socketsByUser.get(userID);
   if (socket) sendPlayer(socket, p);
   // A new level can unlock airdrops: the menu gets them without a restart.
-  if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
+  if (socket && levelled) pushEntitlements(socket, p);
   setPresence(userID, 'menu');
-  res.json({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: null });
+  send({ startXP, xpEarned: xpAdded, stats: s, credits, ranked: rankedResult, showdown: null });
 });
 
 // A real match on the career: games, kills, wins, damage and time, overall and
@@ -706,8 +820,13 @@ function careerMatch(userID, p, r, ticketMode) {
 // once, when it is over: seriesPayout's XP and credits, one game on the
 // career, a win only for the series. Older builds play one round per match:
 // the round counts here and the series pays when its last round does.
-function showdownMatchResult(res, claim, body, userID) {
+// The match-pay limits hold here too: a series shorter than MIN_MATCH_SECONDS
+// (its match's ticket time) or a forfeit with no round played pays nothing and
+// puts nothing on the career, kills and damage are bounded by the series' time
+// at the PAY rates, and the daily cap applies.
+function showdownMatchResult(send, claim, body, userID) {
   const p = getProfile(userID);
+  const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const victory = claim.elapsed >= SHOWDOWN.minSeconds && (body.victory === true || body.victory === 'true');
   const round = parseInt(body.showdownRound, 10);
   const before = showdowns.current(userID);
@@ -724,15 +843,24 @@ function showdownMatchResult(res, claim, body, userID) {
   const startXP = p.stats.xp;
   const st = p.stats;
   let earned = 0, credits = 0;
-  if (paid) {
+  const played = paid ? paid.rounds.filter((x) => x !== 'left').length : 0;
+  if (paid && (tooShort || !played)) {
+    // Nothing paid and no win on the record (a loss still counts as one).
+    if (showdowns.markRecorded(userID) && !paid.won) recordShowdown(userID, false, paid.mode);
+    log('showdown series not paid', userID, paid.wins + '-' + paid.losses,
+      tooShort ? 'too short (' + Math.round(claim.elapsed) + ' s)' : 'no round played');
+  } else if (paid) {
     const r = seriesPayout(paid, { kills: body.kills, damage: body.damage, timeAlive: body.timeAlive,
-      maxTime: Math.min(4 * 3600, claim.elapsed + 30) });
+      maxTime: Math.min(4 * 3600, claim.elapsed + 30),
+      maxKills: PAY.secondsPerKill > 0 ? Math.floor(claim.elapsed / PAY.secondsPerKill) : Infinity,
+      maxDamage: PAY.damagePerSecond > 0 ? claim.elapsed * PAY.damagePerSecond : Infinity });
     const today = dailyPay(p);
     earned = today.xp(r.xp);
     credits = today.credits(r.credits);
     today.take(credits, earned);
     p.cullCredits += credits;
     st.xp = Math.min(seasonXPCap(), st.xp + earned);
+    earned = st.xp - startXP;                 // what was really added (near the season cap: less)
     const level = Math.min(SEASON.maxLevel, levelForXP(st.xp) || st.level);
     const levelled = Boolean(level && level !== st.level);
     if (levelled) { log('level', userID, st.level, '->', level); st.level = level; }
@@ -749,12 +877,12 @@ function showdownMatchResult(res, claim, body, userID) {
       '+' + earned + ' XP, +' + credits + ' credits');
     const socket = socketsByUser.get(userID);
     if (socket) sendPlayer(socket, p);
-    if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
+    if (socket && levelled) pushEntitlements(socket, p);
   } else if (view) {
     log('showdown round', userID, view.round, victory ? 'won' : 'lost', view.wins + '-' + view.losses);
   }
   setPresence(userID, 'menu');
-  res.json({ startXP, xpEarned: earned, stats: st, credits, ranked: null,
+  send({ startXP, xpEarned: earned, stats: st, credits, ranked: null,
     showdown: view ? showdownState(view.over ? 'over' : 'round-over', view) : null });
 }
 
@@ -770,7 +898,10 @@ app.post('/api/showdown/round', (req, res) => {
   const view = showdowns.recordInMatch(userID, round, result);
   if (view) {
     log('showdown round', userID, round, result, view.wins + '-' + view.losses, view.over ? (view.won ? 'VICTORY' : 'defeat') : '');
-    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won, view.mode);
+    // A series over sooner than a real match could be goes on the record with
+    // its match result (showdownMatchResult), which holds it to the limits.
+    const realLength = (Date.now() - ticket.startedAt) / 1000 >= MIN_MATCH_SECONDS;
+    if (view.over && realLength && showdowns.markRecorded(userID)) recordShowdown(userID, view.won, view.mode);
     setPresence(userID, 'match', { mode: view.mode, round: view.round });
   }
   const s = showdowns.last(userID);
@@ -786,7 +917,7 @@ function showdownTicket(req, nickname) {
   const userID = userFromRequest(req);
   if (userID) return tickets.peek({ userID });
   const ip = requestIp(req);
-  const mine = [...tickets.open.values()].filter((t) => t.ip === ip && t.map === SHOWDOWN.map);
+  const mine = tickets.fromIp(ip).filter((t) => t.map === SHOWDOWN.map);
   if (mine.length <= 1) return mine[0] || null;
   const nick = typeof nickname === 'string' ? nickname.trim().toLowerCase() : '';
   const named = nick ? mine.filter((t) => String(usernameOf(t.userID) || '').toLowerCase() === nick) : [];
@@ -817,7 +948,7 @@ app.post('/api/setlevel', (req, res) => {
     p.stats.level = level;
     saveProfiles();
     const socket = levelled && socketsByUser.get(userID);
-    if (socket) socket.emit('entitlements-response', entitlements(p));
+    if (socket) pushEntitlements(socket, p);
   }
   res.json({ ok: true });
 });
@@ -1017,7 +1148,7 @@ function sanitizeProfile(raw, userID) {
     // Rating changes in the history can be negative; everything else not.
     const r = cleanValue(src, false);
     r.history = Array.isArray(src.history) ? src.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
-    if (!isPlainObject(r.processed)) r.processed = {};
+    if (!Array.isArray(r.processed) && !isPlainObject(r.processed)) r.processed = [];
     if (!isPlainObject(r.tiersReached)) r.tiersReached = {};
     // A match left running on another server can't be finished here.
     r.pending = null;
@@ -1122,7 +1253,10 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
   if (status >= 500) log('HTTP error', req.method, req.originalUrl.slice(0, 200), err.stack || err.message);
   if (res.headersSent) return;
-  res.status(status).json({ error: status >= 500 ? 'server-error' : String(err.type || 'bad-request') });
+  const out = { error: status >= 500 ? 'server-error' : String(err.type || 'bad-request') };
+  // A login body that can't be read has no user ID in it.
+  if (req.path === '/api/login' && status < 500) out.errorCode = 'invalid-userid';
+  res.status(status).json(out);
 });
 
 // ---------------------------------------------------------------- socket.io
@@ -1132,9 +1266,43 @@ const server = http.createServer(app);
 // its upstream connections well within it).
 server.keepAliveTimeout = 65 * 1000;
 server.headersTimeout = 70 * 1000;
-// maxHttpBufferSize: engine.io 3 accepts 100 MB messages by default; nothing
-// the game sends is more than a few KB.
-const io = socketio(server, { pingInterval: 10000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: 1e6 });
+// The socket layer, before any login (performance review P1: four clients
+// uploading ~1 MB polling payloads kept a core busy: engine.io concatenates
+// the body chunk by chunk, and the binary payload is decoded byte by byte):
+// - maxHttpBufferSize: a message is at most 64 KB (engine.io 3's default is
+//   100 MB; nothing the game sends is more than a few KB);
+// - a polling upload whose Content-Length is over that is refused (413)
+//   before its body is read, and polling uploads are rate limited per address
+//   (as many as socket events: a client posts at most one batch per event);
+// - new sessions (handshakes, polling or websocket) are rate limited per
+//   address: a burst of 30, then one a second.
+const SOCKET_MAX_BYTES = intEnv('CULLING_SOCKET_MAX_BYTES', 64 * 1024);
+const allowSocketPost = rateLimiter(30, 90);
+const allowHandshake = rateLimiter(1, 30);
+// pingInterval: socket.io's default 25 s (was 10 s: a ping round trip per
+// connected menu every 10 s, which nothing here needs; performance review P7).
+const io = socketio(server, { pingInterval: 25000, pingTimeout: 30000, cookie: false, maxHttpBufferSize: SOCKET_MAX_BYTES,
+  allowRequest: (req, fn) => {
+    const ok = allowHandshake(clientIp(req.connection.remoteAddress, req.headers['x-forwarded-for']));
+    if (!ok) metrics.error('handshakeRefused');
+    fn(ok ? null : 'too-many-sessions', ok);
+  } });
+// engine.io's request listener calls io.engine.handleRequest: polling uploads
+// are checked first, and a refused one never reaches engine.io.
+const engineHandleRequest = io.engine.handleRequest.bind(io.engine);
+io.engine.handleRequest = (req, res) => {
+  if (req.method === 'POST') {
+    const length = parseInt(req.headers['content-length'], 10);
+    const tooBig = Number.isFinite(length) && length > SOCKET_MAX_BYTES;
+    if (tooBig || !allowSocketPost(requestIp(req))) {
+      metrics.error(tooBig ? 'socketUploadTooBig' : 'socketDropped');
+      res.writeHead(tooBig ? 413 : 429, { 'Content-Type': 'text/plain', Connection: 'close' });
+      res.end();
+      return;
+    }
+  }
+  engineHandleRequest(req, res);
+};
 const socketsByUser = new Map();
 const socketsByIp = new Map();      // address -> open sockets
 let connectedSockets = 0;
@@ -1151,9 +1319,10 @@ function gauges() {
     matchLobbies: lobbies.stats(),
     leaderboard: leaderboard.stats(),
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
-    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
+    rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), socketPost: allowSocketPost.size(),
+      handshake: allowHandshake.size(), newProfile: allowNewProfile.size(),
       registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
-      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size() },
+      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size(), playerCard: allowPlayerCard.size() },
     saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null,
       accounts: accounts.store ? accounts.store.stats : null },
     stopping
@@ -1264,16 +1433,24 @@ const lobbies = new MatchLobbies({
   onError: (e, lobby, where) => lobbyFailed(e, lobby, where)
 });
 
+// A ranked record's rating this season, within the season cap, or null (none,
+// or last season's: a record is only brought to the new season when played).
+function seasonRating(rec) {
+  return rec && Number.isFinite(rec.rating) && rec.season === ranked.CONFIG.season.id
+    ? Math.min(ranked.CONFIG.maxRating, rec.rating) : null;
+}
+
 // What other players see of someone in a lobby: no IDs, nothing private.
 // `playlist`: the lobby's; a ranked team playlist shows that mode's rank (none
-// before the player's first match in it), anything else the Solo rank.
+// before the player's first match in it), anything else the Solo rank; this
+// season's only.
 function lobbyCard(userID, playlist) {
   const p = peekProfile(userID);
   const key = accounts.keyForUserID(userID);
   const a = key ? accounts.get(key) : null;
   const teamMode = ranked.modeForPlaylist(playlist);
   const rec = teamMode && teamMode !== 'solo' ? ranked.record(p, teamMode) : p && p.ranked;
-  const rating = rec && Number.isFinite(rec.rating) ? Math.min(ranked.CONFIG.maxRating, rec.rating) : null;
+  const rating = seasonRating(rec);
   return {
     name: a ? a.username : 'Player',
     level: p && p.stats ? Math.min(SEASON.maxLevel, p.stats.level || 1) : 1,
@@ -1570,10 +1747,13 @@ function launchMatch(socket, queue, map, shared = {}) {
     saveProfiles();
   }
   const matchId = shared.matchId || newMatchId();
+  // The match-ready's nonce, kept on the ticket: match-declined names it.
+  const nonce = crypto.randomBytes(8).toString('hex');
   // The ticket says which match this is: its map, its mode, the ranked match
   // it scores (only that ranked match is finished by its result), and the
   // shared record (match, lobby, party).
   tickets.start(socket.userID, socketIp(socket), {
+    nonce,
     map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle',
     mode,
     ranked: rankedId,
@@ -1597,7 +1777,7 @@ function launchMatch(socket, queue, map, shared = {}) {
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   socket.emit('match-ready', {
     gameServer: answer,
-    nonce: crypto.randomBytes(8).toString('hex'),
+    nonce,
     serverNonce: crypto.randomBytes(8).toString('hex'),
     // The shared record. Each player's match still runs on their own PC with
     // AI contestants (and an AI teammate in Duo): netplay is false.
@@ -1609,6 +1789,27 @@ function launchMatch(socket, queue, map, shared = {}) {
     ranked: rankedId ? rankedMode : null,
     netplay: false
   });
+}
+
+// The menu turned down the match it was just sent: the player left the search
+// as the match-ready crossed it (leave-mm), or the menu ignored the
+// match-ready (match-declined). Within DECLINE_WINDOW_MS of the match-ready
+// and with no result yet, the match is closed: its ticket, and its pending
+// ranked match without any penalty (it was never played); friends see the
+// player back in the menu. Returns whether a match was closed. `nonce`: the
+// match-ready's (match-declined sends it): only that match is closed; without
+// one (older menus, leave-mm), the player's latest. The window holds either
+// way, so a match being played can never be declined (a way out of a ranked
+// loss).
+function declineMatch(userID, why, nonce = null) {
+  const t = tickets.peek({ userID });
+  if (!t || Date.now() - t.startedAt > DECLINE_WINDOW_MS) return false;
+  if (typeof nonce === 'string' && nonce && t.nonce && nonce !== t.nonce) return false;
+  tickets.cancel(userID, t.id);
+  if (t.ranked && ranked.cancelMatch(getProfile(userID), ranked.modeId(t.rankedMode), t.ranked)) saveProfiles();
+  setPresence(userID, 'menu');
+  log('match declined', userID, why, t.mode || '', t.ranked ? 'ranked ' + t.ranked + ' dropped' : '');
+  return true;
 }
 
 // The whole series is this match (any team size): one left unfinished is
@@ -1707,10 +1908,18 @@ function statusOf(userID) {
   return { state, label, lastSeen: state === 'offline' ? friends.peek(userID).seen : null };
 }
 
-// A player as friends and party lists show them.
+// A player as friends and party lists show them. `status` (what they are
+// doing now, when they were last seen) is only for their friends and party
+// (mayWatch): pushFriends and playerCard leave it out for anyone else.
 function friendEntry(userID) {
   return Object.assign({ username: usernameOf(userID) || 'Player' }, lobbyCard(userID), { status: statusOf(userID) });
 }
+function mayWatch(viewer, userID) {
+  if (viewer === userID || friends.areFriends(viewer, userID)) return true;
+  const p = friends.party(viewer);
+  return Boolean(p && p.members.includes(userID));
+}
+const withoutStatus = (e) => { const out = Object.assign({}, e); delete out.status; return out; };
 
 // entry: friendEntry, or a cached one (flushFriends).
 function partyView(userID, entry = friendEntry) {
@@ -1728,16 +1937,37 @@ const STATE_ORDER = { match: 0, lobby: 1, searching: 2, menu: 3, offline: 4 };
 // out once for all the panels that show it. Built and sent on the spot, one
 // status change of a player with 200 friends online built 40,000 entries and
 // blocked the event loop for ~85 ms (SERVER_AUDIT_2 P2, test/friends_load.js).
+// And a panel gets at most one push per FRIENDS_PUSH_MS (performance review
+// P6): the first change goes out right away, later ones in that window wait
+// for its end and go out together, with the state as it is then. A panel the
+// player asked for (friends-get: `asked`) goes out at once all the same.
+const FRIENDS_PUSH_MS = intEnv('CULLING_FRIENDS_PUSH_MS', 300);
 const friendsDirty = new Set();
-let friendsFlush = null;
-function sendFriends(userID) {
+const friendsPushedAt = new Map();      // userID -> when their panel was last pushed
+const friendsAsked = new Set();          // panels asked for: not held to the window
+let friendsFlush = null, friendsLater = null;
+function sendFriends(userID, asked = false) {
   friendsDirty.add(userID);
+  if (asked) friendsAsked.add(userID);
   if (!friendsFlush) friendsFlush = setImmediate(flushFriends);
 }
 function flushFriends() {
   friendsFlush = null;
-  const ids = [...friendsDirty];
-  friendsDirty.clear();
+  const now = Date.now();
+  const ids = [];
+  let nextDue = Infinity;
+  for (const id of friendsDirty) {
+    const due = friendsAsked.has(id) ? 0 : (friendsPushedAt.get(id) || 0) + FRIENDS_PUSH_MS;
+    if (due <= now) { ids.push(id); friendsDirty.delete(id); friendsPushedAt.set(id, now); } else nextDue = Math.min(nextDue, due);
+  }
+  friendsAsked.clear();
+  if (nextDue < Infinity && !friendsLater) {
+    friendsLater = setTimeout(() => { friendsLater = null; if (!friendsFlush) friendsFlush = setImmediate(flushFriends); }, nextDue - now);
+    if (friendsLater.unref) friendsLater.unref();
+  }
+  // Only recent pushes matter: the table stays small.
+  if (friendsPushedAt.size > 10000) for (const [id, at] of friendsPushedAt) if (now - at >= FRIENDS_PUSH_MS) friendsPushedAt.delete(id);
+  if (!ids.length) return;
   const cache = new Map();
   const entry = (id) => {
     let e = cache.get(id);
@@ -1753,15 +1983,17 @@ function pushFriends(userID, entry) {
   const socket = socketsByUser.get(userID);
   if (!socket || !socket.connected) return;
   const me = friends.peek(userID);
+  // Friends and party members with their status; anyone else (requests) without.
+  const shown = (id) => (mayWatch(userID, id) ? entry(id) : withoutStatus(entry(id)));
   const list = me.friends.map(entry)
     .sort((a, b) => STATE_ORDER[a.status.state] - STATE_ORDER[b.status.state] || a.username.localeCompare(b.username));
   socket.emit('remaster-friends', {
     you: usernameOf(userID),
     friends: list,
-    incoming: me.incoming.map(entry),
-    outgoing: me.outgoing.map(entry),
-    party: partyView(userID, entry),
-    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: entry(i.from) })),
+    incoming: me.incoming.map(shown),
+    outgoing: me.outgoing.map(shown),
+    party: partyView(userID, shown),
+    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: shown(i.from) })),
     maxParty: friends.limits.maxParty
   });
 }
@@ -1822,12 +2054,14 @@ function playerCard(userID, viewer) {
     memberSince: p.createdAt || null,
     showdown: p.showdown ? { won: p.showdown.won || 0, lost: p.showdown.lost || 0 } : { won: 0, lost: 0 },
     showdownTeams: showdownTeamsCard(p),
-    ranked: null,
-    status: statusOf(userID)
+    ranked: null
   });
+  // What they are doing now: for themselves, their friends and their party only.
+  if (viewer && mayWatch(viewer, userID)) card.status = statusOf(userID);
+  // Ranked Solo this season (null: not played this season), like the team modes.
   const r = p.ranked;
-  if (r && Number.isFinite(r.rating)) {
-    const rating = Math.min(ranked.CONFIG.maxRating, r.rating);
+  const rating = seasonRating(r);
+  if (rating !== null && (r.matches || 0) > 0) {
     card.ranked = {
       season: { id: ranked.CONFIG.season.id, name: ranked.CONFIG.season.name },
       tier: ranked.tierFor(rating).name, rating,
@@ -1850,6 +2084,22 @@ function playerCard(userID, viewer) {
       : me.outgoing.includes(userID) ? 'requested' : me.incoming.includes(userID) ? 'asked-you' : 'none';
   }
   return card;
+}
+
+// The full item list (get-inventory-types with a stale version): about 800
+// KB, so it is built and encoded once (the catalog never changes while
+// running) and written to each socket as is, at most once a minute per socket
+// (FULL_AUDIT_2026-11-06 P1: a stale version re-sent it on every request).
+const INVENTORY_RESEND_MS = 60 * 1000;
+let inventoryTypesPacket = null;
+function sendInventoryTypes(socket) {
+  const payload = () => ({ data: { versionOK: false, currentVersion: CATALOG_VERSION, types: inventoryTypes() } });
+  if (!inventoryTypesPacket) {
+    io.encoder.encode({ type: io.parser.EVENT, nsp: '/', data: ['inventory-types-response', payload()] },
+      (encoded) => { inventoryTypesPacket = encoded; });
+  }
+  if (inventoryTypesPacket) socket.client.packet(inventoryTypesPacket, { preEncoded: true });
+  else socket.emit('inventory-types-response', payload());       // (the encoder answered later: never for text)
 }
 
 // A short string from a client message, or `fallback`.
@@ -1953,6 +2203,8 @@ io.on('connection', (socket) => {
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => {
     const me = socket.userID;
+    // Sent as the match-ready crossed it: the menu ignores that match.
+    declineMatch(me, 'leave-mm');
     // A party queued together leaves together, whoever cancels: the others'
     // menus are told who did.
     const p = friends.party(me);
@@ -1962,6 +2214,11 @@ io.on('connection', (socket) => {
     }
     socket.emit('leave-mm-ack');
     setPresence(me, 'menu');
+  });
+  // The menu ignored a match-ready (the player had asked to leave).
+  // Payload: { nonce: the match-ready's nonce, queueName } (nonce may be missing).
+  on('match-declined', (msg) => {
+    declineMatch(socket.userID, 'match-declined', msg && typeof msg === 'object' ? shortString(msg.nonce, 64, null) : null);
   });
   // Showdown: leave the series from the menu (the next round isn't played).
   on('showdown-leave', () => {
@@ -2002,16 +2259,16 @@ io.on('connection', (socket) => {
   // Inventory / cosmetics: the item catalog and the player's owned items.
   // The game only asks for owned items now and then, so push them whenever
   // the catalog has (re)loaded as well.
-  const sendEntitlements = () => socket.emit('entitlements-response',
-    entitlements(getProfile(socket.userID)));
-  on('get-entitlements', sendEntitlements);
+  const sendEntitlements = (asked) => pushEntitlements(socket, getProfile(socket.userID), asked === true);
+  on('get-entitlements', () => sendEntitlements(true));
   on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {
       socket.emit('inventory-types-response', { data: { versionOK: true, currentVersion: CATALOG_VERSION } });
+    } else if (socket.inventorySentAt && Date.now() - socket.inventorySentAt < INVENTORY_RESEND_MS) {
+      metrics.error('socketDropped');      // this socket has the list: not again so soon
     } else {
-      // The catalog never changes while running: build the list once.
-      if (!inventoryTypesCache) inventoryTypesCache = inventoryTypes();
-      socket.emit('inventory-types-response', { data: { versionOK: false, currentVersion: CATALOG_VERSION, types: inventoryTypesCache } });
+      socket.inventorySentAt = Date.now();
+      sendInventoryTypes(socket);
     }
     later(sendEntitlements, 1000);
   });
@@ -2043,7 +2300,7 @@ io.on('connection', (socket) => {
     }
     socket.emit('purchase-success', { data: JSON.stringify({ itemAddData: { typeId, quantity: 1 } }) });
     sendPlayer(socket, p);
-    sendEntitlements();
+    sendEntitlements(true);
   });
   on('get-premium-types', () => {
     socket.emit('premium-types-response', { data: { versionOK: false, currentVersion: 'local-1', types: [] } });
@@ -2083,7 +2340,7 @@ io.on('connection', (socket) => {
     fn(me, msg && typeof msg === 'object' ? msg : {}, reply);
   });
   const target = (msg) => (typeof msg.username === 'string' && msg.username.length <= 40 ? userIDForName(msg.username) : null);
-  friendAction('friends-get', (me) => sendFriends(me));
+  friendAction('friends-get', (me) => sendFriends(me, true));
   friendAction('friend-request', (me, msg, reply) => {
     const to = target(msg);
     if (!to) return reply({ error: 'no-such-player', username: msg.username });
@@ -2157,7 +2414,8 @@ io.on('connection', (socket) => {
     for (const id of new Set([me].concat(before))) sendFriends(id);
   });
   // A player's card: yours, or anyone's by username (no such player: found false).
-  friendAction('player-card', (me, msg) => {
+  friendAction('player-card', (me, msg, reply) => {
+    if (!allowPlayerCard(me)) return reply({ error: 'slow-down' });
     const id = msg.username === undefined ? me : target(msg);
     socket.emit('remaster-player-card', id ? Object.assign({ found: true }, playerCard(id, me))
       : { found: false, username: typeof msg.username === 'string' ? msg.username.slice(0, 40) : null });
@@ -2194,14 +2452,23 @@ io.on('connection', (socket) => {
   on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   on('lobby-start-match', () => {
     if (!socket.lobby) return socket.emit('lobby-start-match-fail', { reason: 'not-in-lobby' });
-    // Out of any matchmaking lobby: its match-ready would land on top of this one.
-    lobbies.leave(socket.userID);
+    // Out of any matchmaking lobby: its match-ready would land on top of this
+    // one. A party queued together stops its search for everyone, with the
+    // reason, as the other exits do (never a party sent on without a member).
+    const me = socket.userID;
+    const party = friends.party(me);
+    if (!(party && partyQueued(party, me) && cancelPartyQueue(party,
+      party.leader === me ? 'party-leader-cancelled' : 'party-member-cancelled',
+      (usernameOf(me) || 'A party member') + ' started a custom match: the search was stopped.', me))) {
+      lobbies.leave(me);
+    }
     const map = custom.mapIndex(socket.lobby.mapName);
     const gameServer = custom.gameServer(socket.lobby.mapName, socket.lobby.mods);
-    tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom' });
+    const nonce = crypto.randomBytes(8).toString('hex');
+    tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom', nonce });
     setPresence(socket.userID, 'match', { mode: 'custom' });
     log('match-ready ->', socket.userID, gameServer);
-    socket.emit('match-ready', { gameServer, nonce: crypto.randomBytes(8).toString('hex'),
+    socket.emit('match-ready', { gameServer, nonce,
       serverNonce: crypto.randomBytes(8).toString('hex') });
   });
 

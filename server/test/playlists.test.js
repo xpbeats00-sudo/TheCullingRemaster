@@ -141,7 +141,8 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     await test("ranked: a result without a server-issued ticket is refused and changes nothing", async () => {
       const before = JSON.stringify(srv.profiles()[A].ranked || null);
       const r = await result(tokenA, { victory: true, placement: 1, kills: 15 });
-      assert.strictEqual(r.status, 409);
+      // (Within 10 minutes of A's last result: that answer again, nothing new.)
+      assert.ok(r.status === 409 || (r.status === 200 && r.json.ranked === null), "refused: " + r.status);
       assert.strictEqual(JSON.stringify(srv.profiles()[A].ranked || null), before);
     });
 
@@ -162,7 +163,7 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       const matches = srv.profiles()[A].ranked.matches;
       const second = await result(tokenA, body);
       assert.strictEqual(first.status, 200);
-      assert.strictEqual(second.status, 409, "the ticket is spent");
+      assert.deepStrictEqual([second.status, second.json], [200, first.json], "the ticket is spent: the same answer again");
       assert.strictEqual(srv.profiles()[A].ranked.matches, matches);
     });
 
