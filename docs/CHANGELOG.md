@@ -11,6 +11,18 @@
 
 ## Game (next release)
 
+**Connection, results and menus (FULL_AUDIT_2026-11-06, client items)**
+- The menu reconnects on its own after the connection drops (a server update, a network blip) or a sign-in fails: it tries again after 5 s, then 10, 20, 40 and 60 s at most, with a small "Offline — reconnecting" note bottom left. Before, it stayed offline until you queued or opened Friends. A refusal that retrying can't fix (no account, banned, out of date) doesn't retry until you press Retry. When the server no longer knows your session, the menu signs in again from scratch.
+- Sign-in refusals now say why: "Open the game from the launcher and sign in" (no account), the server is full, too many new players or requests from your network, the server is restarting (try again in a minute), or an invalid Steam ID. Before, most of them left the menu offline without a word, and a missing account showed "Error code: 7".
+- If you cancel a search just as its match is found, the menu now tells the server it declined the match (needs the server update), so it doesn't stay on your record as a ranked last place or show you "In match" to friends. If the search reaches the server after your cancel, the menu leaves it again, so the search pill no longer sticks on "Leaving...".
+- Match results are retried for up to 5 minutes when the server doesn't answer (before: three tries in 10 s). Quitting while a result is still unsaved sends it first and returns to the menu as soon as the server answers, or after 2 s at most. Before, a team result was sent with a request that could freeze the game when the server was unreachable.
+- A failed search start (no connection) no longer blocks every later search. The TRIO, QUAD, Showdown and Ranked tiles work again after the error.
+- Ranked and the leaderboard no longer sit on "Loading..." forever: Ranked says "Ranked unavailable — retry" (click to retry) or that you are offline, and the leaderboard says when the server isn't answering.
+- A failed purchase says why (not enough credits, a ranked reward, an item that can't be bought).
+- Friends: the buttons wait for the server's answer, so a double click no longer gives two contradictory messages. The result of Join on an invite (or a player card's buttons) now shows even when the Friends panel is closed.
+- Safety: the match URL from the server only accepts the weather and team-size options, so a bad answer can't turn on a test mode. Teammates' names, and the server's text on the Ranked screen, are shown as text, never as markup. The Steam login ticket and your session token are no longer written to the menu's log. Login errors no longer appear in the build-version line. The stuck-player safety net and Showdown's repossess check that the pawn is a character before reading it. Needs the patched exe.
+- Tests: `patch/test_clientweb.js` (new: the real ClientWeb.js on stand-ins for the engine, jQuery, socket.io and the server), `test_match_urls.py`, `test_ranked_hud.js`, `test_team_hud.js`, `test_ranked_menu.js`, `test_remaster_panels.js`, `test_showdown_menu.js`, `test_custom_menu.js`, `test_unstick_native.py`, `test_native_module.py`. Not yet checked in game.
+
 **Teams on a game server**
 - In a match hosted on a game server (shared matches, still in testing, not yet open to players), the game now keeps the teams the server sets. Before, it re-paired players by its own list order, so your teammate panel could show the wrong player. Local Duo, Trios and Quads pair as before. Checked in game: with 1.3.12 the panel showed the other player; with this build, your own teammate; a local Duo still pairs you with a bot.
 
