@@ -8,7 +8,9 @@
 // - a closed Friends panel doesn't keep its text field focused;
 // - offline, opening Friends or the Leaderboard tries to connect once, and the
 //   Leaderboard asks again when the menu signs in;
-// - two refusals in a row arm one Leaderboard retry, not two.
+// - two refusals in a row arm one Leaderboard retry, not two;
+// - a Leaderboard ask the server never answers says so after 10 s instead of
+//   "Loading..." for good (an answer, or opening it again, clears it).
 // usage: node test_remaster_panels.js
 "use strict";
 const fs = require("fs");
@@ -244,6 +246,26 @@ test("Leaderboard: two refusals in a row arm one retry", () => {
   g.RemasterLeaderboard.on({ error: "rate" });
   g.RemasterLeaderboard.on({ error: "rate" });
   assert.strictEqual(g.live().filter((t) => t.ms === 2500).length, 1, "one retry pending");
+});
+
+test("Leaderboard: an ask never answered says so after 10 s, not Loading... for good", () => {
+  const g = page();
+  g.load("Friends.js");
+  g.load("Leaderboard.js");
+  g.RemasterLeaderboard.open();
+  const lb = g.document.getElementById("remaster-leaderboard");
+  assert.ok(/Loading/.test(lb.textContent));
+  const wait = g.live().filter((t) => t.ms === 10000);
+  assert.strictEqual(wait.length, 1, "one answer timeout");
+  wait[0].live = false;
+  wait[0].fn();
+  assert.ok(!/Loading/.test(lb.textContent) && /isn't answering/.test(lb.textContent), lb.textContent);
+  g.RemasterLeaderboard.close();
+  g.RemasterLeaderboard.open();                        // opening again asks again
+  assert.ok(/Loading/.test(lb.textContent));
+  g.RemasterLeaderboard.on({ season: { name: "S1" }, boards: [{ id: "ranked", players: 1, top: [{ username: "Ann", value: 1200, position: 1 }] }] });
+  g.live().filter((t) => t.ms === 10000).forEach((t) => t.fn());
+  assert.ok(/Ann/.test(lb.textContent) && !/isn't answering/.test(lb.textContent), "an answer stands");
 });
 
 test("closing a panel takes its card rows off the page (AnimatedCards.js animates every row on it)", () => {

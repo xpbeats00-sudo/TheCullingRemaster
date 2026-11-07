@@ -4,7 +4,9 @@
 // /api/ranked (server/ranked.js summaries, the real module); the Play tile is
 // retitled for the selected mode and queues it (ranked_coop2/3/4; Solo stays
 // the stock Ranked.js path, "ranked_ffa"); a server from before the team modes
-// shows them as Soon.
+// shows them as Soon. Server text is escaped (attributes too) and numbers are
+// numbers; no answer says "Ranked unavailable - retry" (retry asks again),
+// and signed out it says the menu is offline instead of "Loading..." for good.
 // usage: node test_ranked_menu.js
 "use strict";
 const fs = require("fs");
@@ -53,10 +55,17 @@ function menu(fixture, opts = {}) {
     if (typeof x == "function") { ready = x; return null; }
     return { length: 0, find: () => ({ length: 0 }) };   // no player card in this stand-in
   }
-  $.ajax = () => ({ done: (f) => f(JSON.parse(JSON.stringify(fixture))) });
+  // /api/ranked: answers the fixture, or (opts.fail) fails; opts.hold keeps the answer back.
+  const asks = [];
+  $.ajax = (o) => {
+    asks.push(o);
+    const r = { done(f) { if (!opts.fail && !opts.hold) f(JSON.parse(JSON.stringify(fixture))); r.ok = f; return r; },
+      fail(f) { if (opts.fail && !opts.hold) f({ status: 0 }); r.bad = f; return r; } };
+    return r;
+  };
   $.when = (v) => ({ then: (f) => f(v) });
   const ctx = {
-    console, $, RankedScreen, ClientwebData: { AuthToken: "token" }, Matchmaking: { IsMatchmaking: false },
+    console, $, RankedScreen, ClientwebData: { AuthToken: opts.signedOut ? null : "token" }, Matchmaking: { IsMatchmaking: false },
     QueueMatchmaking: (q) => { queued.push(q); return true; },
     PopScreen: () => { pops++; }, ShowError: (m) => errors.push(m),
     document: {
@@ -76,7 +85,8 @@ function menu(fixture, opts = {}) {
   const panel = () => byId["ranked-panel"].innerHTML;
   const click = (mode) => byId["ranked-modes"].listeners.click({ target: { getAttribute: (n) => (n === "data-mode" ? mode : null) } });
   const play = () => screen.OnOptionElemSelected({ dataset: { queue: "ffa" } });
-  return { ctx, tile, tabs, panel, click, play, queued, stock, errors, store, pops: () => pops };
+  const retry = () => byId["ranked-panel"].listeners.click({ target: { getAttribute: (n) => (n === "data-retry" ? "1" : null) } });
+  return { ctx, tile, tabs, panel, click, play, queued, stock, errors, store, asks, retry, opts, pops: () => pops };
 }
 
 let passed = 0;
@@ -193,6 +203,45 @@ test("a server from before the team modes: Solo as before, the team tabs Soon", 
   assert.ok(m.panel().indexOf("RANKED SOLO") >= 0);
   m.click("duo");
   assert.ok(m.panel().indexOf("isn't on this server yet") >= 0);
+});
+
+test("server text is escaped in text and attributes (quotes too); numbers are numbers, never markup", () => {
+  const evil = JSON.parse(JSON.stringify(fixture));
+  const s = evil.modes.solo;
+  s.tier.name = 'X" onerror="alert(1)';
+  s.season.name = "<b>S</b>";
+  s.rating = "<img src=x>";
+  s.matches = "7<script>";
+  s.tiers.push({ name: "Q'\"<i>", min: "<b>9</b>", reached: false });
+  s.recent = [{ placement: "<u>1</u>", field: "16\"", delta: "<i>5</i>", ratingAfter: "1e3" }];
+  const m = menu(evil);
+  const html = m.panel();
+  assert.ok(html.indexOf('onerror="') < 0, "a quote in a tier name can't close the src attribute: " + html.slice(0, 200));
+  assert.ok(html.indexOf("&quot;") >= 0);
+  for (const bad of ["<img src=x", "<script", "<u>", "<i>", "<b>9", "<b>S"]) assert.ok(html.indexOf(bad) < 0, bad);
+  assert.ok(html.indexOf("0 ELO") >= 0, "a rating that isn't a number shows 0");
+  assert.ok(html.indexOf("1000</span>") >= 0, "\"1e3\" is the number 1000");
+});
+
+test("/api/ranked doesn't answer: 'Ranked unavailable - retry'; retry asks again (not throttled) and shows it", () => {
+  const m = menu(fixture, { fail: true });
+  assert.ok(/Ranked unavailable . retry/.test(m.panel()), m.panel());
+  assert.ok(m.panel().indexOf("Loading") < 0);
+  const before = m.asks.length;
+  m.opts.fail = false;
+  m.retry();
+  assert.strictEqual(m.asks.length, before + 1, "retry asks at once");
+  assert.ok(m.panel().indexOf(fixture.modes.solo.rating + " ELO") >= 0);
+  assert.ok(m.asks.every((o) => o.timeout > 0), "every ask has a timeout");
+});
+
+test("signed out (no token): the Ranked screen says offline, not Loading... for good", () => {
+  const m = menu(fixture, { signedOut: true });
+  assert.ok(/offline/.test(m.panel()), m.panel());
+  assert.strictEqual(m.asks.length, 0);
+  m.ctx.ClientwebData.AuthToken = "token";            // signed in: ClientWeb.js calls refresh()
+  m.ctx.RemasterRanked.refresh();
+  assert.ok(m.panel().indexOf(fixture.modes.solo.rating + " ELO") >= 0);
 });
 
 console.log("all %d ranked menu tests passed", passed);
