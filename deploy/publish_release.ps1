@@ -23,6 +23,9 @@ It ends with a green "PUBLISHED <version> ..." or a red "PUBLISH FAILED ..." lin
 live); the exit code is 0 only for PUBLISHED; everything printed is also in <Root>\logs\publish-<time>.log.
 One publish at a time: <Root>\publish.lock is held open while one runs, and a second one is refused at once.
 
+A release built from a git tree with uncommitted changes (build.dirty) is refused unless -AllowDirty is given, and one
+without a build record (not made by patch\make_release.py) unless -AllowUnbuilt.
+
 A release that drops files the live release has is refused (steps 2 and 3) unless -AllowRemovals is given:
 launchers delete every file a release no longer lists, so a release built from a wrong folder would uninstall the
 game everywhere. Check the "removed" list of step 2 before allowing it.
@@ -38,6 +41,10 @@ param(
     [int]$PublicPort = 8443,
     # Allow a release that removes files the live release has (see above).
     [switch]$AllowRemovals,
+    # Allow a release built from a git tree with uncommitted changes (its build.dirty), or one with no build record
+    # (not made by patch\make_release.py). Both are refused otherwise: a release should be a commit.
+    [switch]$AllowDirty,
+    [switch]$AllowUnbuilt,
     # node.exe (default: <Root>\node\node.exe, installed by install_vps.ps1).
     [string]$Node = '',
     # Where the log of this run goes (default: <Root>\logs): publish-<time>.log, the newest 30 kept.
@@ -113,6 +120,8 @@ try {
 
     $removals = @()
     if ($AllowRemovals) { $removals = @('--allow-removals') }
+    if ($AllowDirty) { $removals += '--allow-dirty' }
+    if ($AllowUnbuilt) { $removals += '--allow-unbuilt' }
 
     Step 'What changes'
     # Every stage_objects.js step reads the verified TEMP copy (and checks its signature again), never the

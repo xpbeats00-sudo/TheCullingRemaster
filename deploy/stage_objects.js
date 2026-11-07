@@ -16,6 +16,12 @@
 // longer lists, so a release built from a wrong or empty folder would remove
 // the game from every player's PC. A release with no files is always refused.
 //
+// patch/make_release.py records what a release was built from ("build" in the
+// signed manifest). A release built from a git tree with uncommitted changes
+// (build.dirty) is refused unless --allow-dirty, and one with no build record
+// at all (not made by make_release.py) unless --allow-unbuilt: what players
+// get should be a commit anyone can check out again.
+//
 // --manifest <file> reads the release's manifest from that file instead of
 // <release publish dir>/manifest.json: publish_release.ps1 passes the copy it
 // verified (in TEMP), so what is staged is exactly what was checked, even if
@@ -23,7 +29,8 @@
 // manifest is checked against that signature (the launcher's release key)
 // before anything else.
 //
-// usage: node deploy/stage_objects.js [--plan] [--allow-removals] [--manifest <file> [--sig <file>]] <release publish dir> <updates dir>
+// usage: node deploy/stage_objects.js [--plan] [--allow-removals] [--allow-dirty] [--allow-unbuilt]
+//          [--manifest <file> [--sig <file>]] <release publish dir> <updates dir>
 "use strict";
 
 const fs = require("fs");
@@ -71,13 +78,28 @@ function readLive(updatesDir) {
 
 // Refuses a release that would delete files from players' installs (see the
 // top of this file), unless removals are explicitly allowed.
-function checkRemovals(next, live, allowRemovals) {
+function checkRemovals(next, live, allowRemovals, opts = {}) {
   if (!Array.isArray(next.files) || next.files.length === 0) throw new Error(`release ${next.version} lists no files: refusing it`);
   // patch/make_release.py records its checks; a test build (gate skipped) is never published.
-  if (next.build && next.build.gate !== "passed") {
+  if (!next.build || typeof next.build !== "object") {
+    if (!opts.allowUnbuilt) {
+      throw new Error(`release ${next.version} has no build record (it wasn't made by patch/make_release.py, so nothing says what it ` +
+        "was built from). Nothing was published. If that is intended, publish again with --allow-unbuilt (-AllowUnbuilt).");
+    }
+    return checkLive(next, live, allowRemovals);
+  }
+  if (next.build.dirty === true && !opts.allowDirty) {
+    throw new Error(`release ${next.version} was built from a git tree with uncommitted changes (build.dirty), not from a commit: ` +
+      "rebuild it from a clean tree. Nothing was published. If that is intended, publish again with --allow-dirty (-AllowDirty).");
+  }
+  if (next.build.gate !== "passed") {
     throw new Error(`release ${next.version} was built without the release consistency gate (gate: ${next.build.gate}): ` +
       "a test build, not publishable. Nothing was published.");
   }
+  return checkLive(next, live, allowRemovals);
+}
+
+function checkLive(next, live, allowRemovals) {
   if (!live || !Array.isArray(live.files)) return [];
   const keep = new Set(next.files.map((f) => f.path));
   const removed = live.files.filter((f) => !keep.has(f.path)).map((f) => f.path);
@@ -91,7 +113,7 @@ function checkRemovals(next, live, allowRemovals) {
 
 async function stage(publishDir, updatesDir, log = console.log, opts = {}) {
   const manifest = readManifest(publishDir, opts);
-  checkRemovals(manifest, readLive(updatesDir), opts.allowRemovals);
+  checkRemovals(manifest, readLive(updatesDir), opts.allowRemovals, opts);
   const objects = path.join(updatesDir, "objects");
   fs.mkdirSync(objects, { recursive: true });
   const seen = new Set();
@@ -140,7 +162,7 @@ function plan(publishDir, updatesDir, log = console.log, opts = {}) {
   for (const f of next.files) if (!paths.has(f.sha256)) paths.set(f.sha256, f.path);
   const oldLayout = (sha, size) => paths.has(sha) && sizeOf(path.join(updatesDir, "files", ...paths.get(sha).split("/"))) === size;
   const p = describe(next, live, (sha, size) => sizeOf(path.join(objects, sha)) === size || oldLayout(sha, size), log);
-  checkRemovals(next, live, opts.allowRemovals);
+  checkRemovals(next, live, opts.allowRemovals, opts);
   return p;
 }
 
@@ -199,7 +221,8 @@ async function publishSetup(publishDir, updatesDir, downloadDir, log = console.l
 
 module.exports = { stage, plan, describe, publishSetup, checkRemovals, readManifest };
 if (require.main === module) {
-  const usage = "usage: node stage_objects.js [--plan] [--allow-removals] [--manifest <file> [--sig <file>]] <release publish dir> <updates dir>\n" +
+  const usage = "usage: node stage_objects.js [--plan] [--allow-removals] [--allow-dirty] [--allow-unbuilt] [--manifest <file> [--sig <file>]] " +
+    "<release publish dir> <updates dir>\n" +
     "       node stage_objects.js --setup [--manifest <file> [--sig <file>]] <release publish dir> <updates dir> <website download dir>";
   const opts = {};
   const args = [];
@@ -207,6 +230,8 @@ if (require.main === module) {
   for (let i = 0; i < all.length; i++) {
     const a = all[i];
     if (a === "--allow-removals") opts.allowRemovals = true;
+    else if (a === "--allow-dirty") opts.allowDirty = true;
+    else if (a === "--allow-unbuilt") opts.allowUnbuilt = true;
     else if (a === "--manifest" || a === "--sig") {
       if (i + 1 >= all.length) { console.error(usage); process.exit(2); }
       opts[a.slice(2)] = all[++i];

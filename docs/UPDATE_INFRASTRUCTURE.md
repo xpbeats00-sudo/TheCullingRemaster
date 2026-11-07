@@ -148,6 +148,8 @@ Use the second form only when step 2 below lists removals you expect. Either run
 2. **The plan** (`deploy/stage_objects.js --plan`): what changes against the live release and what will upload. It **refuses**:
    - a release with no files;
    - a release whose `build.gate` isn't `passed` (a test build);
+   - a release built from a git tree with uncommitted changes (`build.dirty`), unless `-AllowDirty`;
+   - a release with no build record (not made by `patch/make_release.py`), unless `-AllowUnbuilt`;
    - a release that drops files the live release has, unless `-AllowRemovals`. Launchers delete every file a release no longer lists.
 3. **`deploy/stage_objects.js`** (same refusals), for each object:
    - already present: reused;
