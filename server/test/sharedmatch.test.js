@@ -758,6 +758,9 @@ function sharedVars(extra = {}) {
       await sleep(800);   // a few heartbeats
       const st = (await requestTo(backendPort, "GET", "/metrics")).json.sharedMatches;
       assert.deepStrictEqual([st.running, st.servers.servers[0].state, st.servers.servers[0].matchId], [1, "running", a.matchId], JSON.stringify(st.servers));
+      // The used-ticket memory didn't survive the restart, the joined flag did: the same ticket again is refused.
+      const again = await join(a, P.userID);
+      assert.deepStrictEqual([again.status, again.json.error], [403, "already-joined"], JSON.stringify(again));
       const xp = rsrv.profiles()[P.userID].stats.xp;
       const res = await rg.result({ players: { [P.userID]: { placement: 1, kills: 4, damage: 300, timeAlive: 20 } } });
       assert.strictEqual(res.status, 200, JSON.stringify(res.json));

@@ -647,7 +647,10 @@ class SharedMatches {
     if (v.error) return refuse(v.error, { userID: v.claims ? v.claims.userID : userID });
     const pl = rec.players[v.claims.userID];
     if (!pl || pl.state !== "sent" || pl.ticketId !== v.claims.id) return refuse("not-in-match", { userID: v.claims.userID });
+    // In already (the used-ticket memory is lost with a backend restart; the joined flag is saved).
+    if (pl.joined) return refuse("already-joined", { userID: v.claims.userID });
     pl.joined = true;
+    this.save();          // kept across a backend restart
     this.counters.ticketsAccepted++;
     this.event("ticket-accepted", { matchId, serverId, userID: v.claims.userID, team: pl.team });
     return { status: 200, json: { ok: true, userID: v.claims.userID, username: this.deps.usernameOf(v.claims.userID) || null,
