@@ -1298,6 +1298,24 @@ static void trace_scoreboard(u8 *world, const char *tag)
     if (sb && num > 0)
         kv(&l, "first_name_c0", str_at(sb + SB_NAME, 0), 0);
     trace_end(&l);
+    /* Every entry's name (its first 6 characters) and alive flag. */
+    if (sb && num > 0 && trace_begin(&l, "scoreboard-names")) {
+        for (i = 0; i < num && i < 24; i++) {
+            u8 *e = sb + (u64)i * SB_SIZE;
+            i32 c;
+            put_s(&l, " ");
+            for (c = 0; c < 6; c++) {
+                u16 ch = str_at(e + SB_NAME, c);
+                if (!ch)
+                    break;
+                l.b[l.n++] = ch >= 0x21 && ch < 0x7f ? (char)ch : '_';
+            }
+            if (!c)
+                put_s(&l, "(empty)");
+            put_s(&l, F(e, SB_ALIVE, u8) ? "+" : "-");
+        }
+        trace_end(&l);
+    }
 }
 
 /* CULLING_NETPLAY_END=1 (with the attack test): 5 s after the second
@@ -1414,6 +1432,7 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
  * from the first tick after the join, so a player who left still counts. */
 #define REC_WINNER         0x29        /* bIsWinner (DetermineMatchWinner sets it; byte after bIsAlive) */
 static i32 result_done;
+static i32 host_sb_removed;        /* the host's scoreboard rows taken out (host_scoreboard_row) */
 #define SB_PLAYER_ID       0x10        /* FString */
 #define SB_DAMAGE          0x68        /* DamageDealt (int32: 100 after taking a player from 100 to 0, in game) */
 
@@ -1494,6 +1513,11 @@ static void ctl_result(u8 *driver, u8 *world)
         }
         order = F(r, REC_DEATH_ORDER, i32);
         placement = order <= 0 || order > num ? 1 : num + 1 - order;
+        /* The winner by the game's own flag: with the host's player taken
+         * out of the contestants, the game gave the winner a death order
+         * that tied with a bot's (in game: 2 of 15). */
+        if (F(r, REC_WINNER, u8))
+            placement = 1;
         q = put_str(q, " placement=");
         q = put_dec(q, placement);
         q = put_str(q, " order=");
@@ -1517,6 +1541,7 @@ static void ctl_result(u8 *driver, u8 *world)
     ctl_write("result.txt", buf, (u32)(q - buf));
     ctl_write("result.done", "1", 1);
     if (trace_begin(&l, "result-written")) {
+        kv(&l, "host_scoreboard_rows_removed", (u64)host_sb_removed, 0);
         kv(&l, "players", (u64)t->n, 0);
         kv(&l, "bytes", (u64)(q - buf), 0);
         trace_end(&l);
@@ -1968,6 +1993,152 @@ static void client_attack(u8 *driver)
 
 /* Replaces the Steam driver's vtable slot +0x278 (TickFlush). */
 
+
+/* ---- no player for the host ----------------------------------------------
+ *
+ * A route-B host is a game: it has a local player of its own, who took a
+ * pod, counted toward the field and showed on the scoreboard as one more
+ * contestant (in game: "NetHost"). On a real host (the pre-match mode) that
+ * player is made a spectator who isn't a contestant, every tick until the
+ * match ends: AShooterPlayerState +0x42c bits 0 and 1 (spectator, only
+ * spectator) and +0x5b4 (contestant: the free-for-all end check and
+ * DetermineMatchWinner count only these), its pawn is removed, and its record
+ * in the game state is taken out (the scoreboard and the placements come
+ * from the records). */
+#define R_CLS_PC           0x303820    /* AShooterPlayerController::StaticClass getter (package name) */
+#define O_PS_FLAGS         0x42c       /* bit 0 bIsSpectator, bit 1 bOnlySpectator */
+#define O_PS_CONTESTANT    0x5b4
+#define VT_UNPOSSESS       0x650       /* AController::UnPossess */
+#define VT_DESTROY         0x290       /* AActor::K2_DestroyActor */
+typedef void (*vcall_fn)(void *obj);
+
+static i32 is_shooter_pc(u8 *obj)
+{
+    u8 *cls = FN(R_CLS_PC, class_fn)((const u16 *)(image_base() + R_PKG_VICTORY));
+    u8 *oc = obj ? F(obj, O_OBJ_CLASS, u8 *) : 0;
+    i32 idx;
+    if (!cls || !oc)
+        return 0;
+    idx = F(cls, O_CLASS_CHAIN + 8, i32);
+    return idx <= F(oc, O_CLASS_CHAIN + 8, i32) && F(oc, O_CLASS_CHAIN, u8 **)[idx] == cls + O_CLASS_CHAIN;
+}
+
+/* The host's own player controller: a shooter PC that no client connection has. */
+static u8 *host_pc(u8 *driver, u8 *world)
+{
+    u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
+    i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), i, c, num;
+    u8 *data = F(world + O_W_CONTROLLERS, 0, u8 *);
+    num = F(world + O_W_CONTROLLERS, 8, i32);
+    for (i = 0; data && i < num; i++) {
+        u8 *pc = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
+        i32 remote = 0;
+        if (!pc || !is_shooter_pc(pc))
+            continue;
+        for (c = 0; conns && c < nconn; c++)
+            if (conns[c] && F(conns[c], O_CONN_PC, u8 *) == pc)
+                remote = 1;
+        if (!remote)
+            return pc;
+    }
+    return 0;
+}
+
+static i32 host_player_gone, host_record_removed, host_pawn_removed, extra_bot;
+
+/* Its scoreboard row: AVictoryGameState::ScoreboardData, the replicated copy
+ * the scoreboard shows, also had one for the host's player state (in game a
+ * 17th row, "<BOT>0", on every game). Found by the player's id (record and
+ * entry +0x10 PlayerId), taken out the same way as the record. */
+#define R_PS_ID            0x249040    /* the player's id (FString out; showdown_rounds.c R_PS_ID) */
+typedef struct fstring *(*ps_id_fn)(u8 *ps, struct fstring *out);
+
+static i32 fstr_eq(struct fstring *a, u8 *b)
+{
+    u16 *x = (u16 *)a->data, *y = F(b, 0, u16 *);
+    i32 k, n = a->num;
+    if (!x || !y || n <= 1 || F(b, 8, i32) != n)
+        return 0;
+    for (k = 0; k < n && x[k] == y[k]; k++)
+        ;
+    return k == n;
+}
+
+static void host_scoreboard_row(u8 *world, u8 *ps)
+{
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 *sb = gs ? F(gs, O_GS_SCOREBOARD, u8 *) : 0;
+    i32 i, k, num = gs ? F(gs, O_GS_SCOREBOARD + 8, i32) : 0;
+    struct fstring id = { 0, 0, 0 };
+    if (!sb || num <= 0)
+        return;
+    FN(R_PS_ID, ps_id_fn)(ps, &id);
+    for (i = 0; i < num; i++) {
+        if (!fstr_eq(&id, sb + (u64)i * SB_SIZE + SB_PLAYER_ID))
+            continue;
+        for (k = i * (SB_SIZE / 8); k < (num - 1) * (SB_SIZE / 8); k++)
+            ((volatile u64 *)sb)[k] = ((volatile u64 *)sb)[k + SB_SIZE / 8];
+        F(gs, O_GS_SCOREBOARD + 8, i32) = num - 1;
+        host_sb_removed++;
+        break;
+    }
+    if (id.data)
+        FN(R_FREE, free_fn)(id.data);
+}
+
+/* The bot spawner at the match start (VA 0x1402320f0) fills 16 minus the
+ * shooter player controllers in the world, the host's own among them, so the
+ * field came one short (15). During the start countdown (after the pre-match
+ * hold) the host spawns the one bot its player took, with the game's own
+ * single-bot spawn, so the start gives it a pod and makes it a contestant
+ * like the others. (Spawned after the start, it got a record but no pod and
+ * didn't count as a contestant: in game the match ended with it "alive".) */
+#define R_SPAWN_ONE_BOT    0x231fd0    /* AVictoryGameMode: spawn one bot (the start's loop calls it BotsToSpawn times) */
+typedef void (*spawn_bot_fn)(void *gm);
+
+static void host_no_player(u8 *driver, u8 *world)
+{
+    u8 *pc = host_pc(driver, world);
+    u8 *ps = pc ? F(pc, O_C_PLAYERSTATE, u8 *) : 0;
+    u8 *pawn = pc ? F(pc, O_C_PAWN, u8 *) : 0;
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 *recs = gs ? F(gs, O_GS_RECORDS, u8 *) : 0;
+    i32 i, k, num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0;
+    struct line l;
+    if (!ps)
+        return;
+    F(ps, O_PS_FLAGS, u32) |= 3;
+    F(ps, O_PS_CONTESTANT, u8) = 0;
+    if (pawn) {
+        ((vcall_fn)(*(void ***)pc)[VT_UNPOSSESS / 8])(pc);
+        ((vcall_fn)(*(void ***)pawn)[VT_DESTROY / 8])(pawn);
+        host_pawn_removed++;
+    }
+    /* Its record: out of the array (UE arrays are bitwise relocatable; the
+     * removed record's own strings are left, a few bytes once). Copied with
+     * volatile words so the compiler doesn't call memmove, which this blob
+     * doesn't have. */
+    for (i = 0; recs && i < num; i++) {
+        if (F(recs + (u64)i * REC_SIZE, REC_PS, u8 *) != ps)
+            continue;
+        for (k = i * (REC_SIZE / 8); k < (num - 1) * (REC_SIZE / 8); k++)
+            ((volatile u64 *)recs)[k] = ((volatile u64 *)recs)[k + REC_SIZE / 8];
+        F(gs, O_GS_RECORDS + 8, i32) = num - 1;
+        host_record_removed++;
+        break;
+    }
+    host_scoreboard_row(world, ps);
+    if (!host_player_gone && trace_begin(&l, "host-no-player")) {
+        kv(&l, "pc", (u64)pc, 1);
+        kv(&l, "ps", (u64)ps, 1);
+        kv(&l, "pawn_removed", (u64)host_pawn_removed, 0);
+        kv(&l, "record_removed", (u64)host_record_removed, 0);
+        kv_s(&l, "records", gs ? F(gs, O_GS_RECORDS + 8, i32) : -1);
+        trace_end(&l);
+    }
+    host_player_gone = 1;
+}
+
 static u32 prematch_since, prematch_trace;
 static i32 prematch_released;
 #define PREMATCH_MAX_MS    180000      /* start anyway after 3 minutes */
@@ -2031,8 +2202,23 @@ void np_tick_flush(void *driver, float dt)
          * open with the no-end flag. */
         u8 *world = F(driver, O_ND_WORLD, u8 *);
         u8 *gm = world ? F(world, O_WORLD_AUTH_GM, u8 *) : 0;
-        if (gm && prematch_expected() > 0)
+        if (gm && prematch_expected() > 0) {
             prematch_tick((u8 *)driver, world, gm);  /* the real pre-match phase; no no-end flag */
+            if (match_state(world) != 3)
+                host_no_player((u8 *)driver, world);
+            if (!extra_bot && host_player_gone && prematch_released && match_state(world) == 1) {
+                struct line l;
+                u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+                i32 before = gs ? F(gs, O_GS_RECORDS + 8, i32) : -1;
+                extra_bot = 1;
+                FN(R_SPAWN_ONE_BOT, spawn_bot_fn)(gm);
+                if (trace_begin(&l, "extra-bot")) {
+                    kv_s(&l, "records_before", before);
+                    kv_s(&l, "records_after", gs ? F(gs, O_GS_RECORDS + 8, i32) : -1);
+                    trace_end(&l);
+                }
+            }
+        }
         else if (gm && end_phase < 2)
             F(gm, O_GM_NO_END, u8) = 1;
         else if (gm && end_phase == 2 && F(gm, O_GM_NO_END, u8))

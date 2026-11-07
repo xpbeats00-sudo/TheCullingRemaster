@@ -141,12 +141,30 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 4. **The Steam driver's TickFlush slot** (0x142e0ac10): `np_tick_flush`, the loop above.
 5. **`UWorld::InternalGetNetMode`** (0x1416848f0) and its two inlined copies. This client build folded "has a NetDriver" into "is a client", so a hosting world would call itself a client. They now ask the driver: `UNetDriver::GetNetMode` is IsServer ? (GIsClient ? ListenServer : Dedicated) : Client. For every world a stock client has, the result is unchanged.
 
+## No player for the host (2026-11-06)
+
+A route-B host is a game with a local player of its own ("NetHost"). It took a pod, counted toward the field and had a scoreboard row. On a real host (the pre-match mode) the module now, every tick until the match ends:
+- makes that player a spectator who isn't a contestant: player state +0x42c bits 0 and 1, +0x5b4 = 0, the flags the free-for-all end check and DetermineMatchWinner read;
+- removes its pawn;
+- takes its record (game state +0x468) and its scoreboard row (+0x498, found by its player id) out of the arrays.
+
+The game's bot spawner fills 16 minus the shooter player controllers in the world, the host's own included (0x1402320f0). So the host spawns the one bot that player took, with the game's single-bot spawn (0x140231fd0), during the start countdown: the start then gives it a pod and makes it a contestant. Spawned after the start, it got a record but no pod and stayed "alive".
+
+The game gave the winner a death order that tied with a bot's, so the host's result places the record with the game's winner flag (+0x29) first.
+
+**In game** (headless, agent-started, real menus):
+- the field is 16 (2 players, 14 bots), and no host row on any game's scoreboard (16 rows, the same on the host and both clients);
+- the result is paid with the winner 1st and the other player 16th;
+- no game crashed.
+
+**Found: the stock free-for-all rule ends the match when at most one human is alive, bots or not.** In game, when one of the two players died the match ended at once with 14 bots alive, and the survivor won. Before, the host's own player sat alive in its pod as a second human, so this never showed. For shared matches with bots that's a design choice to make: keep it (last human standing wins) or count the bots (the match goes on until one contestant is left).
+
 ## On the VPS (not done: needs the owner)
 
 Nothing below has been run on the VPS. It's the plan, and the list of what blocks real players.
 
 **Blockers before players use it:**
-1. **The host's own player is a contestant.** "NetHost" takes a pod, shows on the scoreboard and counts toward the field. A real host must have no player, or one that isn't a contestant.
+1. ~~The host's own player is a contestant.~~ Fixed (2026-11-06), see "No player for the host" below.
 2. **Clients ran the netplay test exe in every test.** The test copy's exe was swapped for all three games. The released Remaster client (with `patch_exe.py`'s module) hasn't joined a host yet.
 3. **Solo only.** The agent refuses team modes; Duos and up need the team layout passed to the host.
 4. **Capacity unmeasured:** the CPU, memory and bandwidth of a headless host with 16 contestants.
