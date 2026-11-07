@@ -607,7 +607,10 @@ app.post('/api/matchresult', (req, res) => {
   // Too short to be a real match: nothing paid and nothing on the career
   // (ranked still scores it as last place, below). Otherwise within the day's cap.
   const today = dailyPay(p);
-  const fullXP = matchXP(r), fullCredits = matchCredits(r);
+  // A custom match (its settings are the player's own: more crates, faster
+  // recyclers) pays half, still within the limits above.
+  const rate = claim.ticket.mode === 'custom' ? 0.5 : 1;
+  const fullXP = Math.floor(matchXP(r) * rate), fullCredits = Math.floor(matchCredits(r) * rate);
   const earned = tooShort ? 0 : today.xp(fullXP);
   const credits = tooShort ? 0 : today.credits(fullCredits);
   if (tooShort) log('match result too short', userID, Math.round(claim.elapsed) + ' s', 'nothing paid');

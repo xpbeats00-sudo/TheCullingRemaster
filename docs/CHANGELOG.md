@@ -8,6 +8,7 @@
 - Kills count up to 1 per 20 s of match (`CULLING_SECONDS_PER_KILL`) and damage up to 10 per second (`CULLING_DAMAGE_PER_SECOND`). The time includes loading and the pod countdown, so real matches stay well inside both.
 - Match credits and XP stop at 8,000 credits and 40,000 XP a day, UTC (`CULLING_DAILY_MATCH_CREDITS`, `CULLING_DAILY_MATCH_XP`). Showdown series pay counts toward the same cap. Games still count past the cap; set a limit to 0 to turn it off.
 - A normal match pays exactly as before. Tests: `server/test/matchpay.test.js`.
+- A custom match (from the CUSTOM screen, with your own settings) pays half the credits and XP of the same result in a normal match, still within the limits above.
 
 ## Game (next release)
 

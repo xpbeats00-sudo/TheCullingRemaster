@@ -107,6 +107,25 @@ async function showdown(srv, sock, rounds, body = {}, waitMs = 0) {
     });
   });
 
+  await test("a custom match pays half the credits and XP of the same result in a normal match", async () => {
+    await withServer({}, async (srv, play, sock) => {
+      const start = srv.profiles()[A];
+      const update = next(sock, "lobby-update");
+      sock.emit("lobby-create", { mapName: "Jungle/Jungle_P" });
+      await update;
+      const ready = next(sock, "match-ready");
+      sock.emit("lobby-start-match");
+      await ready;
+      const r = await srv.request("POST", "/api/matchresult", { kills: 3, damage: 800, timeAlive: 0, victory: false });
+      assert.strictEqual(r.status, 200);
+      // Half of 215 credits and 1500 XP (the normal match above).
+      assert.strictEqual(r.json.credits, 107);
+      assert.strictEqual(r.json.xpEarned, 750);
+      assert.strictEqual(srv.profiles()[A].cullCredits - start.cullCredits, 107);
+      assert.strictEqual(srv.profiles()[A].stats.xp - start.stats.xp, 750);
+    });
+  });
+
   // Showdown results go through their own path (showdownMatchResult): the
   // same limits (FULL_AUDIT_2026-11-06 round 2: instant "W" rounds paid the
   // daily cap in ~15 s and unlimited career wins and kills).
