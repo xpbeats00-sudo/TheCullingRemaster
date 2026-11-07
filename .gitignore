@@ -35,3 +35,6 @@ server/data/ip-hash-secret.txt
 # Remote Desktop connection files and archives (credentials, game copies)
 *.rdp
 *.rar
+# Keys and secrets (the release signing key lives outside the repo; never commit one)
+*.pem
+.env

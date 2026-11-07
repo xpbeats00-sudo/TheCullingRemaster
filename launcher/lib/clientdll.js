@@ -8,6 +8,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const localhttp = require("./localhttp");
 
 const ORIGINAL = "https://theculling.atch.ooo/api";
 const SOURCE = "Func.Client.dll";
@@ -26,7 +27,9 @@ function slot(url) {
 // Returns "unchanged" or "written"; throws when the DLL can't be patched.
 function ensure(win64, apiUrl) {
   if (apiUrl.length > ORIGINAL.length) throw new Error(`server address too long for the client (max ${ORIGINAL.length} characters)`);
-  if (!/^https:\/\//.test(apiUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(apiUrl)) {
+  let url = null;
+  try { url = new URL(apiUrl); } catch { /* refused below */ }
+  if (!url || !localhttp.ok(url) || !/^https?:\/\//.test(apiUrl)) {
     throw new Error("the client may only use an https server");
   }
   const target = path.join(win64, TARGET);

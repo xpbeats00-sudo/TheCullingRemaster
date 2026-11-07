@@ -93,7 +93,7 @@ def report(pak, check=False):
 
 
 def release_size(game):
-    """What make_release.py --full links from `game` (its FULL_EXCLUDE rules)."""
+    """What make_release.py --full links from `game` (its make_release.excluded() rules)."""
     import make_release
     total = count = 0
     excluded = []
@@ -101,7 +101,7 @@ def release_size(game):
         for name in files:
             p = os.path.join(folder, name)
             rel = os.path.relpath(p, game).replace(os.sep, "/")
-            if rel in make_release.FULL_EXCLUDE or rel.startswith(".remaster/") or rel.endswith(".part"):
+            if make_release.excluded(rel):
                 excluded.append((rel, os.path.getsize(p)))
                 continue
             total += os.path.getsize(p)

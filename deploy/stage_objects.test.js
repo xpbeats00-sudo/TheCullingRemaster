@@ -19,8 +19,10 @@ function publish(version, files) {
     fs.writeFileSync(path.join(pub, "objects", sha(b)), b);
     return { path: p, size: b.length, sha256: sha(b), url: "objects/" + sha(b) };
   });
-  fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify({ version, files: entries }));
+  // What patch/make_release.py records for a release built from a clean, committed tree.
+  fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify({ version, files: entries, build: CLEAN }));
 }
+const CLEAN = { commit: "abc", dirty: false, gate: "passed" };
 (async () => {
   try {
     // The VPS today: release files in the old layout.
@@ -68,7 +70,47 @@ function publish(version, files) {
     tm.build.gate = "passed";
     fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(tm));
     await stage(pub, upd, () => {}, { allowRemovals: true });
-    console.log("stage_objects: all 10 checks passed");
+    // --manifest: the publish stages from the manifest it verified (a TEMP copy), not the release folder's,
+    // which a rebuild on the build PC can replace mid-publish.
+    publish("7", { "Victory/a.pak": A });
+    const verified = path.join(t, "verified-manifest.json");
+    fs.copyFileSync(path.join(pub, "manifest.json"), verified);
+    const E = Buffer.from("rebuilt E");
+    publish("8", { "Victory/a.pak": A, "Victory/e.pak": E });                // the folder's manifest changes after the check
+    n = await stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified });
+    assert.deepStrictEqual([n.reused, n.uploaded], [1, 0], "staged release 7's objects, not the rebuilt folder's");
+    assert.strictEqual(plan(pub, upd, () => {}, { allowRemovals: true, manifest: verified }).to, "7");
+    // --sig: the manifest must match its signature (the launcher's release key, or the one given).
+    const keys = crypto.generateKeyPairSync("ed25519");
+    const sigFile = path.join(t, "verified-manifest.json.sig");
+    fs.writeFileSync(sigFile, crypto.sign(null, fs.readFileSync(verified), keys.privateKey).toString("base64"));
+    await stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified, sig: sigFile, publicKey: keys.publicKey });
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified, sig: sigFile }), /signature/,
+      "not the launcher's release key");
+    fs.writeFileSync(verified, fs.readFileSync(path.join(pub, "manifest.json")));          // altered after signing
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified, sig: sigFile, publicKey: keys.publicKey }), /signature/);
+    const cliM = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", "--allow-removals", "--manifest", verified, "--sig", sigFile, pub, upd], { encoding: "utf8" });
+    assert.strictEqual(cliM.status, 1, "the command line checks the signature too: " + cliM.stdout + cliM.stderr);
+    assert.match(cliM.stderr, /signature/);
+    // A release built from a tree with uncommitted changes (build.dirty) is refused unless --allow-dirty.
+    publish("9", { "Victory/a.pak": A });
+    const dm = JSON.parse(fs.readFileSync(path.join(pub, "manifest.json")));
+    dm.build = { commit: "abc", dirty: true, gate: "passed" };
+    fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(dm));
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true }), /built from a git tree with uncommitted changes.*--allow-dirty \(-AllowDirty\)/);
+    assert.throws(() => plan(pub, upd, () => {}, { allowRemovals: true }), /uncommitted changes/);
+    await stage(pub, upd, () => {}, { allowRemovals: true, allowDirty: true });
+    // A release with no build record (not made by make_release.py) is refused unless --allow-unbuilt.
+    delete dm.build;
+    fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(dm));
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true }), /no build record.*--allow-unbuilt \(-AllowUnbuilt\)/);
+    await stage(pub, upd, () => {}, { allowRemovals: true, allowUnbuilt: true });
+    const cliB = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", "--allow-removals", pub, upd], { encoding: "utf8" });
+    assert.strictEqual(cliB.status, 1, cliB.stdout + cliB.stderr);
+    assert.match(cliB.stderr, /--allow-unbuilt/);
+    const okB = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", "--allow-removals", "--allow-unbuilt", pub, upd], { encoding: "utf8" });
+    assert.strictEqual(okB.status, 0, okB.stdout + okB.stderr);
+    console.log("stage_objects: all 14 checks passed");
   } finally {
     fs.rmSync(t, { recursive: true, force: true });
   }

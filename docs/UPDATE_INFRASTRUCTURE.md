@@ -124,10 +124,14 @@ The publish refuses a manifest whose gate was skipped.
 | `Func.Client.Local.dll`, `Func.Client.Online.dll` | The launcher makes them from `Func.Client.dll`. |
 | `Victory\Content\Paks\LocalServer-WindowsClient_P.pak` | The patch this release replaces. |
 | `InstallScript.vdf` | Steam's install script (EasyAntiCheat, unused). |
+| everything else in `steam_settings\` except `README.txt` | This PC's Steam layer settings. The build writes the README itself. |
+| `Victory\Saved\`, any `*.log`, any `*.dmp` | What the game wrote on the build PC: its config, saves, logs and crash dumps. |
 | `Victory\Content\Paks\Victory\` (3,482 files, 344 MB) | A loose extraction of the paks: 3,480 byte-size copies of files inside the pakchunks (3,474 Wwise banks, plus config), a differing `DefaultInput.ini` and `DefaultEngine.ini.original`. The game reads Wwise banks from `Content/WwiseAudio` and config from `Victory/Config`, both inside the pakchunks. Nothing reads this folder. |
 | `Victory\Content\Movies\LoadingBar.mp4` (2.6 MB) | `make_loading_bar.py`'s movie, not in use. The loading screen plays no movie; the only startup movie is `LoadingScreen.mp4`. |
 | `Engine\...\Steamv136\Win64\generate_interfaces_file.exe` | Goldberg's tool that writes `steam_interfaces.txt`. Nothing loads it. |
 | any `*.original` | Backups of edited config. |
+
+The last four rows above (the loose paks extraction, `LoadingBar.mp4`, `generate_interfaces_file.exe` and `*.original`) are the dead weight (`DEAD_WEIGHT` in `make_release.py`). `--ship-dead-weight` ships them anyway, for a release published over one that still lists them, so it removes nothing from players' installs. 1.3.13 was built that way by editing the exclusions by hand, which left the tree dirty; the flag builds such a release from a clean tree and records `"deadWeight": "shipped"` in the build record. The other rows are never shipped.
 
 **Kept, though first listed as dead weight:** `Victory\Binaries\Win64\pakchunk99-WindowsClient_P.pak`. `Func.Launcher.exe` refuses to start without it next to the client DLL, and `Func.Client.dll` mounts it.
 
@@ -144,10 +148,12 @@ On the VPS, over Remote Desktop with the build PC's C: drive shared, run from th
 
 Use the second form only when step 2 below lists removals you expect. Either runs `deploy/publish_release.ps1 -Release \\tsclient\C\Culling\releases\1.4.0\publish`:
 
-1. **Signature check** with the launcher's key. An unsigned or altered release is refused.
+1. **Signature check** with the launcher's key, of a copy of the manifest and its `.sig` taken once into TEMP. An unsigned or altered release is refused. Every later step reads that verified copy (`stage_objects.js --manifest ... --sig ...`), never the release folder's manifest, so a rebuild on the build PC mid-publish can't change what is staged. Only one publish runs at a time (`C:\culling\publish.lock`); a second one is refused before it does anything.
 2. **The plan** (`deploy/stage_objects.js --plan`): what changes against the live release and what will upload. It **refuses**:
    - a release with no files;
    - a release whose `build.gate` isn't `passed` (a test build);
+   - a release built from a git tree with uncommitted changes (`build.dirty`), unless `-AllowDirty`;
+   - a release with no build record (not made by `patch/make_release.py`), unless `-AllowUnbuilt`;
    - a release that drops files the live release has, unless `-AllowRemovals`. Launchers delete every file a release no longer lists.
 3. **`deploy/stage_objects.js`** (same refusals), for each object:
    - already present: reused;
@@ -155,8 +161,8 @@ Use the second form only when step 2 below lists removals you expect. Either run
    - otherwise: copied from the build PC and checked against its SHA-256.
 
    Objects are never overwritten. (Tested by `deploy/stage_objects.test.js` and `deploy/publish.test.js`.)
-4. **The setup** is copied to the website's download folder from the staged setup object.
-5. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
+4. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
+5. **The setup** is copied to the website's download folder from the staged setup object, only now that the release is live (a publish that fails earlier leaves the website as it was; a failure here is reported as `PUBLISH FAILED AFTER GOING LIVE`).
 6. **Checks** over HTTPS (`deploy/check_published.js`), including that the live manifest's version is the one just published.
 
 **How it ends (docs/SERVER_AUDIT_2.md, D1 and D2).** The window's last lines are one of:

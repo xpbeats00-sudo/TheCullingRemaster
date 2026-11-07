@@ -24,9 +24,16 @@ const { createReconnect } = require("./lib/reconnect");
 const { createSerial, createExclusive } = require("./lib/serial");
 const { createLog } = require("./lib/log");
 const { friendly } = require("./lib/errors");
+const localhttp = require("./lib/localhttp");
+
+// Plain http to localhost (a local test server) only in a dev run: the
+// installed launcher takes https addresses only (lib/localhttp.js).
+localhttp.allow(!app.isPackaged);
 
 const SETTINGS = () => path.join(app.getPath("userData"), "settings.json");
 const UPDATES = () => path.join(app.getPath("userData"), "launcher-updates");
+// The newest release accepted (lib/sync.js checkFloor), whatever the game folder.
+const FLOOR = () => path.join(app.getPath("userData"), "release-floor.json");
 const PAGES = { splash: "src/splash.html", main: "src/main.html" };
 
 let win = null;
@@ -134,14 +141,17 @@ function refreshPlan(onHash, opts = {}) {
   return folder.run(() => planNow(onHash, opts));
 }
 
-// The latest signed manifest; an older release than the installed one is
-// refused (a server can't take players back to an old version).
+// The latest signed manifest; an older release than the installed one, or
+// than the newest one this launcher has accepted (in any folder), is refused
+// (a server can't take players back to an old version).
 async function latestManifest() {
   const m = await sync.fetchManifest(settings.manifestUrl);
   const installed = sync.installedVersion(settings.gamePath);
   if (installed && sync.compareVersions(m.version, installed) < 0) {
     throw new Error(`the server offers ${m.version}, older than the installed ${installed}: not installing it`);
   }
+  sync.checkFloor(FLOOR(), m);
+  try { sync.noteFloor(FLOOR(), m); } catch (e) { log("floor", { error: e.message }); }
   manifest = m;
   bootResult = { online: true, error: null };
   reconnect.cancel();

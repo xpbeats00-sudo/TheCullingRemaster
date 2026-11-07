@@ -109,6 +109,7 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
 
 (async () => {
   try {
+    require("../lib/localhttp").allow(false);           // main.js decides, from app.isPackaged
     require("../main.js");
     for (let i = 0; i < 20 && !win; i++) await tick();
     assert.ok(win, "the window was created");
@@ -144,6 +145,12 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
         assert.ok(!/unsafe-inline|unsafe-eval/.test(csp), page + ": no unsafe-*");
         assert.ok(!/<script>[^<]/.test(html) && !/ on[a-z]+="/.test(html), page + ": no inline script or handlers");
       }
+    });
+
+    await test("plain http to this PC follows app.isPackaged (allowed only in a dev run)", () => {
+      assert.strictEqual(require("../lib/localhttp").allowed(), !electron.app.isPackaged);
+      const src = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+      assert.match(src, /localhttp\.allow\(!app\.isPackaged\)/);
     });
 
     await test("IPC from anything but the launcher's window is refused", async () => {
@@ -202,6 +209,29 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
         const s = await call("state");
         assert.strictEqual(s.release, "2.0.0");
         assert.ok(s.pending && s.pending.files === 1, "the late release is planned: " + JSON.stringify(s.pending));
+      } finally {
+        sync.fetchManifest = real;
+      }
+    });
+
+    await test("a release older than the newest one this launcher has seen is refused, with no install to compare with", async () => {
+      // The PLAY test's late 2.0.0 was accepted: it is the floor now, kept in userData (not the game folder).
+      const floor = JSON.parse(fs.readFileSync(path.join(userData, "release-floor.json"), "utf8"));
+      assert.strictEqual(floor.version, "2.0.0");
+      // A fresh folder (nothing installed) and an older signed release replayed by the server.
+      pickFolder = path.join(tmp, "fresh");
+      fs.mkdirSync(pickFolder, { recursive: true });
+      await call("choose-game-folder");
+      const sync = require("../lib/sync");
+      const real = sync.fetchManifest;
+      sync.fetchManifest = async () => ({ version: "1.5.0", baseUrl: "https://example.test/remaster/manifest.json", files: [],
+        servers: [{ id: "old", name: "Old", api: "https://old.example.test/api" }] });
+      try {
+        const r = await settle(call("check-updates"));
+        assert.ok(!r.ok && /offers 1\.5\.0, older than 2\.0\.0/.test(r.e.message), "refused: " + (r.e && r.e.message));
+        const s = await call("state");
+        assert.strictEqual(s.release, "2.0.0", "the older release isn't taken");
+        assert.ok(!s.servers.some((sv) => sv.id === "old"), "nor its server list");
       } finally {
         sync.fetchManifest = real;
       }

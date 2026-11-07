@@ -16,7 +16,21 @@
 // longer lists, so a release built from a wrong or empty folder would remove
 // the game from every player's PC. A release with no files is always refused.
 //
-// usage: node deploy/stage_objects.js [--allow-removals] <release publish dir> <updates dir>
+// patch/make_release.py records what a release was built from ("build" in the
+// signed manifest). A release built from a git tree with uncommitted changes
+// (build.dirty) is refused unless --allow-dirty, and one with no build record
+// at all (not made by make_release.py) unless --allow-unbuilt: what players
+// get should be a commit anyone can check out again.
+//
+// --manifest <file> reads the release's manifest from that file instead of
+// <release publish dir>/manifest.json: publish_release.ps1 passes the copy it
+// verified (in TEMP), so what is staged is exactly what was checked, even if
+// the build PC rebuilds the release folder meanwhile. With --sig <file> the
+// manifest is checked against that signature (the launcher's release key)
+// before anything else.
+//
+// usage: node deploy/stage_objects.js [--plan] [--allow-removals] [--allow-dirty] [--allow-unbuilt]
+//          [--manifest <file> [--sig <file>]] <release publish dir> <updates dir>
 "use strict";
 
 const fs = require("fs");
@@ -43,19 +57,49 @@ async function copyVerified(src, dst, sha256) {
   fs.renameSync(tmp, dst);
 }
 
+// The release's manifest: opts.manifest, or the release folder's. With
+// opts.sig, it must match that signature (opts.publicKey, else the
+// launcher's release key) or nothing is done.
+function readManifest(publishDir, opts = {}) {
+  const file = opts.manifest || path.join(publishDir, "manifest.json");
+  const body = fs.readFileSync(file);
+  if (opts.sig) {
+    const key = opts.publicKey || require(path.join(__dirname, "..", "launcher", "lib", "releasekey.js"));
+    let ok = false;
+    try { ok = crypto.verify(null, body, key, Buffer.from(fs.readFileSync(opts.sig, "utf8").trim(), "base64")); } catch { ok = false; }
+    if (!ok) throw new Error(`${file} doesn't match its signature ${opts.sig}: nothing was published`);
+  }
+  return JSON.parse(body.toString("utf8"));
+}
+
 function readLive(updatesDir) {
   try { return JSON.parse(fs.readFileSync(path.join(updatesDir, "manifest.json"), "utf8")); } catch { return null; /* first publish */ }
 }
 
 // Refuses a release that would delete files from players' installs (see the
 // top of this file), unless removals are explicitly allowed.
-function checkRemovals(next, live, allowRemovals) {
+function checkRemovals(next, live, allowRemovals, opts = {}) {
   if (!Array.isArray(next.files) || next.files.length === 0) throw new Error(`release ${next.version} lists no files: refusing it`);
   // patch/make_release.py records its checks; a test build (gate skipped) is never published.
-  if (next.build && next.build.gate !== "passed") {
+  if (!next.build || typeof next.build !== "object") {
+    if (!opts.allowUnbuilt) {
+      throw new Error(`release ${next.version} has no build record (it wasn't made by patch/make_release.py, so nothing says what it ` +
+        "was built from). Nothing was published. If that is intended, publish again with --allow-unbuilt (-AllowUnbuilt).");
+    }
+    return checkLive(next, live, allowRemovals);
+  }
+  if (next.build.dirty === true && !opts.allowDirty) {
+    throw new Error(`release ${next.version} was built from a git tree with uncommitted changes (build.dirty), not from a commit: ` +
+      "rebuild it from a clean tree. Nothing was published. If that is intended, publish again with --allow-dirty (-AllowDirty).");
+  }
+  if (next.build.gate !== "passed") {
     throw new Error(`release ${next.version} was built without the release consistency gate (gate: ${next.build.gate}): ` +
       "a test build, not publishable. Nothing was published.");
   }
+  return checkLive(next, live, allowRemovals);
+}
+
+function checkLive(next, live, allowRemovals) {
   if (!live || !Array.isArray(live.files)) return [];
   const keep = new Set(next.files.map((f) => f.path));
   const removed = live.files.filter((f) => !keep.has(f.path)).map((f) => f.path);
@@ -68,8 +112,8 @@ function checkRemovals(next, live, allowRemovals) {
 }
 
 async function stage(publishDir, updatesDir, log = console.log, opts = {}) {
-  const manifest = JSON.parse(fs.readFileSync(path.join(publishDir, "manifest.json"), "utf8"));
-  checkRemovals(manifest, readLive(updatesDir), opts.allowRemovals);
+  const manifest = readManifest(publishDir, opts);
+  checkRemovals(manifest, readLive(updatesDir), opts.allowRemovals, opts);
   const objects = path.join(updatesDir, "objects");
   fs.mkdirSync(objects, { recursive: true });
   const seen = new Set();
@@ -109,7 +153,7 @@ const MB = (b) => (b / 1048576).toFixed(1) + " MB";
 // drive: objects the VPS doesn't have yet. Nothing is read from the release
 // folder but its manifest, so this is instant.
 function plan(publishDir, updatesDir, log = console.log, opts = {}) {
-  const next = JSON.parse(fs.readFileSync(path.join(publishDir, "manifest.json"), "utf8"));
+  const next = readManifest(publishDir, opts);
   const live = readLive(updatesDir);
   const objects = path.join(updatesDir, "objects");
   // A file still in the old files\ layout is linked, not uploaded (staging
@@ -118,7 +162,7 @@ function plan(publishDir, updatesDir, log = console.log, opts = {}) {
   for (const f of next.files) if (!paths.has(f.sha256)) paths.set(f.sha256, f.path);
   const oldLayout = (sha, size) => paths.has(sha) && sizeOf(path.join(updatesDir, "files", ...paths.get(sha).split("/"))) === size;
   const p = describe(next, live, (sha, size) => sizeOf(path.join(objects, sha)) === size || oldLayout(sha, size), log);
-  checkRemovals(next, live, opts.allowRemovals);
+  checkRemovals(next, live, opts.allowRemovals, opts);
   return p;
 }
 
@@ -157,8 +201,8 @@ function describe(next, live, has, log = console.log) {
 // The website's setup and launcher.json, from the setup object the release
 // offers (already staged and hash-checked on the VPS), so the setup never
 // crosses the Remote Desktop drive a second time.
-async function publishSetup(publishDir, updatesDir, downloadDir, log = console.log) {
-  const m = JSON.parse(fs.readFileSync(path.join(publishDir, "manifest.json"), "utf8"));
+async function publishSetup(publishDir, updatesDir, downloadDir, log = console.log, opts = {}) {
+  const m = readManifest(publishDir, opts);
   const l = m.launcher;
   if (!l) throw new Error("this release doesn't offer a launcher (no \"launcher\" entry)");
   const obj = path.join(updatesDir, "objects", l.sha256);
@@ -175,15 +219,26 @@ async function publishSetup(publishDir, updatesDir, downloadDir, log = console.l
   return info;
 }
 
-module.exports = { stage, plan, describe, publishSetup, checkRemovals };
+module.exports = { stage, plan, describe, publishSetup, checkRemovals, readManifest };
 if (require.main === module) {
+  const usage = "usage: node stage_objects.js [--plan] [--allow-removals] [--allow-dirty] [--allow-unbuilt] [--manifest <file> [--sig <file>]] " +
+    "<release publish dir> <updates dir>\n" +
+    "       node stage_objects.js --setup [--manifest <file> [--sig <file>]] <release publish dir> <updates dir> <website download dir>";
+  const opts = {};
+  const args = [];
   const all = process.argv.slice(2);
-  const opts = { allowRemovals: all.includes("--allow-removals") };
-  const args = all.filter((a) => a !== "--allow-removals");
-  const usage = "usage: node stage_objects.js [--plan] [--allow-removals] <release publish dir> <updates dir>\n" +
-    "       node stage_objects.js --setup <release publish dir> <updates dir> <website download dir>";
+  for (let i = 0; i < all.length; i++) {
+    const a = all[i];
+    if (a === "--allow-removals") opts.allowRemovals = true;
+    else if (a === "--allow-dirty") opts.allowDirty = true;
+    else if (a === "--allow-unbuilt") opts.allowUnbuilt = true;
+    else if (a === "--manifest" || a === "--sig") {
+      if (i + 1 >= all.length) { console.error(usage); process.exit(2); }
+      opts[a.slice(2)] = all[++i];
+    } else args.push(a);
+  }
   const run = (p) => Promise.resolve().then(p).catch((e) => { console.error(e.message); process.exit(1); });
   if (args[0] === "--plan") { if (args.length !== 3) { console.error(usage); process.exit(2); } run(() => plan(args[1], args[2], console.log, opts)); }
-  else if (args[0] === "--setup") { if (args.length !== 4) { console.error(usage); process.exit(2); } run(() => publishSetup(args[1], args[2], args[3])); }
+  else if (args[0] === "--setup") { if (args.length !== 4) { console.error(usage); process.exit(2); } run(() => publishSetup(args[1], args[2], args[3], console.log, opts)); }
   else { if (args.length !== 2) { console.error(usage); process.exit(2); } run(() => stage(args[0], args[1], console.log, opts)); }
 }

@@ -130,6 +130,13 @@
 - Downloads left over from an older release are deleted, and no longer show as "Download paused" offline.
 - A game folder at the root of a drive (D:\) works.
 
+**Hardening (FULL_AUDIT_2026-11-06)**
+- Downloads stop as soon as the server sends more than the file's signed size, and the file starts over; the release manifest is read up to 8 MB and its signature up to 1 KB. A partial download bigger than its file is deleted before the disk-space check, so it can no longer leave Game Sync stuck on "not enough disk space".
+- The launcher remembers the newest release it has accepted (in its own AppData folder) and refuses an older one, or an earlier build of the same version, even for a fresh install or a newly chosen game folder.
+- A finished download that an antivirus keeps locked is retried for up to 30 s (without freezing the launcher). If it stays locked, Game Sync says a file is locked, probably by an antivirus, and Resume continues from the finished download; the other files are not stopped, and it no longer asks to choose another game folder.
+- A damaged or planted update journal can't move game files outside the launcher's own `.remaster` folder: a journal naming any other backup folder is dropped, and "Restore previous version" refuses such a record.
+- The installed launcher accepts only https addresses (settings, release, servers, the client's server address). Plain http to localhost or 127.0.0.1 works only in a dev run.
+
 **Start-up and offline**
 - Offline at start-up, the launcher keeps trying to reach the update server by itself (5 s, growing to once a minute), with a Retry button next to Offline. Server ping and player count refresh every 45 s.
 - A start-up check that fails finishes the start-up screen with the error instead of hanging it.
@@ -194,6 +201,14 @@
 
 - Releases publish each file by content hash (`objects/<sha256>`). Publishing a new release uploads only the files that changed; republishing 1.1.0 this way uploads nothing.
 - The publish script checks every upload against its hash, and never overwrites a published object.
+- Publishing stages exactly the manifest it verified: every `stage_objects.js` step reads the TEMP copy whose signature was checked (`--manifest`/`--sig`), not the release folder's, which a rebuild could replace mid-publish (FULL_AUDIT_2026-11-06, P0 #4).
+- The website's setup and `launcher.json` change only after the new manifest is live, so a publish that fails earlier leaves the website as it was; a failure there reads `PUBLISH FAILED AFTER GOING LIVE`.
+- Only one publish runs at a time (`C:\culling\publish.lock`).
+- A release built from a git tree with uncommitted changes (`build.dirty`) is refused unless `-AllowDirty`, and one without a build record unless `-AllowUnbuilt`. `Publish Release.bat` doesn't pass these; run `deploy\publish_release.ps1` directly for them.
+- `make_release.py --ship-dead-weight` ships the dead weight (`LoadingBar.mp4`, `generate_interfaces_file.exe`, the loose `Content/Paks/Victory/` extraction, `*.original`) for a release published over one that still lists it. 1.3.13 did this by editing `FULL_EXCLUDE` by hand, which left the build dirty; the flag builds it from a clean tree and records `build.deadWeight`. The Steam ID files, the Func client DLLs, `InstallScript.vdf` and the patch pak stay excluded either way.
+- Full releases never ship `Victory/Saved/`, `*.log`, `*.dmp`, or anything in `steam_settings` but its README.
+- `install_vps.ps1`: the Caddy site file is validated before it replaces the live one (and the previous one is put back if Caddy refuses the result); the Node.js swap's failure message is one line again. Node stays pinned at 22.11.0 until a newer 22.x and its SHA-256 are checked.
+- `.gitignore` covers `*.pem` and `.env`.
 
 ## Account server (branch `server-hardening`, not deployed)
 

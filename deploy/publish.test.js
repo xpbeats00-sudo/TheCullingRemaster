@@ -26,7 +26,8 @@ function release(version, files, setup) {
   fs.rmSync(pub, { recursive: true, force: true });
   fs.mkdirSync(path.join(pub, "objects"), { recursive: true });
   const put = (b) => { fs.writeFileSync(path.join(pub, "objects", sha(b)), b); return sha(b); };
-  const m = { version, files: Object.entries(files).map(([p, b]) => ({ path: p, size: b.length, sha256: put(b), url: "objects/" + sha(b) })) };
+  const m = { version, files: Object.entries(files).map(([p, b]) => ({ path: p, size: b.length, sha256: put(b), url: "objects/" + sha(b) })),
+    build: { commit: "abc", dirty: false, gate: "passed" } };
   if (setup) m.launcher = { version: setup.version, size: setup.data.length, sha256: put(setup.data), url: "objects/" + sha(setup.data) };
   const body = Buffer.from(JSON.stringify(m));
   fs.writeFileSync(path.join(pub, "manifest.json"), body);

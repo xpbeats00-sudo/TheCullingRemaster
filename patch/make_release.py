@@ -15,7 +15,9 @@ at the server (launcher/lib/clientdll.js).
 A release is the whole game by default: every file of the install given with
 --full <absolute game dir> is hard-linked in (no second copy of the
 gigabytes), except what is personal to this PC or made by the launcher itself
-(FULL_EXCLUDE), with the Remaster patch above in place of the install's own,
+(FULL_EXCLUDE and the rules beside it: the game's Saved folder, logs, crash
+dumps, steam_settings but its README) and the install's dead weight
+(DEAD_WEIGHT), with the Remaster patch above in place of the install's own,
 and Victory.exe patched for up to 24 contestants (patch_exe.py). The game dir
 is checked first (absolute, exists, has Victory.exe and pakchunk0) and the
 release must come out with at least MIN_FULL_FILES files: launchers delete
@@ -23,6 +25,12 @@ every file a new release no longer lists, so a release built from a wrong
 folder would uninstall the game from every PC. --pak-only (only the patch pak
 and the setup) has to be asked for, and publishing it over a full release is
 refused unless removals are allowed (deploy/stage_objects.js).
+
+--ship-dead-weight ships the dead weight too (it is recorded in the build):
+for a release published over one that still lists those files, so it removes
+nothing from players' installs. 1.3.13 was built that way, by editing the
+exclusions by hand (which left the tree dirty); the flag builds it from a
+clean tree.
 
 Before anything is packed it refuses a git tree with uncommitted changes
 (--allow-dirty overrides, and is recorded) and runs the release consistency
@@ -34,7 +42,7 @@ for test builds into an --out folder outside releases/, and the publish
 signs with another key (a throwaway one for a test build).
 
 usage: python make_release.py <server base url> <version> (--full <game dir> | --pak-only) [--out <dir>] [--no-setup]
-         [--allow-dirty] [--skip-gate] [--key <private key>] [--overwrite]
+         [--ship-dead-weight] [--allow-dirty] [--skip-gate] [--key <private key>] [--overwrite]
 
 The version must be new: no releases/<version> folder (or release in --out)
 unless --overwrite, and newer than the live release (the live manifest's
@@ -70,20 +78,30 @@ FULL_EXCLUDE = {
     "Victory/Binaries/Win64/Func.Client.Online.dll",
     "Victory/Content/Paks/" + PAK,
     "InstallScript.vdf",
-    # Dead weight (checked 2026-11-04, docs/UPDATE_INFRASTRUCTURE.md):
-    # make_loading_bar.py's movie, not in use (DefaultGame.ini's loading
-    # screen plays no movie; only LoadingScreen.mp4 is a startup movie) ...
+}
+# Never shipped either, matched without regard to case (Windows paths): what
+# the game writes on this PC (Victory/Saved/: config, saves, logs, crashes),
+# any log or crash dump, and everything in steam_settings but the README the
+# build writes (SETTINGS_README_PATH): a release is the install as Steam has
+# it plus the Remaster, nothing of the PC it was built on.
+PERSONAL_PREFIXES = ("victory/saved/",)
+PERSONAL_SUFFIXES = (".log", ".dmp")
+# Dead weight (checked 2026-11-04, docs/UPDATE_INFRASTRUCTURE.md), left out
+# unless --ship-dead-weight: make_loading_bar.py's movie, not in use
+# (DefaultGame.ini's loading screen plays no movie; only LoadingScreen.mp4 is
+# a startup movie), and Goldberg's tool that writes steam_interfaces.txt
+# (nothing loads it) ...
+DEAD_WEIGHT = {
     "Victory/Content/Movies/LoadingBar.mp4",
-    # ... and Goldberg's tool that writes steam_interfaces.txt (nothing loads it).
     "Engine/Binaries/ThirdParty/Steamworks/Steamv136/Win64/generate_interfaces_file.exe",
 }
-# Never shipped either: a loose extraction of the paks under the Paks folder
-# (3,482 files: WwiseAudio banks and Config, byte-for-byte copies of files
-# inside the pakchunk paks, which is where the game reads them: Wwise from
+# ... a loose extraction of the paks under the Paks folder (3,482 files:
+# WwiseAudio banks and Config, byte-for-byte copies of files inside the
+# pakchunk paks, which is where the game reads them: Wwise from
 # Content/WwiseAudio, config from Victory/Config; nothing reads
 # Content/Paks/Victory/), and backups of edited config (*.original).
-FULL_EXCLUDE_PREFIXES = ("Victory/Content/Paks/Victory/",)
-FULL_EXCLUDE_SUFFIXES = (".original",)
+DEAD_WEIGHT_PREFIXES = ("Victory/Content/Paks/Victory/",)
+DEAD_WEIGHT_SUFFIXES = (".original",)
 # Func.Launcher.exe refuses to start without Victory/Binaries/Win64/
 # pakchunk99-WindowsClient_P.pak next to the client DLL, and Func.Client.dll
 # mounts it, so it ships (it isn't on the engine's own pak path).
@@ -140,16 +158,31 @@ def check_exe(release):
           % (fixes["cap"], ", ".join(name for _key, name in patch_exe.FIXES), patch_exe.PATCHED_SHA256))
 
 
-def game_files(game):
-    """The install's files a full release ships (relative, "/"), minus FULL_EXCLUDE."""
+def excluded(rel, ship_dead_weight=False):
+    """Whether a full release leaves the install's file `rel` ("/") out: FULL_EXCLUDE,
+    the launcher's own files, what is personal to this PC, and the dead weight
+    (shipped only with ship_dead_weight)."""
+    low = rel.lower()
+    if rel in FULL_EXCLUDE or rel.startswith(".remaster/") or rel.endswith(".part"):
+        return True
+    if low.startswith(PERSONAL_PREFIXES) or low.endswith(PERSONAL_SUFFIXES):
+        return True
+    if low.startswith(STEAM_SETTINGS.lower() + "/") and rel != SETTINGS_README_PATH:
+        return True
+    if not ship_dead_weight and (rel in DEAD_WEIGHT or rel.startswith(DEAD_WEIGHT_PREFIXES)
+                                 or rel.endswith(DEAD_WEIGHT_SUFFIXES)):
+        return True
+    return False
+
+
+def game_files(game, ship_dead_weight=False):
+    """The install's files a full release ships (relative, "/"): all but excluded() ones."""
     out = []
     for folder, _, files in os.walk(game):
         for name in files:
             rel = os.path.relpath(os.path.join(folder, name), game).replace(os.sep, "/")
-            if (rel in FULL_EXCLUDE or rel.startswith(".remaster/") or rel.endswith(".part")
-                    or rel.startswith(FULL_EXCLUDE_PREFIXES) or rel.endswith(FULL_EXCLUDE_SUFFIXES)):
-                continue
-            out.append(rel)
+            if not excluded(rel, ship_dead_weight):
+                out.append(rel)
     return sorted(out)
 
 
@@ -286,14 +319,19 @@ def check_version(base, version, out, overwrite):
 
 
 def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_dirty=False, skip_gate=False, key=None,
-         overwrite=False):
+         overwrite=False, ship_dead_weight=False):
     base = base.rstrip("/")
     if pak_only == bool(game):
         raise ReleaseError("give --full <absolute game dir> (a full release) or --pak-only, not both or neither")
+    if ship_dead_weight and not game:
+        raise ReleaseError("--ship-dead-weight is for full releases (--full): a pak-only release has no game files")
     files = None
     if game:
         check_game_dir(game)
-        files = game_files(game)
+        files = game_files(game, ship_dead_weight)
+        if ship_dead_weight:
+            print("shipping the dead weight (--ship-dead-weight): %d file(s) a clean full release leaves out"
+                  % (len(files) - len(game_files(game))))
         if len(files) < MIN_FULL_FILES:
             raise ReleaseError("--full: %s has only %d files to ship (a full release has at least %d): nothing built"
                                % (game, len(files), MIN_FULL_FILES))
@@ -353,6 +391,7 @@ def main(base, version, out=None, game=None, setup=True, pak_only=False, allow_d
              "kind": "full" if game else "pak-only", "server": base}
     if game:
         build["exeSha256"] = patch_exe.PATCHED_SHA256
+        build["deadWeight"] = "shipped" if ship_dead_weight else "left out"
     with open(os.path.join(out, "build.json"), "w") as f:
         json.dump(build, f, indent=1)
     with open(os.path.join(out, "build-details.json"), "w") as f:
@@ -388,6 +427,9 @@ if __name__ == "__main__":
     ap.add_argument("--pak-only", action="store_true", help="ship only the patch pak (and setup), not the game")
     ap.add_argument("--out", help="output folder (default releases/<version>)")
     ap.add_argument("--no-setup", action="store_true", help="don't offer the built launcher setup as a launcher update")
+    ap.add_argument("--ship-dead-weight", action="store_true",
+                    help="full releases: also ship the dead weight (LoadingBar.mp4, generate_interfaces_file.exe, "
+                         "Content/Paks/Victory/, *.original) a live release still lists, so publishing removes nothing")
     ap.add_argument("--allow-dirty", action="store_true", help="build from a git tree with uncommitted changes (recorded)")
     ap.add_argument("--skip-gate", action="store_true",
                     help="test builds only (--out outside releases/): skip the consistency gate; the publish refuses it")
@@ -396,6 +438,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     sys.stdout.reconfigure(line_buffering=True)        # in order with node's output
     try:
-        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only, a.allow_dirty, a.skip_gate, a.key, a.overwrite)
+        main(a.server, a.version, a.out, a.full, not a.no_setup, a.pak_only, a.allow_dirty, a.skip_gate, a.key, a.overwrite,
+             a.ship_dead_weight)
     except ReleaseError as e:
         sys.exit("make_release: " + str(e))
