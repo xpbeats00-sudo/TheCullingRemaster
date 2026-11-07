@@ -6,9 +6,9 @@
 // answers carry its match assignment), ready, ticket checks and the one
 // authoritative result. It also listens on its own host:port - the address
 // the players are sent to - where a "client" joins with the ticket in its URL
-// options, as the game's login URL carries ?servernonce=:
+// options, as the stock client's "open <server>?Nonce=<ticket>" carries it:
 //
-//   GET /join?servernonce=<ticket>&userid=<id>   -> 200 { team } / 403 { error }  (PreLogin)
+//   GET /join?nonce=<ticket>&userid=<id>         -> 200 { team } / 403 { error }  (PreLogin)
 //   GET /state                                    -> its assignment and who joined
 //   POST /control/result   (JSON stats)           -> posts the match result
 //   POST /control/crash                            -> stops dead (no more heartbeats; exits when run as a process)
@@ -162,7 +162,7 @@ class FakeGameServer {
     let body = "";
     for await (const c of req) body += c;
     if (req.method === "GET" && u.pathname === "/join") {
-      const r = await this.join(u.searchParams.get("servernonce"), u.searchParams.get("userid") || undefined);
+      const r = await this.join(u.searchParams.get("nonce"), u.searchParams.get("userid") || undefined);
       return send(r.status, r.json);
     }
     if (req.method === "GET" && u.pathname === "/state") return send(200, { assignment: this.assignment, joined: [...this.joined], events: this.events });

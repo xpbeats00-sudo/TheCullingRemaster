@@ -14,9 +14,15 @@
 // 2. Allocate: the allocator reserves a game server with the map, mode,
 //    match id, team layout and bot count, and waits for its ready.
 // 3. Tickets: each player gets a one-use connection ticket (connticket.js).
-//    match-ready carries gameServer "<host>:<port>", nonce (the ticket id),
-//    serverNonce (the ticket) and netplay: true, so the stock menu branch calls
-//    ConnectToServer. Everyone in the match gets the same address.
+//    match-ready carries gameServer "<host>:<port>", nonce (the ticket),
+//    serverNonce (the match's server nonce) and netplay: true, so the stock
+//    menu branch calls ConnectToServer. The stock client opens
+//    "<gameServer>?Nonce=<nonce>" (the game server reads the ticket from
+//    ?Nonce= at PreLogin) and keeps serverNonce; the game server, started
+//    with ?servernonce=<the assignment's serverNonce>, sends it back in
+//    ClientCheckServerNonce and a client whose own differs quits (Victory.exe
+//    0x1401dce90 and 0x140233b00). Everyone in the match gets the same address
+//    and server nonce.
 // 4. The game server checks each ticket at PreLogin (verify-ticket), runs the
 //    match and posts one signed result for everyone; the backend pays and
 //    rates every player from it (sharedresults.js). The client HUD's own
@@ -230,7 +236,7 @@ class SharedMatches {
       ranked: !!(d.playlist(playlistId) || {}).ranked, state: "allocating", createdAt: this.now(), readyAt: null,
       serverId: null, address: null, teams: teams.map((t) => ({ team: t.team, players: t.players.slice() })),
       groups: teams.flatMap((t) => t.groups.map((g) => ({ ids: g.ids.slice(), party: g.party, team: t.team }))),
-      players: {}, matchUrl: d.matchUrl(playlistId, map) };
+      players: {}, matchUrl: d.matchUrl(playlistId, map), serverNonce: crypto.randomBytes(16).toString("hex") };
     for (const g of rec.groups) for (const id of g.ids) {
       rec.players[id] = { team: g.team, party: g.party, state: "allocating", rankedId: null, rankedMode: null, ticketId: null, joined: false };
     }
@@ -268,7 +274,7 @@ class SharedMatches {
     return { matchId: rec.matchId, playlist: rec.playlist, map: rec.map, mapIndex: rec.mapIndex, matchUrl: rec.matchUrl,
       teamSize: rec.teamSize, teamsCount: rec.teamsCount, field: rec.field, ranked: rec.ranked,
       players: teams.reduce((n, t) => n + t.players.length, 0), bots: this.botCount(rec), teams,
-      ticketTtlMs: this.cfg.ticketTtlMs, startsWithFists: true };
+      ticketTtlMs: this.cfg.ticketTtlMs, startsWithFists: true, serverNonce: rec.serverNonce };
   }
 
   // The server is ready: every player still here is sent in (same address,
@@ -298,7 +304,8 @@ class SharedMatches {
         let out;
         try {
           out = d.launch(d.liveSocket(id), rec.playlist, rec.map, { matchId, lobbyId: rec.lobbyId, partyId: g.party,
-            gameServer: rec.address, nonce: t.id, serverNonce: t.token, team: pl.team, ticketExpiresInMs: t.expiresAt - this.now() }) || {};
+            gameServer: rec.address, nonce: t.token, serverNonce: rec.serverNonce, ticketId: t.id, team: pl.team,
+            ticketExpiresInMs: t.expiresAt - this.now() }) || {};
         } catch (e) {
           // One player's match-ready failing never stops the others'.
           this.log("shared match", matchId, "sending", id, "failed:", e && e.stack ? e.stack : e);

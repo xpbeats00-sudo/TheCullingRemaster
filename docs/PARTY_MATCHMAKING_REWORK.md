@@ -33,7 +33,7 @@ The whole feature is **off by default** (`CULLING_SHARED_MATCHES` unset). With i
 3. **Teams.** When the countdown ends, every party becomes one team and is never split. Solos and smaller parties fill the other teams: the largest group first, each into the first team with room. Teams with no players are all bots. Bots fill the field: `field - players`. [PASS: the "teams" unit test and "three parties and two solos"]
 4. **Allocate.** The allocator reserves one game server for the lobby, with the map, mode, match id, team layout and bot count (the *assignment*, section 4.3). Members get `remaster-shared-match {state: "allocating"}`. The server must post `ready` within `CULLING_GAMESERVER_READY_TIMEOUT_MS`. [PASS against the stand-in]
 5. **Tickets and match-ready.** On `ready`, each member still here gets a ticket and a `match-ready` with the shared fields (section 3.1). A party with a member gone since the countdown isn't sent: it's all or nothing, as today. [PASS: the "a party of 2 in Duos" test]
-6. **Join (PreLogin).** The client calls `ConnectToServer(gameServer, nonce, serverNonce)` (`ClientWeb.js`, the last branch of `match-ready`). The game reads `?servernonce` from its URL options. The server asks the backend `verify-ticket` and puts the player on their assigned team. Anyone else is refused. [Backend PASS; **client and server side BLOCKED**]
+6. **Join (PreLogin).** The client calls `ConnectToServer(gameServer, nonce, serverNonce)` (`ClientWeb.js`, the last branch of `match-ready`). The stock game opens `<gameServer>?Nonce=<nonce>` and keeps `serverNonce` (Victory.exe 0x1401dce90). The server reads the ticket from `?Nonce=` at PreLogin, asks the backend `verify-ticket` and puts the player on their assigned team; anyone else is refused. The server is started with `?servernonce=<the assignment's serverNonce>` and sends it to each client (`ClientCheckServerNonce`); a client whose stored one differs disconnects with `ServerNonceFailed`. [PASS in game: two real menus joined a route-B host this way, `netplay_run.py --menu` on branch netplay-host]
 7. **Play.** The game server owns the world, the bots and the teams. [**BLOCKED**]
 8. **Result.** The server posts one signed `result` for every player. The backend pays XP and credits (the local match's economy), updates stats and per-mode stats, and finishes each player's ranked match. Members get `remaster-shared-match {state: "finished", result}`. The client HUD's `/api/matchresult` for a shared match is answered `202 {ignored: true}` and logged. [PASS]
 9. **End.** The slot is freed, every ticket of the match is revoked, and the players are back in the menu.
@@ -49,8 +49,9 @@ For a shared match:
 | Field | Value |
 |---|---|
 | `gameServer` | `"<host>:<port>"` of the game server. It has none of the local prefixes, so the menu calls `ConnectToServer`. Everyone in the match gets the same one. |
-| `nonce` | the ticket id (hex) |
-| `serverNonce` | the connection ticket (section 5), for the URL option `?servernonce=` |
+| `nonce` | the connection ticket (section 5): the stock client sends it as `?Nonce=` |
+| `serverNonce` | the match's server nonce (32 hex), the same for everyone in the match and in the assignment: the client checks the server with it |
+| `ticketId` | the ticket's id (hex) |
 | `matchId`, `lobbyId`, `partyId`, `playlist`, `ranked` | as today |
 | `team` | the player's team number (1..teams) |
 | `ticketExpiresInMs` | how long the ticket is good for |
@@ -116,10 +117,10 @@ Refusals: `401 {error}`, where error is one of `unknown-server`, `body-must-be-t
   "teams": [ { "team": 1, "players": [ { "userID": "acct:...", "username": "Lead Wolf", "party": "p-..." },
                                         { "userID": "acct:...", "username": "Member Fox", "party": "p-..." } ], "bots": 0 },
              { "team": 2, "players": [], "bots": 2 }, "..." ],
-  "ticketTtlMs": 120000, "startsWithFists": true }
+  "ticketTtlMs": 120000, "startsWithFists": true, "serverNonce": "a8414faf075cae8e81f075e281e9394c" }
 ```
 
-`matchUrl` is the local answer for the same mode and map (`duo:0`, `trio:1`, `offline:0`, ...): the URL a route-B host opens. `bots` per team plus the empty teams add up to the total `bots`. Players dropped before the start (a party member gone) are left out, and their slots become bots. See `BOT_MULTIPLAYER_INTEGRATION.md`. [PASS: the assignment is checked in "a party of 2 in Duos", "three parties", "Trios" and "Solo (shared)"]
+`serverNonce` is the match's server nonce: start the game server with `?servernonce=<it>` so the clients' check passes. `matchUrl` is the local answer for the same mode and map (`duo:0`, `trio:1`, `offline:0`, ...): the URL a route-B host opens. `bots` per team plus the empty teams add up to the total `bots`. Players dropped before the start (a party member gone) are left out, and their slots become bots. See `BOT_MULTIPLAYER_INTEGRATION.md`. [PASS: the assignment is checked in "a party of 2 in Duos", "three parties", "Trios" and "Solo (shared)"]
 
 ### 4.4 The result (one per match)
 
@@ -169,7 +170,7 @@ The ticket is `v1.<base64url(claims)>.<base64url(HMAC-SHA256(ticketSecret, "v1."
 
 The game server never needs the ticket secret: it asks the backend.
 
-The client passing `serverNonce` into its login URL as `?servernonce=` is how the stock `ConnectToServer` path is understood to work (`REAL_MULTIPLAYER_ARCHITECTURE_AUDIT.md` [C]). It is **BLOCKED** (not seen in a running game).
+How the stock client carries it (read from Victory.exe, then seen in game): `ConnectToServer` runs the console command `open <gameServer>?Nonce=<nonce>`, so the ticket is the `nonce` field; `serverNonce` is kept in the game singleton and compared with the server's own in `ClientCheckServerNonce`. The audit's guess (`?servernonce=` from the client, [C]) was wrong: that option is the server's, on its own URL.
 
 ## 6. Failure handling
 
@@ -220,6 +221,8 @@ All are environment variables of the backend service. Defaults are in brackets.
 | `CULLING_TICKET_SECRET` | The ticket secret. Default: `data/ticket-secret.txt`, created once. |
 
 The files made when on: `gameserver-secret.txt`, `ticket-secret.txt` and `shared-matches.json` in the data folder (git-ignored under `server/data/`). Nothing is created while off [PASS].
+
+**Test hook** (`CULLING_TEST_HOOKS=1`, loopback only, off by default, never on the VPS): `POST /api/test/join-mm {userID, queueName}` queues a logged-in player's own menu socket as if they had pressed PLAY, so a test can drive real game menus without clicking.
 
 ## 8. Logs and metrics
 

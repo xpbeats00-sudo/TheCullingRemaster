@@ -66,7 +66,7 @@ function get(url) {
 }
 
 // A client joining the game server it was sent to, with its ticket in the URL options (PreLogin).
-const join = (ready, userID) => get("http://" + ready.gameServer + "/join?servernonce=" + encodeURIComponent(ready.serverNonce)
+const join = (ready, userID) => get("http://" + ready.gameServer + "/join?nonce=" + encodeURIComponent(ready.nonce)
   + (userID ? "&userid=" + encodeURIComponent(userID) : ""));
 
 // Accounts, friends and parties through the real socket API (as party.test.js).
@@ -247,8 +247,10 @@ function sharedVars(extra = {}) {
       assert.strictEqual(a.matchId, b.matchId);
       assert.strictEqual(a.partyId, partyId);
       assert.strictEqual(a.team, b.team, "one team");
-      assert.notStrictEqual(a.serverNonce, b.serverNonce, "a ticket each");
-      assert.ok(a.nonce && /^[0-9a-f]+$/.test(a.nonce) && a.ticketExpiresInMs > 0);
+      assert.notStrictEqual(a.nonce, b.nonce, "a ticket each");
+      assert.ok(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(a.nonce) && /^[0-9a-f]+$/.test(a.ticketId) && a.ticketExpiresInMs > 0,
+        "nonce is the ticket (the stock client sends it as ?Nonce=)");
+      assert.ok(/^[0-9a-f]{32}$/.test(a.serverNonce) && a.serverNonce === b.serverNonce, "one server nonce for the match");
       assert.ok(L.of("remaster-shared-match").some((x) => x.state === "allocating"), "told the server is being set up");
       const st = await sharedStats(srv);
       assert.strictEqual(st.servers.counters.reserved - before, 1, "one allocation for the party");
@@ -316,11 +318,11 @@ function sharedVars(extra = {}) {
       assert.strictEqual((await join(a, L.userID)).status, 200);
       const reuse = await join(a, L.userID);
       assert.deepStrictEqual([reuse.status, reuse.json.error], [403, "used"]);
-      assert.strictEqual((await join({ gameServer: a.gameServer, serverNonce: world.match.b.serverNonce }, M.userID)).json.error, "revoked",
+      assert.strictEqual((await join({ gameServer: a.gameServer, nonce: world.match.b.nonce }, M.userID)).json.error, "revoked",
         "a ticket of the last (finished) match");
-      assert.strictEqual((await join({ gameServer: a.gameServer, serverNonce: b.serverNonce.slice(0, -2) + "xx" }, M.userID)).json.error, "bad-signature");
+      assert.strictEqual((await join({ gameServer: a.gameServer, nonce: b.nonce.slice(0, -2) + "xx" }, M.userID)).json.error, "bad-signature");
       // A ticket checked against another match id by the server.
-      const other = await f.call("verify-ticket", { matchId: "0000000000000000", ticket: b.serverNonce });
+      const other = await f.call("verify-ticket", { matchId: "0000000000000000", ticket: b.nonce });
       assert.deepStrictEqual([other.status, other.json.error], [403, "match-not-running"]);
       assert.strictEqual((await join(b, M.userID)).status, 200, "the member's own ticket still works once");
       const st = await sharedStats(srv);

@@ -1073,6 +1073,21 @@ app.post('/admin/reset-password', asyncRoute(async (req, res) => {
 
 app.get('/api/news', (req, res) => res.json({ news: [] }));
 
+// Test hook (CULLING_TEST_HOOKS=1, loopback only; off by default and never
+// set on the VPS): queues a logged-in player's own menu socket as if they
+// had pressed PLAY, so a test can drive real game menus without clicking.
+// netplay2/patch/netplay_run.py --menu uses it for shared-match joins.
+app.post('/api/test/join-mm', (req, res) => {
+  const ip = String(req.socket.remoteAddress || '');
+  if (process.env.CULLING_TEST_HOOKS !== '1' || !/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(ip)) return res.status(404).json({});
+  const body = req.body || {};
+  const socket = typeof body.userID === 'string' ? socketsByUser.get(body.userID) : null;
+  if (!socket) return res.status(409).json({ error: 'not-logged-in', users: [...socketsByUser.keys()] });
+  log('test hook: join-mm', body.userID, body.queueName);
+  startLocalMatch(socket, body.queueName);
+  res.json({ ok: true });
+});
+
 app.get(['/health', '/api/health'], (req, res) => res.json(Object.assign({ ok: true, users: socketsByUser.size }, activity.summary())));
 
 app.get('/api/ranked', (req, res) => {
@@ -1594,9 +1609,10 @@ function launchMatch(socket, queue, map, shared = {}) {
   log('match-ready ->', socket.userID, showdown ? 'showdown ' + sdPlaylist.format : (team ? team.start + ' map ' : 'offline map ') + mapIndex,
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   // A shared match (sharedmatch.js): the game server's address, the
-  // connection ticket (nonce: its id, serverNonce: the ticket) and the team.
+  // connection ticket (nonce: the ticket, which the stock client sends as
+  // ?Nonce=; serverNonce: the match's server nonce; ticketId) and the team.
   if (shared.gameServer) {
-    socket.emit('match-ready', { gameServer: answer, nonce: shared.nonce, serverNonce: shared.serverNonce, matchId,
+    socket.emit('match-ready', { gameServer: answer, nonce: shared.nonce, serverNonce: shared.serverNonce, ticketId: shared.ticketId, matchId,
       lobbyId: shared.lobbyId || null, partyId: shared.partyId || null, playlist: mode, ranked: rankedId ? rankedMode : null,
       team: shared.team, ticketExpiresInMs: shared.ticketExpiresInMs, netplay: true });
     return { rankedId, rankedMode: rankedId ? rankedMode : null };
