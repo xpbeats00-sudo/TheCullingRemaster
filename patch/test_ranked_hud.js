@@ -34,6 +34,7 @@ function hud() {
   const g = {
     console: { log() {} },
     matchData: { playerName: "Rank Leader" },
+    deathData: {},
     window: {},
     remasterExtraMates: { alive: 0 },
     LOCAL_SERVER_URL: "http://127.0.0.1:8000/api",
@@ -51,6 +52,8 @@ function hud() {
   };
   const src = [take("var", "bLocalMatchResultSent"), take("var", "remasterTeam"), take("var", "pendingTeamResult"),
     take("var", "remasterTeamOutcome"), take("var", "TEAM_RESULT_WAIT_MS"), take("var", "TEAM_RESULT_MAX_WAIT_MS"),
+    take("var", "REMASTER_RANK_WAIT_MS"), take("var", "remasterRankWaiting"), take("var", "remasterPlace"),
+    take("function", "RemasterRank"), take("function", "RemasterPlaceArrived"), take("function", "RemasterRankArrived"),
     take("function", "LocalMatchResultBody"), take("function", "ReportLocalMatchResult"),
     take("function", "RemasterTeammateAdded"), take("function", "RemasterTeammateDied"), take("function", "RemasterUpdateMateAlive"),
     take("function", "ArmTeamResultTimer"), take("function", "PostPendingTeamResult"), take("function", "SendLocalMatchResultNow"),
@@ -60,6 +63,7 @@ function hud() {
     "\ng.api = { OnLocalMatchResult: OnLocalMatchResult, RemasterTeammateAdded: RemasterTeammateAdded," +
     " RemasterTeammateDied: RemasterTeammateDied, RemasterUpdateMateAlive: RemasterUpdateMateAlive," +
     " RemasterBeforeLeavingMatch: RemasterBeforeLeavingMatch, RankedResultLabel: RankedResultLabel," +
+    " RemasterRankArrived: RemasterRankArrived, RemasterPlaceArrived: RemasterPlaceArrived," +
     " pending: function () { return pendingTeamResult; } }; }");
   fn(g);
   // Runs the timers armed so far (the 60 s wait).
@@ -85,6 +89,55 @@ test("you die early, your teammate wins: one post, a victory at first place, wit
   assert.deepStrictEqual([b.victory, b.placement, b.kills, b.damage, b.teamOutcome, b.nickname], [true, 1, 2, 150, "won", "Rank Leader"]);
   h.api.OnLocalMatchResult(death(1), true);
   assert.strictEqual(h.posted.length, 1, "never twice");
+});
+
+test("a win posts first place even though the game's victory data has no Rank", () => {
+  const h = hud();
+  const won = death(undefined);
+  delete won.Rank;
+  h.api.OnLocalMatchResult(won, true);
+  assert.strictEqual(h.posted.length, 1);
+  assert.deepStrictEqual([h.posted[0].body.victory, h.posted[0].body.placement], [true, 1]);
+});
+
+test("a death without a Rank waits for the exe's PLC| place and posts it", () => {
+  const h = hud();
+  const d = death(undefined);
+  delete d.Rank;
+  h.g.deathData.Rank = "F";                          // SetRewardRank: a grade, not a place
+  h.api.OnLocalMatchResult(d, false);
+  assert.strictEqual(h.posted.length, 0, "waits for the place");
+  h.api.RemasterPlaceArrived(5);                     // "PLC|5"
+  h.tick();
+  assert.strictEqual(h.posted.length, 1);
+  assert.deepStrictEqual([h.posted[0].body.victory, h.posted[0].body.placement], [false, 5]);
+  h.tick();
+  assert.strictEqual(h.posted.length, 1, "never twice");
+});
+
+test("a held team death posts the place you had (PLC| at your death)", () => {
+  const h = hud();
+  h.api.RemasterTeammateAdded();
+  const d = death(undefined);
+  delete d.Rank;
+  h.api.RemasterPlaceArrived(11);                    // your death: 11 alive
+  h.api.OnLocalMatchResult(d, false);
+  assert.strictEqual(h.posted.length, 0, "your death waits for the team");
+  h.api.RemasterTeammateDied();
+  h.api.RemasterUpdateMateAlive();
+  assert.strictEqual(h.posted.length, 1);
+  assert.deepStrictEqual([h.posted[0].body.placement, h.posted[0].body.teamOutcome], [11, "out"]);
+});
+
+test("a death whose place never comes is posted after the wait (as before: 0)", () => {
+  const h = hud();
+  const d = death(undefined);
+  delete d.Rank;
+  h.api.OnLocalMatchResult(d, false);
+  assert.strictEqual(h.posted.length, 0);
+  h.tick();                                          // the 2 s wait
+  assert.strictEqual(h.posted.length, 1);
+  assert.strictEqual(h.posted[0].body.placement, 0);
 });
 
 test("you die early, your whole team goes down: posted as your death, team out", () => {

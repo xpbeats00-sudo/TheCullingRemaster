@@ -11,6 +11,15 @@
 
 ## Game (next release)
 
+**Teams on a game server**
+- In a match hosted on a game server (shared matches, still in testing, not yet open to players), the game now keeps the teams the server sets. Before, it re-paired players by its own list order, so your teammate panel could show the wrong player. Local Duo, Trios and Quads pair as before. Checked in game: with 1.3.12 the panel showed the other player; with this build, your own teammate; a local Duo still pairs you with a bot.
+
+**Found by the in-game autotest (`patch/autotest/run.py`, results in [AUTOTEST_RESULTS.md](AUTOTEST_RESULTS.md))**
+- Fixed: in Duo, Trios and Quads two contestants of different teams could still share a pod (and one pod stayed empty). The game's start chooser puts teammates on their team's start, but the teams while everyone spawns aren't the final ones. Team matches now give every contestant a free pod of its own, as in Solo; teammates start apart. Needs the patched exe (fix 12).
+- Fixed: every ranked loss was scored as last place. The game never tells the HUD your place (its death data has no Rank), so the result posted 0. The patched exe now sends your place when you die (the contestants still alive, you included), and the HUD posts it; team modes turn it into the team's place.
+- Fixed: a win posted placement 0 (the game's victory data has no Rank); it posts 1.
+- Showdown: after losing a round by your own death, the game's delayed spectating could take the pawn the next round gave you, losing that round a second in. The pawn is possessed again. Unit tested only; Showdown testing is paused.
+
 **Pods: one contestant each, and nobody starts armed**
 - Fixed: when the pods opened, other contestants could be standing in your pod, already holding weapons. Since 1.3.x's 24-contestant matches, Solo, Duo, Trios and Quads put 24 contestants on maps with 16 pods (Jungle and Prison). The game gives each contestant a free pod first, then puts the rest in pods that are already taken, so 8 contestants shared someone's pod. Matches now have one contestant per pod: 16 in Solo, Duo and Quads, 15 in Trios (5 full teams), and Showdown is unchanged. Needs the patched exe (the native module caps the bots at the mode's start points).
 - Opponents now start like you, with only their fists, and loot their gear. Before, every match opponent spawned with a random melee weapon, a bow or gun, and a utility item. The Survival, Tutorial and Showdown opponents are unchanged (`patch/patch_assets.py`).

@@ -113,6 +113,47 @@ def exe_checks(path):
         sys.exit("FAIL IsSpawnpointPreferred at %x doesn't refuse a used start" % (TW.BASE + PREFERRED))
     print("ok    the start chooser (VA %x): the mode's starts by SpawnPointTags; a used start is only a fallback (VA %x)"
           % (TW.BASE + CHOOSER, TW.BASE + PREFERRED))
+    # Fix 12: the FreeForAll start chooser (vtable slot 189) asks GetTeamNum at the call the
+    # module takes (VA 0x1402447ff), looks the team up in the map at +GM_TEAM_STARTS, falls back
+    # to the free-start chooser (0x140231b50), and records the team's start when +GM_PAIR_SPAWN
+    # (else +GM_PAIR_BALANCED) is set; IsSpawnpointAllowed (vtable +0x8d8) reads the same map.
+    vt = 0x25A81E8 - 282 * 8
+    chooser = struct.unpack_from("<Q", ex.d, ex.off(vt + 189 * 8))[0] - TW.BASE
+    body = ex.code(chooser, 0x500)
+    text = " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in body)
+    call = [i for i in body if i.address == TW.BASE + 0x2447FF]
+    if chooser != 0x244740 or not call or call[0].op_str != "0x%x" % (TW.BASE + d["R_GET_TEAM"]):
+        sys.exit("FAIL the start chooser (slot 189 = %x) doesn't call GetTeamNum at 0x1402447ff" % chooser)
+    getteam = " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in ex.code(d["R_GET_TEAM"], 8)[:2])
+    if getteam != "mov eax, dword ptr [rcx + 0x%x] | ret " % d["PS_TEAM"]:
+        sys.exit("FAIL GetTeamNum (%x) is %r" % (d["R_GET_TEAM"], getteam))
+    for want in ("[rbx + 0x%x]" % d["GM_TEAM_STARTS"], "cmp byte ptr [rbx + 0x%x]" % d["GM_PAIR_SPAWN"],
+                 "cmp byte ptr [rbx + 0x%x]" % d["GM_PAIR_BALANCED"], "call 0x140231b50"):
+        if want not in text:
+            sys.exit("FAIL the start chooser has no %r" % want)
+    allowed = struct.unpack_from("<Q", ex.d, ex.off(vt + 0x8d8))[0] - TW.BASE
+    if "lea r14, [rcx + 0x%x]" % d["GM_TEAM_STARTS"] not in " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in ex.code(allowed, 0x40)):
+        sys.exit("FAIL IsSpawnpointAllowed (%x) doesn't read the team map" % allowed)
+    # The flags' names: each bool UPROPERTY registers a setter table whose first entry writes it.
+    for name, key in (("bSpawnPairTogether", "GM_PAIR_SPAWN"), ("bSpawnPairBalanced", "GM_PAIR_BALANCED"), ("bPairTeams", "GM_PAIR_TEAMS")):
+        site = ex.sites_of(name)[0]
+        lea = [i for i in ex.code(site - 0x60, 0x60) if i.mnemonic == "lea" and i.op_str.startswith("rax, [rip")][0]
+        table = lea.address + lea.size + int(re.search(r"0x[0-9a-f]+", lea.op_str.split("rip + ")[1]).group(0), 16) - TW.BASE
+        setter = struct.unpack_from("<Q", ex.d, ex.off(table))[0] - TW.BASE
+        if "mov byte ptr [rax + 0x%x], cl" % d[key] not in " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in ex.code(setter, 0x30)):
+            sys.exit("FAIL %s is not +0x%x" % (name, d[key]))
+    print("ok    start chooser (slot 189, %x): GetTeamNum at 0x1402447ff, the team map +0x%x (bSpawnPairTogether +0x%x, "
+          "bSpawnPairBalanced +0x%x, bPairTeams +0x%x), IsSpawnpointAllowed %x reads it"
+          % (TW.BASE + chooser, d["GM_TEAM_STARTS"], d["GM_PAIR_SPAWN"], d["GM_PAIR_BALANCED"], d["GM_PAIR_TEAMS"], TW.BASE + allowed))
+    # AController::Possess: its exec thunk calls vtable +V_POSSESS (the module possesses the
+    # player's pawn again after the game's delayed spectating took it).
+    poss = " | ".join("%s %s" % (i.mnemonic, i.op_str) for t in ex.natives("Possess") for i in ex.code(t, 0x100))
+    if "call qword ptr [rax + 0x%x]" % d["V_POSSESS"] not in poss:
+        sys.exit("FAIL AController::Possess is not vtable +0x%x" % d["V_POSSESS"])
+    unposs = " | ".join("%s %s" % (i.mnemonic, i.op_str) for t in ex.natives("UnPossess") for i in ex.code(t, 0x100))
+    if "[rax + 0x%x]" % d["V_UNPOSSESS"] not in unposs:
+        sys.exit("FAIL AController::UnPossess is not vtable +0x%x" % d["V_UNPOSSESS"])
+    print("ok    AController::Possess is vtable +0x%x, UnPossess +0x%x (their exec thunks)" % (d["V_POSSESS"], d["V_UNPOSSESS"]))
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     imm = set()
     for i in md.disasm(ROUNDS.BLOB[:ROUNDS.SD_SELF_RVA], 0):
