@@ -1641,12 +1641,18 @@ function PulseElement(elem, color){
 
 var GameMessageTemplate = document.getElementById("cloned-elements").getElementsByClassName("game-message")[0];
 
-function AddGameMessage(message, duration){
+// bText: the message is plain text (it has a player's name in it): shown as
+// it is, never read as markup. The game's own messages stay HTML (stock).
+function AddGameMessage(message, duration, bText){
 	DebugLog("AddGameMessage: " + message);
 	var GameMessageContainer = document.getElementById("game-message-container");
 	var newGameMessage = GameMessageTemplate.cloneNode(true);
 	var text = newGameMessage.getElementsByClassName("game-message-text")[0];
-	text.innerHTML = message;
+	if (bText) {
+		text.textContent = String(message);
+	} else {
+		text.innerHTML = message;
+	}
 	//
 	if(GameMessageTemplate.firstChild){
 		//newGameMessage = GameMessageContainer.appendChild(newGameMessage);
@@ -2450,7 +2456,7 @@ function RemasterTeamStatus(message)
 		if(p.bAlive) alive++;
 		if(p.bAlive && name && !remasterExtraMates.names[name]){
 			remasterExtraMates.names[name] = true;
-			AddGameMessage(name + " is your Teammate!");
+			AddGameMessage(name + " is your Teammate!", undefined, true);
 		}
 	}
 	for(; i < remasterExtraMates.panels.length; i++) remasterExtraMates.panels[i].bAlive = false;
@@ -2486,7 +2492,7 @@ function OnTeamMemberAdded(playername){
 	PartyBar.classList.remove('hidden');
 	document.getElementById("compass-teammember").classList.remove("hidden");
 	PartyMemberName.textContent = playername;
-	AddGameMessage(playername + " is your Teammate!");
+	AddGameMessage(playername + " is your Teammate!", undefined, true);
 }
 
 function OnTeamMemberDied(){

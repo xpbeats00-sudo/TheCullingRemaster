@@ -3,6 +3,8 @@
 // messages; each teammate gets a panel like the game's, stacked above it; a
 // teammate who is down has none; pause and your own death hide them; your
 // death's result waits until your whole team is out (Duo's rule, for N).
+// Teammates' names are shown as text, never read as markup (AddGameMessage's
+// bText; the panels' textContent).
 // The functions are taken from hud.js itself (it needs the whole HUD page to
 // load), so this tests the shipped code.
 //
@@ -62,13 +64,13 @@ function page() {
     querySelector: (sel) => (sel === "#hud-bottom-left-container .buff-armor" ? row : null),
     createElement: (tag) => element(tag)
   };
-  const shown = [], results = [];
+  const shown = [], results = [], asText = [];
   const g = {
     document: doc,
     window: { innerWidth: 1000, innerHeight: 1000, addEventListener() {} },
     bHasPartyMember: false,
     pendingTeamResult: null,
-    AddGameMessage: (m) => shown.push(m),
+    AddGameMessage: (m, d, bText) => { shown.push(m); asText.push(bText === true); },
     PostPendingTeamResult: (sync) => { results.push(sync); g.pendingTeamResult = null; },
     Math, parseInt
   };
@@ -86,7 +88,7 @@ function page() {
     " mates: function () { return remasterExtraMates; }, team: function () { return remasterTeam; } }; }");
   fn(g);
   const panels = () => g.api.mates().panels.map((p) => p.box);
-  return { g, shown, results, panels, byId, body };
+  return { g, shown, results, panels, byId, body, asText };
 }
 
 let passed = 0;
@@ -97,6 +99,29 @@ test("TMS| messages never show as game messages; others do", () => {
   p.g.say("TMS|1|75|50|1|Bot/2", 0);
   p.g.say("Grab your Airdrop.", 0);
   assert.deepStrictEqual(p.shown, ["Bot/2 is your Teammate!", "Grab your Airdrop."]);
+  assert.deepStrictEqual(p.asText, [true, false], "the teammate's message is text; the game's own stays HTML");
+});
+
+test("a teammate's name with markup: shown as text (game message and panel), never parsed", () => {
+  const p = page();
+  const evil = "<img src=x onerror=alert(1)>";
+  p.g.say("TMS|1|75|50|1|" + evil, 0);
+  assert.deepStrictEqual(p.shown, [evil + " is your Teammate!"]);
+  assert.deepStrictEqual(p.asText, [true]);
+  const panel = p.g.api.mates().panels[0];
+  assert.strictEqual(panel.name.textContent, evil);
+  assert.strictEqual(panel.name.innerHTML, "", "the panel's name isn't set as HTML");
+  // AddGameMessage itself (the shipped function): bText puts it in textContent.
+  const made = [];
+  const msg = { cloneNode() { const t = { innerHTML: "", textContent: "" }; made.push(t);
+    return { getElementsByClassName: () => [t], classList: { add() {} }, remove() {} }; } };
+  const container = { firstChild: null, appendChild: (c) => c, insertBefore: (c) => c };
+  const add = new Function("g", "with (g) { " + take("function", "AddGameMessage") + "\nreturn AddGameMessage; }")({
+    DebugLog() {}, GameMessageTemplate: msg, document: { getElementById: () => container }, setTimeout() {} });
+  add(evil + " is your Teammate!", 4000, true);
+  add("<b>Airdrop</b> incoming", 4000);
+  assert.deepStrictEqual([made[0].textContent, made[0].innerHTML], [evil + " is your Teammate!", ""]);
+  assert.strictEqual(made[1].innerHTML, "<b>Airdrop</b> incoming", "the game's own messages stay HTML");
 });
 
 test("Trios: one panel for the teammate beyond the game's, with health, stamina and name", () => {
