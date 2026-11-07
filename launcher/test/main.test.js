@@ -207,6 +207,29 @@ const settle = (p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e })
       }
     });
 
+    await test("a release older than the newest one this launcher has seen is refused, with no install to compare with", async () => {
+      // The PLAY test's late 2.0.0 was accepted: it is the floor now, kept in userData (not the game folder).
+      const floor = JSON.parse(fs.readFileSync(path.join(userData, "release-floor.json"), "utf8"));
+      assert.strictEqual(floor.version, "2.0.0");
+      // A fresh folder (nothing installed) and an older signed release replayed by the server.
+      pickFolder = path.join(tmp, "fresh");
+      fs.mkdirSync(pickFolder, { recursive: true });
+      await call("choose-game-folder");
+      const sync = require("../lib/sync");
+      const real = sync.fetchManifest;
+      sync.fetchManifest = async () => ({ version: "1.5.0", baseUrl: "https://example.test/remaster/manifest.json", files: [],
+        servers: [{ id: "old", name: "Old", api: "https://old.example.test/api" }] });
+      try {
+        const r = await settle(call("check-updates"));
+        assert.ok(!r.ok && /offers 1\.5\.0, older than 2\.0\.0/.test(r.e.message), "refused: " + (r.e && r.e.message));
+        const s = await call("state");
+        assert.strictEqual(s.release, "2.0.0", "the older release isn't taken");
+        assert.ok(!s.servers.some((sv) => sv.id === "old"), "nor its server list");
+      } finally {
+        sync.fetchManifest = real;
+      }
+    });
+
     console.log("all %d main process tests passed", passed);
   } finally {
     Module._load = load;

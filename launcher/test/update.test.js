@@ -623,6 +623,30 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(read(r, "Victory/p.pak").equals(f1));
     });
 
+    await test("the downgrade floor: an older release than the newest one seen is refused, even for a new folder", async () => {
+      const floor = path.join(tmp, "userData", "release-floor.json");
+      const m = (version, released) => ({ version, released, files: [] });
+      sync.checkFloor(floor, m("1.0.0"));                        // nothing seen yet: anything goes
+      sync.noteFloor(floor, m("1.2.0", "2026-11-01T00:00:00.000Z"));
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(floor, "utf8")), { version: "1.2.0", released: "2026-11-01T00:00:00.000Z" });
+      assert.throws(() => sync.checkFloor(floor, m("1.1.9", "2026-12-01T00:00:00.000Z")), /offers 1\.1\.9, older than 1\.2\.0/);
+      // The same version, signed earlier (a replayed build of it), is refused too; the same build or a later one isn't.
+      assert.throws(() => sync.checkFloor(floor, m("1.2.0", "2026-10-31T00:00:00.000Z")), /older than/);
+      sync.checkFloor(floor, m("1.2.0", "2026-11-01T00:00:00.000Z"));
+      sync.checkFloor(floor, m("1.2.0"));
+      sync.noteFloor(floor, m("1.2.0", "2026-11-02T00:00:00.000Z"));
+      assert.strictEqual(JSON.parse(fs.readFileSync(floor, "utf8")).released, "2026-11-02T00:00:00.000Z");
+      // Older ones never lower it.
+      sync.noteFloor(floor, m("1.1.0", "2027-01-01T00:00:00.000Z"));
+      sync.noteFloor(floor, m("1.2.0", "2026-11-01T00:00:00.000Z"));
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(floor, "utf8")), { version: "1.2.0", released: "2026-11-02T00:00:00.000Z" });
+      sync.noteFloor(floor, m("1.10.0", "2026-11-03T00:00:00.000Z"));
+      assert.strictEqual(JSON.parse(fs.readFileSync(floor, "utf8")).version, "1.10.0");
+      // An unreadable floor file is no floor (and is replaced by the next release seen).
+      fs.writeFileSync(floor, "{not json");
+      sync.checkFloor(floor, m("1.0.0"));
+    });
+
     console.log("all %d update tests passed", passed);
   } finally {
     server.close();

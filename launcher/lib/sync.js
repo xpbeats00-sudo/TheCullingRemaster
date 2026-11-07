@@ -1025,6 +1025,51 @@ function countFiles(dir) {
   return n;
 }
 
+// ---------------------------------------------------------------- downgrade floor
+// The newest release this launcher has accepted, kept in the launcher's own
+// folder (userData), not in a game folder: a fresh install, a new folder or a
+// deleted sync-state.json would otherwise take any old signed manifest a
+// server replays (its old server list among it). Signed manifests don't
+// expire, so the floor is what keeps players from being taken back.
+// { version, released }: released is the manifest's own (signed) time, so a
+// replayed earlier build of the same version is refused too.
+function readFloor(file) {
+  const f = readJson(file);
+  return f && typeof f.version === "string" ? f : null;
+}
+
+const releasedAt = (m) => (m && typeof m.released === "string" ? Date.parse(m.released) : NaN);
+
+// -1, 0 or 1: release m against the floor (the version first, then, for the
+// same version, the released time when both have one).
+function againstFloor(m, floor) {
+  const c = compareVersions(m.version, floor.version);
+  if (c) return c;
+  const a = releasedAt(m), b = releasedAt(floor);
+  if (isNaN(a) || isNaN(b) || a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+// Throws when manifest m is older than the newest release seen.
+function checkFloor(file, m) {
+  const floor = readFloor(file);
+  if (floor && againstFloor(m, floor) < 0) {
+    const same = compareVersions(m.version, floor.version) === 0;
+    throw new SyncError(`the server offers ${m.version}${same ? " (an earlier build of it)" : ""}, older than ${floor.version}, ` +
+      "the newest release this launcher has seen: not installing it", "downgrade");
+  }
+}
+
+// Raises the floor to manifest m when it is newer (never lowers it).
+function noteFloor(file, m) {
+  const floor = readFloor(file);
+  if (floor && againstFloor(m, floor) <= 0) return false;
+  const next = { version: m.version };
+  if (!isNaN(releasedAt(m))) next.released = m.released;
+  writeJson(file, next);
+  return true;
+}
+
 function installedVersion(gameRoot) {
   return loadState(gameRoot).version || null;
 }
@@ -1036,5 +1081,5 @@ function isHeld(gameRoot) {
 }
 
 module.exports = { fetchManifest, validateManifest, plan, apply, partialBytes, targetPath, checkUrl, sha256File, installedVersion, isHeld,
-  freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch,
+  freeBytes, checkSpace, recover, rollback, previousVersion, stagedBytes, bandwidth, compareVersions, useFetch, checkFloor, noteFloor,
   SyncError, SyncPaused, ConnectionLost, STATE_DIR, REPLACED_DIR, PARALLEL };
