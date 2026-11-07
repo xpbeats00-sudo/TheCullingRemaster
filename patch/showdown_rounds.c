@@ -1151,19 +1151,21 @@ static void keep_record(u8 *world)
     K.ctrl.index = K.pawn.index = -1;
     K.ctrl.serial = K.pawn.serial = 0;
     for (i = 0; i < num; i++) {
-        u8 *c = weak_get(list, i);
-        if (c && is_a(c, R_CLS_PC) && FIELD(c, C_PAWN, u8 *)) {
+        u8 *c = weak_get(list, i), *p;
+        if (!c || !is_a(c, R_CLS_PC) || !(p = FIELD(c, C_PAWN, u8 *))) continue;
+        if (is_a(p, R_CLS_CHARACTER)) {                /* a character's only: IsAlive below is AShooterCharacter's */
             weak_set(&K.ctrl, c);
-            weak_set(&K.pawn, FIELD(c, C_PAWN, u8 *));
-            return;
+            weak_set(&K.pawn, p);
         }
+        return;
     }
 }
 
 static int keep_possessed(void)
 {
     u8 *c = weak(&K.ctrl), *p = weak(&K.pawn);
-    if (!c || !p || FIELD(c, C_PAWN, u8 *) || FIELD(p, P_CONTROLLER, u8 *) || !((fn_bool)AT(US_CH_ALIVE))(p)) return 0;
+    if (!c || !p || !is_a(p, R_CLS_CHARACTER) || FIELD(c, C_PAWN, u8 *) || FIELD(p, P_CONTROLLER, u8 *)
+        || !((fn_bool)AT(US_CH_ALIVE))(p)) return 0;
     ((fn_void2)VFN(c, V_POSSESS))(c, p);
     return FIELD(c, C_PAWN, u8 *) == p;
 }
