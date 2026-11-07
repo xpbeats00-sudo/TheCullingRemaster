@@ -157,7 +157,10 @@ The game gave the winner a death order that tied with a bot's, so the host's res
 - the result is paid with the winner 1st and the other player 16th;
 - no game crashed.
 
-**Found: the stock free-for-all rule ends the match when at most one human is alive, bots or not.** In game, when one of the two players died the match ended at once with 14 bots alive, and the survivor won. Before, the host's own player sat alive in its pod as a second human, so this never showed. For shared matches with bots that's a design choice to make: keep it (last human standing wins) or count the bots (the match goes on until one contestant is left).
+**The end of a shared match: play on against the bots** (the owner's choice, 2026-11-06). The stock free-for-all rule ends the match when at most one human is alive, bots or not. In game, one of the two players died and the match ended at once with 14 bots alive. The host now replaces FreeForAll's end check (vtable slot 282, VA 0x1425a81e8, stock 0x140244d30) with `np_should_end`. On a real host, during a match in progress, the match goes on while two or more contestants (bots included) are alive, and ends when one is left or no human is. Contestants are counted as the stock check does; elsewhere, the stock check. `test_netplay.py` checks the slot and what the stock check reads. In game, headless, with real menus:
+- **one human left, bots alive:** Player One killed Player Two (15 alive), and the match went on. It ended only when one contestant was left (`alive=1 humans=1`; the test's `CULLING_NETPLAY_END=1` cleared the bots). Player One won: placed 1st, death order 16, paid as the winner.
+- **no human left, bots alive** (`CULLING_NETPLAY_END=2` takes out the last human): the match ended with 14 bots alive (`alive=14 humans=0`). The players were placed 15th and 16th, with no human winner.
+- no game crashed.
 
 ## On the VPS (not done: needs the owner)
 

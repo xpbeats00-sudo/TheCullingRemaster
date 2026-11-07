@@ -81,7 +81,7 @@ def _verify_patched(path):
     for slot, stock_fn, entry in PN.NOTIFY_SLOTS:
         got = struct.unpack_from("<Q", data, PN._off(PN.NOTIFY_VTABLE_VA + 8 * slot))[0]
         assert got == sect_va + getattr(NP, entry.upper()), (slot, hex(got))
-    for slot_va, stock_fn, entry in (PN.PRELOGIN_SLOT, PN.TICKFLUSH_SLOT):
+    for slot_va, stock_fn, entry in (PN.PRELOGIN_SLOT, PN.TICKFLUSH_SLOT, PN.SHOULD_END_SLOT):
         got = struct.unpack_from("<Q", data, PN._off(slot_va))[0]
         assert got == sect_va + getattr(NP, entry.upper()), (entry, hex(got))
     # 3. InternalGetNetMode: driver ? jump to its "mov rcx, rax; jmp GetNetMode" : the stock demo path.
@@ -264,6 +264,17 @@ def test_real_exe(path):
     assert IMAGE_BASE + base in calls, "AShooterGameMode::PreLogin doesn't call AGameModeBase::PreLogin %#x" % base
     msg = "Match is over!".encode("utf-16-le")
     assert data.find(msg) > 0, "no 'Match is over!' string"
+    # 2b2. FreeForAll's end-of-match check slot (relocated) holds the stock check, which reads
+    # the player state's flags and contestant byte and calls HasLeft and IsAlive, as the
+    # host's own rule (np_should_end) does.
+    slot_va, stock_fn, entry = PN.SHOULD_END_SLOT
+    assert struct.unpack_from("<Q", data, PN._off(slot_va))[0] == stock_fn, "end-check slot"
+    assert slot_va - IMAGE_BASE in relocs, "end-check slot has no base relocation"
+    assert stock_fn - IMAGE_BASE == mac("R_FFA_SHOULD_END")
+    body = data[PN._off(stock_fn):PN._off(stock_fn) + 0x100]
+    assert struct.pack("<I", mac("O_PS_FLAGS")) in body and struct.pack("<I", mac("O_PS_CONTESTANT")) in body, "flags/contestant reads"
+    calls = {stock_fn + i + 5 + struct.unpack_from("<i", body, i + 1)[0] for i in range(len(body) - 5) if body[i] == 0xE8}
+    assert IMAGE_BASE + mac("R_PS_HAS_LEFT") in calls and IMAGE_BASE + mac("R_PS_IS_ALIVE") in calls, sorted(hex(c) for c in calls)
     # 2c. Milestone 3. The Steam driver's TickFlush slot (relocated) holds its TickFlush, which
     # calls UNetDriver::TickFlush first; that reads ClientConnections (+0x78, Num +0x80). The
     # replay recorder's ReplicateActor (the loop's template) calls CreateChannel(conn, 2, 1, -1),

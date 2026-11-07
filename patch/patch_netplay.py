@@ -74,6 +74,10 @@ PRELOGIN_SLOT = (0x1425A7FE0, 0x140245320, "np_prelogin")
 # 2c. USteamNetDriver's vtable slot +0x278 (TickFlush, VA 0x142e0ac10): stock 0x142335370
 # -> np_tick_flush (the host's minimal ServerReplicateActors, a client's trace; then stock).
 TICKFLUSH_SLOT = (0x142E0AC10, 0x142335370, "np_tick_flush")
+# 2d. AShooterGame_FreeForAll's vtable slot 282 (+0x8d0, the end-of-match check, VA
+# 0x1425a81e8): stock 0x140244d30 -> np_should_end (on a real host: the match goes on
+# while two or more contestants, bots included, are alive; otherwise the stock check).
+SHOULD_END_SLOT = (0x1425A81E8, 0x140244D30, "np_should_end")
 
 # 3. UWorld::InternalGetNetMode, in place.
 NETMODE_VA = 0x1416848F0
@@ -118,7 +122,7 @@ def layout():
     for slot, stock_fn, entry in NOTIFY_SLOTS:
         edits.append((_off(NOTIFY_VTABLE_VA + 8 * slot), struct.pack("<Q", stock_fn),
                       struct.pack("<Q", sect_va + getattr(NP, entry.upper()))))
-    for slot_va, stock_fn, entry in (PRELOGIN_SLOT, TICKFLUSH_SLOT):
+    for slot_va, stock_fn, entry in (PRELOGIN_SLOT, TICKFLUSH_SLOT, SHOULD_END_SLOT):
         edits.append((_off(slot_va), struct.pack("<Q", stock_fn), struct.pack("<Q", sect_va + getattr(NP, entry.upper()))))
     edits.append((_off(NETMODE_VA), NETMODE_STOCK, NETMODE_NEW))
     for va, stock, reg, demo, join in INLINE_SITES:

@@ -1338,7 +1338,7 @@ static const u16 ms_waiting[] = { 'W','a','i','t','i','n','g','T','o','S','t','a
 static const u16 ms_progress[] = { 'I','n','P','r','o','g','r','e','s','s',0 };
 static const u16 ms_post[] = { 'W','a','i','t','i','n','g','P','o','s','t','M','a','t','c','h',0 };
 static const u16 ms_leaving[] = { 'L','e','a','v','i','n','g','M','a','p',0 };
-static i32 end_state = 1, end_phase;  /* 0 holding, 1 waiting, 2 released */
+static i32 end_state = 1, end_phase;  /* end_state: 1 unread, 2 "1", 3 "2", 4 off; end_phase: 0 holding, 1 waiting, 2 released */
 static u32 end_at;
 static u64 state_names[4];
 
@@ -1390,7 +1390,15 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
     u8 *keep = pc0 ? F(pc0, O_C_PAWN, u8 *) : 0, *data;
     struct line l;
     i32 i, num, killed = 0;
-    if (!tp2_done || !env_on(end_var, &end_state))
+    if (end_state == 1) {
+        /* "1": the host clears the bots (the first player wins); "2": it
+         * takes out the first player instead, the last human, with the bots
+         * still alive (the shared-match end rule's "no human left"). */
+        u16 v[4];
+        u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(end_var, v, 4);
+        end_state = n == 1 && (v[0] == '1' || v[0] == '2') ? 2 + (v[0] == '2') : 4;
+    }
+    if (!tp2_done || end_state == 4)
         return;
     if (end_phase == 0 && r1 && !F(r1, REC_ALIVE, u8)) {
         end_phase = 1;
@@ -1401,7 +1409,7 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
         num = F(world + O_W_PAWNS, 8, i32);
         for (i = 0; data && i < num; i++) {
             u8 *p = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
-            if (p && p != keep && health_of(p) > 0) {
+            if (p && health_of(p) > 0 && (end_state == 3 ? p == keep : p != keep)) {
                 FN(R_APPLY_DAMAGE, apply_damage_fn)(p, 10000.0f, 0, 0, 0);
                 killed++;
             }
@@ -2177,6 +2185,62 @@ static void prematch_tick(u8 *driver, u8 *world, u8 *gm)
         kv_s(&l, "remaining", F(gs, O_GS_REMAINING, i32));
         trace_end(&l);
     }
+}
+
+
+/* ---- the end of a shared match ------------------------------------------
+ *
+ * The stock free-for-all check (VA 0x140244d30, FreeForAll vtable slot 282)
+ * ends the match when at most one human is alive, bots or not: in game a
+ * shared match ended with 14 bots alive the moment one of its two players
+ * died. On a real host (the pre-match mode) the match instead goes on while
+ * two or more contestants, bots included, are alive, and ends when one is
+ * left or no human is (the players' placements are final once they die).
+ * Contestants as the stock check counts them: player states in the game
+ * state's PlayerArray, not spectators (+0x42c bit 0), contestants (+0x5b4),
+ * not gone (R_PS_HAS_LEFT) and alive by the records (R_PS_IS_ALIVE); bit 2 of
+ * +0x42c is a bot. Outside a match in progress, the stock check. */
+#define R_FFA_SHOULD_END   0x244d30
+#define R_PS_HAS_LEFT      0x249d20
+#define R_PS_IS_ALIVE      0x249ca0
+typedef u8 (*gm_bool_fn)(void *gm);
+typedef u8 (*ps_bool_fn)(void *ps);
+static i32 end_traced;
+
+u8 np_should_end(void *gm)
+{
+    u8 *g = (u8 *)gm, *gs, **ps;
+    i32 i, n, alive = 0, humans = 0;
+    u8 end;
+    struct line l;
+    if (prematch_expected() <= 0 || !g || state_code(F(g, O_GM_MATCH_STATE, u32)) != 2)
+        return FN(R_FFA_SHOULD_END, gm_bool_fn)(gm);
+    gs = F(g, O_GM_GAMESTATE, u8 *);
+    ps = gs ? F(gs, O_GS_PLAYERS, u8 **) : 0;
+    n = gs ? F(gs, O_GS_PLAYERS + 8, i32) : 0;
+    for (i = 0; ps && i < n; i++) {
+        u8 *p = ps[i];
+        u32 flags;
+        if (!p)
+            continue;
+        flags = F(p, O_PS_FLAGS, u32);
+        if ((flags & 1) || !F(p, O_PS_CONTESTANT, u8))
+            continue;
+        if (FN(R_PS_HAS_LEFT, ps_bool_fn)(p) || !FN(R_PS_IS_ALIVE, ps_bool_fn)(p))
+            continue;
+        alive++;
+        if (!(flags & 4))
+            humans++;
+    }
+    end = (u8)(alive <= 1 || humans == 0);
+    if (end && !end_traced && trace_begin(&l, "match-end-rule")) {
+        end_traced = 1;
+        kv_s(&l, "alive", alive);
+        kv_s(&l, "humans", humans);
+        kv(&l, "stock_would_end", FN(R_FFA_SHOULD_END, gm_bool_fn)(gm), 0);
+        trace_end(&l);
+    }
+    return end;
 }
 
 /* The host is its own server: its local player never got a server nonce
