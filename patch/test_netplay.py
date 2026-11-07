@@ -517,6 +517,9 @@ def test_native():
         run_scenario(exe, "nocontrol", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_CONTROL": os.path.join(tmp, "missing")}, ctl)
         print("native: the game refuses (M5)")
         run_scenario(exe, "gamerefuses", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2"}, ctl, [(ta, 1, ua)])
+        print("native: a team player leaves mid-match (H4)")
+        run_scenario(exe, "leaver", [ta, ua, tb, ub], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_TEAMSIZE": "2"}, ctl,
+                     [(ta, 1, ua), (tb, 2, ub)])
         print("native: pass")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

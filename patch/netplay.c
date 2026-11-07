@@ -409,13 +409,26 @@ static void sha256_hex(const char *msg, u32 len, char *out)
 #define MAX_JOINS          64
 #define USER_MAX           48          /* a userID ("steam:" + 17 digits) and room to spare */
 #define UID_MAX            32          /* a player's net id as text (a Steam ID: 17 digits) */
+/* The connection and player state are kept as FWeakObjectPtrs: a player who
+ * leaves takes both with them (the engine destroys them), and a raw pointer
+ * kept here was used after that every tick (SetTeamNum on a freed player
+ * state). Get() gives null once the object is gone. */
+#define R_WEAK_SET         0x69c2a0    /* FWeakObjectPtr::operator=(weak, obj) */
+#define R_WEAK_GET         0x69c470    /* FWeakObjectPtr::Get(weak) -> obj */
+typedef void (*weak_set_fn)(void *weak, void *obj);
+typedef void *(*weak_get_fn)(void *weak);
+struct weak { i32 index, serial; };
 struct join_entry {
-    void *conn, *ps;
+    struct weak conn, ps;
+    i32 have_ps, gone;                 /* its player state was seen; it is gone (the player left) */
     i32 seq, team;
     u32 died;
     char hash[65];                     /* the ticket's SHA-256: used once */
     char user[USER_MAX];               /* the ticket's userID */
     char uid[UID_MAX];                 /* the player's net id (one join each) */
+    /* Its record as last seen while its player state lived: the result of
+     * a player who left. */
+    i32 c_kills, c_damage, c_order, c_team, c_place;
 };
 struct join_table {
     struct join_entry e[MAX_JOINS];
@@ -599,8 +612,9 @@ static void add_join(void *conn)
     if (!t->pend || t->n >= MAX_JOINS)
         return;
     e = &t->e[t->n++];
-    e->conn = conn;
-    e->ps = 0;
+    FN(R_WEAK_SET, weak_set_fn)(&e->conn, conn);
+    e->have_ps = e->gone = 0;
+    e->c_kills = e->c_damage = e->c_order = e->c_team = e->c_place = 0;
     e->team = t->pend_team;
     e->seq = t->n;
     e->died = 0;
@@ -907,8 +921,6 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define R_SET_CH_ACTOR     0x12e0d70   /* UActorChannel::SetChannelActor(ch, actor) */
 #define R_REPLICATE_ACTOR  0x12dcf30   /* UActorChannel::ReplicateActor(ch) -> bool */
 #define R_PRE_REPLICATION  0x110bf50   /* AActor::CallPreReplication(actor, driver) */
-#define R_WEAK_SET         0x69c2a0    /* FWeakObjectPtr::operator=(weak, obj) */
-#define R_WEAK_GET         0x69c470    /* FWeakObjectPtr::Get(weak) -> obj */
 #define CHTYPE_ACTOR       2
 #define O_ND_CLIENTS       0x78        /* UNetDriver::ClientConnections (TArray<UNetConnection*>) */
 #define O_ND_WORLD         0xa0
@@ -957,8 +969,6 @@ typedef void *(*create_channel_fn)(void *conn, i32 type, u8 local, i32 index);
 typedef void (*set_ch_actor_fn)(void *ch, void *actor);
 typedef u8 (*replicate_fn)(void *ch);
 typedef void (*pre_rep_fn)(void *actor, void *driver);
-typedef void (*weak_set_fn)(void *weak, void *obj);
-typedef void *(*weak_get_fn)(void *weak);
 typedef u8 (*conn_actor_fn)(void *conn, void *actor);
 typedef i32 (*conn_ready_fn)(void *conn, u8 saturate);
 typedef void *(*pc_view_target_fn)(void *pc);
@@ -967,7 +977,6 @@ typedef u8 (*net_relevant_fn)(void *actor, void *viewer, void *view_target, cons
 typedef void (*ch_close_fn)(void *ch);
 typedef void (*send_adj_fn)(void *prediction);
 
-struct weak { i32 index, serial; };
 struct rep_stats { u64 actors, opened, replicated, skipped, deferred, saturated; u64 opened_now; u8 *remote_pawn, *remote_conn; u64 relevant, culled, closed, adjusted; };
 
 /* The channel already replicating actor on conn: UNetConnection::ActorChannels'
@@ -1770,6 +1779,13 @@ static i32 team_size_env(void)
  * team. The record is made when the player is first counted, with the team
  * it had then: in game the bot spawned during the start countdown kept
  * team 1 on the scoreboard after its player state went to 2. */
+/* A joined player's player state, while it lives (0 before it has one and
+ * after the player left). */
+static u8 *join_ps(struct join_entry *e)
+{
+    return e->have_ps ? (u8 *)FN(R_WEAK_GET, weak_get_fn)(&e->ps) : 0;
+}
+
 static i32 team_differs(u8 *ps, u8 *world, i32 team)
 {
     u8 *r = record_of(world, ps);
@@ -1791,12 +1807,14 @@ static void host_teams(u8 *world)
     if (t->n >= 2 && t->e[1].team == t->e[0].team && env_on(split_var, &split_state))
         t->e[1].team = t->e[0].team + 1;
 #endif
-    for (i = 0; i < t->n; i++)
-        if (t->e[i].ps && t->e[i].team > 0 && t->e[i].team <= MAX_TEAMS) {
+    for (i = 0; i < t->n; i++) {
+        u8 *jp = join_ps(&t->e[i]);
+        if (jp && t->e[i].team > 0 && t->e[i].team <= MAX_TEAMS) {
             used[t->e[i].team]++;
-            if (team_differs((u8 *)t->e[i].ps, world, t->e[i].team))
-                FN(R_SET_TEAM_NUM, set_team_fn)(t->e[i].ps, t->e[i].team, 1);
+            if (team_differs(jp, world, t->e[i].team))
+                FN(R_SET_TEAM_NUM, set_team_fn)(jp, t->e[i].team, 1);
         }
+    }
     for (i = 0; i < num; i++) {
         u8 *p = ps[i];
         if (!p || !(F(p, O_PS_FLAGS, u32) & 4) || (F(p, O_PS_FLAGS, u32) & 2))
@@ -1819,7 +1837,7 @@ static void host_teams(u8 *world)
             teams_trace = now;
             for (i = 0; i < t->n; i++) {
                 kv_s(&l, "join_team", t->e[i].team);
-                kv(&l, "join_ps", (u64)t->e[i].ps, 1);
+                kv(&l, "join_ps", (u64)join_ps(&t->e[i]), 1);
             }
             put_s(&l, " order=");
             for (i = 0; i < num && i < 40; i++) {
@@ -1880,6 +1898,23 @@ static u8 *scoreboard_entry(u8 *world, u8 *rec)
     return 0;
 }
 
+/* A record's placement now: the dead by their death order (records + 1 -
+ * order: the first to die is last); the living as if they were out now (the
+ * number alive), the game's winner first. */
+static i32 record_place(u8 *world, u8 *r)
+{
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 *recs = gs ? F(gs, O_GS_RECORDS, u8 *) : 0;
+    i32 num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0, order = F(r, REC_DEATH_ORDER, i32), i, alive = 0;
+    if (F(r, REC_WINNER, u8))
+        return 1;
+    if (!F(r, REC_ALIVE, u8))
+        return order <= 0 || order > num ? 1 : num + 1 - order;
+    for (i = 0; recs && i < num; i++)
+        alive += F(recs + (u64)i * REC_SIZE, REC_ALIVE, u8) != 0;
+    return alive > 0 ? alive : 1;
+}
+
 static void ctl_track_joins(u8 *driver, u8 *world)
 {
     struct join_table *t = join_table();
@@ -1892,18 +1927,48 @@ static void ctl_track_joins(u8 *driver, u8 *world)
     if (!t->start && match_state(world) == 2)
         t->start = now;
     for (i = 0; i < t->n; i++) {
-        u8 *r = t->e[i].ps ? record_of(world, (u8 *)t->e[i].ps) : 0;
-        if (t->start && !t->e[i].died && r && !F(r, REC_ALIVE, u8))
-            t->e[i].died = now;
-    }
-    for (i = 0; i < t->n; i++) {
-        if (t->e[i].ps)
-            continue;
-        for (c = 0; conns && c < nconn; c++)
-            if (conns[c] == t->e[i].conn) {
-                u8 *pc = F(conns[c], O_CONN_PC, u8 *);
-                t->e[i].ps = pc ? F(pc, O_C_PLAYERSTATE, u8 *) : 0;
+        struct join_entry *e = &t->e[i];
+        u8 *ps, *r, *sb;
+        if (!e->have_ps) {
+            u8 *conn = (u8 *)FN(R_WEAK_GET, weak_get_fn)(&e->conn);
+            for (c = 0; conn && conns && c < nconn; c++)
+                if (conns[c] == conn) {
+                    u8 *pc = F(conn, O_CONN_PC, u8 *);
+                    u8 *p = pc ? F(pc, O_C_PLAYERSTATE, u8 *) : 0;
+                    if (p) {
+                        FN(R_WEAK_SET, weak_set_fn)(&e->ps, p);
+                        e->have_ps = 1;
+                    }
+                }
+        }
+        ps = join_ps(e);
+        if (!ps) {
+            if (e->have_ps && !e->gone) {
+                struct line l;
+                e->gone = 1;
+                if (!e->died)
+                    e->died = now;
+                if (trace_begin(&l, "player-left")) {
+                    kv(&l, "n", (u64)e->seq, 0);
+                    kv_s(&l, "place", e->c_place);
+                    trace_end(&l);
+                }
             }
+            continue;
+        }
+        r = record_of(world, ps);
+        if (!r)
+            continue;
+        if (t->start && !e->died && !F(r, REC_ALIVE, u8))
+            e->died = now;
+        /* As it stands now, for the result if the player leaves. */
+        e->c_kills = F(r, REC_VICTIMS + 8, i32) + F(r, REC_BOT_VICTIMS, i32);
+        sb = scoreboard_entry(world, r);
+        if (sb)
+            e->c_damage = F(sb, SB_DAMAGE, i32);
+        e->c_order = F(r, REC_DEATH_ORDER, i32);
+        e->c_team = F(r, REC_TEAM, i32);
+        e->c_place = record_place(world, r);
     }
 }
 
@@ -1929,11 +1994,35 @@ static void ctl_result(u8 *driver, u8 *world)
     q = put_dec(q, gs ? F(gs, O_GS_ELAPSED, i32) : 0);
     q = put_str(q, "\n");
     for (i = 0; i < t->n && q - buf < (i32)sizeof(buf) - 200; i++) {
-        r = t->e[i].ps ? record_of(world, (u8 *)t->e[i].ps) : 0;
+        struct join_entry *e = &t->e[i];
+        u8 *ps = join_ps(e);
+        r = ps ? record_of(world, ps) : 0;
         q = put_str(q, "player n=");
-        q = put_dec(q, t->e[i].seq);
+        q = put_dec(q, e->seq);
         q = put_str(q, " user=");
-        q = put_str(q, t->e[i].user);
+        q = put_str(q, e->user);
+        if (!r && e->gone) {
+            /* Left during the match: its record as last seen (out then). */
+            q = put_str(q, " placement=");
+            q = put_dec(q, e->c_place > 0 ? e->c_place : num);
+            q = put_str(q, " order=");
+            q = put_dec(q, e->c_order);
+            q = put_str(q, " kills=");
+            q = put_dec(q, e->c_kills);
+            q = put_str(q, " damage=");
+            q = put_dec(q, e->c_damage);
+            q = put_str(q, " alive_s=");
+            q = put_dec(q, t->start && e->died ? (i32)((e->died - t->start) / 1000) : 0);
+            q = put_str(q, " winner=0");
+            if (team_size_env() > 1) {
+                q = put_str(q, " team=");
+                q = put_dec(q, e->c_team);
+                q = put_str(q, " team_placement=");
+                q = put_dec(q, team_placement(world, e->c_team));
+            }
+            q = put_str(q, " alive=0 left=1\n");
+            continue;
+        }
         if (!r) {
             q = put_str(q, " record=0\n");
             continue;
