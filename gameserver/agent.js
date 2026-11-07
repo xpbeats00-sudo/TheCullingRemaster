@@ -15,7 +15,12 @@
 //   - confirms each use the host reports (<control>/used-<n>: "<hash>
 //     <userID>") with the backend's `ticket-used`, which keeps every ticket
 //     single use;
-//   - posts the one `result` once the host writes <control>/result.done
+//   - posts the one `result` once the host writes <control>/result.done:
+//     kept in <match folder>/result.pending until the backend has it (200,
+//     or 409: it has it already or the match is gone; 400: refused, never
+//     taken), retried with backoff (1 s doubling to a minute) meanwhile, and
+//     posted by the next run of the agent if this one stops first. The host
+//     is stopped --linger-ms after result.done whatever the post does
 //     (result.txt: each joined player's placement, kills, damage and time
 //     alive, by userID; roster players who never joined are reported
 //     joined: false).
@@ -295,6 +300,61 @@ function drop() {
   ticketsText = null;
 }
 
+// ---- the result: posted until the backend has it --------------------------------
+
+const results = new Map();  // matchId -> { body, file, attempts, nextAt, busy }
+const finished = new Set(); // matches whose result the backend has: never taken up again
+
+// result.txt (written by the host at the end) -> result.pending, then posted.
+function startResult() {
+  resultPosted = true;
+  const body = resultBody(fs.readFileSync(ctl("result.txt"), "utf8"));
+  const file = ctl("result.pending");
+  atomicWrite(file, JSON.stringify(body));
+  if (host && host.matchId === body.matchId) host.stopAt = Date.now() + o.lingerMs;
+  results.set(body.matchId, { body, file, attempts: 0, nextAt: 0, busy: false });
+}
+
+// Every match folder's result.pending (an agent that stopped before posting).
+function loadPending() {
+  let dirs = [];
+  try { dirs = fs.readdirSync(o.control, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return; }
+  for (const d of dirs) {
+    const file = path.join(root(d.name), "result.pending");
+    let body;
+    try { body = JSON.parse(fs.readFileSync(file, "utf8")); } catch { continue; }
+    if (!body || typeof body.matchId !== "string" || results.has(body.matchId)) continue;
+    results.set(body.matchId, { body, file, attempts: 0, nextAt: 0, busy: false });
+    log("result-pending", { matchId: body.matchId });
+  }
+}
+
+async function postResults() {
+  for (const [matchId, p] of results) {
+    if (p.busy || Date.now() < p.nextAt) continue;
+    p.busy = true;
+    let r;
+    try { r = await call("result", p.body); } catch (e) { r = { status: 0, json: { error: e.message } }; }
+    p.attempts++;
+    log("result", { matchId, status: r.status, answer: r.json, attempt: p.attempts, players: p.body.players });
+    if (r.status === 200 || r.status === 409 || r.status === 400) {
+      // 409: the backend has it already (or the match is gone); 400: refused for good.
+      fs.writeFileSync(path.join(path.dirname(p.file), "result.posted"),
+        JSON.stringify({ status: r.status, answer: r.json, body: p.body, attempts: p.attempts }, null, 1));
+      try { fs.unlinkSync(p.file); } catch { /* gone */ }
+      results.delete(matchId);
+      finished.add(matchId);
+      if (finished.size > 100) finished.delete(finished.values().next().value);
+      if (assignment && assignment.matchId === matchId) drop();
+    } else {
+      const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(6, p.attempts - 1)));
+      p.nextAt = Date.now() + wait;
+      log("result-retry", { matchId, inMs: wait });
+    }
+    p.busy = false;
+  }
+}
+
 function take(a) {
   if (!a) {
     if (assignment && readyPosted) log("released", { matchId: assignment.matchId });
@@ -302,6 +362,18 @@ function take(a) {
     return;
   }
   if (assignment && assignment.matchId === a.matchId) { takeTickets(a.tickets); return; }
+  if (finished.has(a.matchId)) return;            // its result is posted: over here
+  if (results.has(a.matchId)) {
+    // Its result is waiting to be posted (an agent that stopped first): the
+    // match is over here; heartbeats report it running until the backend has it.
+    assignment = a;
+    readyPosted = true;
+    resultPosted = true;
+    matchDir = root(safeId(a.matchId));
+    fs.mkdirSync(matchDir, { recursive: true });
+    log("assignment-finished", { matchId: a.matchId });
+    return;
+  }
   assignment = a;
   readyPosted = false;
   resultPosted = false;
@@ -429,16 +501,6 @@ function resultBody(text) {
   return body;
 }
 
-async function postResult() {
-  resultPosted = true;
-  const body = resultBody(fs.readFileSync(ctl("result.txt"), "utf8"));
-  const r = await call("result", body);
-  fs.writeFileSync(ctl("result.posted"), JSON.stringify({ status: r.status, answer: r.json, body }, null, 1));
-  log("result", { status: r.status, answer: r.json, players: body.players });
-  if (host && host.matchId === body.matchId) host.stopAt = Date.now() + o.lingerMs;
-  if (r.status === 200 || r.status === 409) drop();
-}
-
 async function poll() {
   try {
     if (assignment && !readyPosted && exists("listening")) await hostListening();
@@ -449,7 +511,8 @@ async function poll() {
         if (m && !confirming.has(+m[1])) confirmUse(+m[1]).catch((e) => log("ticket-used-error", { error: e.message }));
       }
     }
-    if (assignment && readyPosted && !resultPosted && exists("result.done")) await postResult();
+    if (assignment && readyPosted && !resultPosted && exists("result.done")) startResult();
+    if (results.size) await postResults();
     if (o.launcher) await watchHost();
   } catch (e) { log("poll-error", { error: e.message }); }
   setTimeout(poll, 25);
@@ -458,6 +521,7 @@ async function poll() {
 (async () => {
   if (o.launcher && !o.clientDll) { console.error("--launcher needs --client-dll"); process.exit(2); }
   if (o.launcher) await killOrphan();
+  loadPending();
   const r = await call("register", { host: o.host, port: o.port, version: "route-b-agent-1" });
   log("register", { status: r.status, json: r.json });
   if (r.status !== 200) process.exit(1);

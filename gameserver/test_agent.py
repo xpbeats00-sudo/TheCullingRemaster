@@ -222,7 +222,7 @@ class Backend:
                 return 200, {"ok": True}
             if action == "result":
                 status = self.results.pop(0) if self.results else 200
-                if status == 200:
+                if status in (200, 409):
                     self.assignment = None
                 return status, ({"ok": True} if status == 200 else {"error": "status-%d" % status})
             return 404, {"error": "unknown-action"}
@@ -282,6 +282,14 @@ def fake_hosts(out):
         if exe.lower().startswith(out.lower()):
             found.append(pid)
     return found
+
+
+def play_result(mdir):
+    """The host's end of a match: result.txt, then result.done."""
+    with open(os.path.join(mdir, "result.txt"), "w", newline="\n") as f:
+        f.write("field=16\nelapsed=120\nplayer n=1 user=%s placement=1 order=16 kills=2 damage=150 alive_s=118 winner=1 alive=1\n"
+                "player n=2 user=%s placement=9 order=8 kills=0 damage=20 alive_s=60 winner=0 alive=0\n" % USERIDS)
+    open(os.path.join(mdir, "result.done"), "w").write("1")
 
 
 def running(pid):
@@ -377,6 +385,61 @@ def scripted():
             print("ok    host.pid naming another program (a reused pid): left running")
         finally:
             other.kill()
+        ag3.kill()
+
+        # The result: kept in result.pending and retried with backoff until the backend has it.
+        ag4 = Agent(out, backend, launcher, port, "agent4")
+        agents.append(ag4)
+        mid4 = "4444444444444444"
+        backend.match(mid4)
+        backend.results = [503, 503]
+        h4 = ag4.event("host-started", pred=lambda e: e.get("matchId") == mid4)["pid"]
+        ag4.event("ready", pred=lambda e: e.get("status") == 200)
+        play_result(os.path.join(ag4.ctl, mid4))
+        first = ag4.event("result", pred=lambda e: e.get("matchId") == mid4)
+        assert first["status"] == 503 and os.path.exists(os.path.join(ag4.ctl, mid4, "result.pending")), first
+        done = ag4.event("result", pred=lambda e: e.get("matchId") == mid4 and e.get("status") == 200, timeout=30)
+        posts = [c[2] for c in backend.of("result") if c[1].get("matchId") == mid4]
+        assert len(posts) == 3 and done["attempt"] == 3, posts
+        gaps = [b - a for a, b in zip(posts, posts[1:])]
+        assert gaps[0] >= 0.9 and gaps[1] >= 1.8, gaps
+        posted = json.load(open(os.path.join(ag4.ctl, mid4, "result.posted")))
+        assert posted["status"] == 200 and posted["attempts"] == 3 and not os.path.exists(os.path.join(ag4.ctl, mid4, "result.pending"))
+        stopped = ag4.event("host-stopped", pred=lambda e: e.get("matchId") == mid4)
+        assert stopped["why"] == "post-match over" and not running(h4)
+        assert stopped["t"] < done["t"], "the host is stopped after the linger, not after the post"
+        print("ok    the result: 503, 503 (kept in result.pending, retried after %.1f s and %.1f s), then 200; the host stopped after"
+              " the linger meanwhile" % tuple(gaps))
+        # 409: the backend has it already (or the match is gone): done, no retry.
+        mid5 = "5555555555555555"
+        backend.match(mid5)
+        backend.results = [409]
+        until(lambda: any(c[1].get("matchId") == mid5 for c in backend.of("ready")), 15, "ready")
+        play_result(os.path.join(ag4.ctl, mid5))
+        r409 = ag4.event("result", pred=lambda e: e.get("matchId") == mid5)
+        assert r409["status"] == 409
+        time.sleep(1.5)
+        assert len([c for c in backend.of("result") if c[1].get("matchId") == mid5]) == 1
+        assert json.load(open(os.path.join(ag4.ctl, mid5, "result.posted")))["status"] == 409
+        print("ok    409 is done: one post, no retry")
+        # The agent stops with its result unposted: the next one posts it, and runs no host for that match.
+        mid6 = "6666666666666666"
+        backend.match(mid6)
+        backend.results = [503] * 100
+        ag4.event("host-started", pred=lambda e: e.get("matchId") == mid6)
+        until(lambda: any(c[1].get("matchId") == mid6 for c in backend.of("ready")), 15, "ready")
+        play_result(os.path.join(ag4.ctl, mid6))
+        ag4.event("result", pred=lambda e: e.get("matchId") == mid6)
+        ag4.kill()
+        assert os.path.exists(os.path.join(ag4.ctl, mid6, "result.pending"))
+        backend.results = []
+        ag5 = Agent(out, backend, launcher, port, "agent5")
+        agents.append(ag5)
+        ok = ag5.event("result", pred=lambda e: e.get("matchId") == mid6 and e.get("status") == 200)
+        assert not [e for e in events(ag5.log) if e.get("event") == "host-launch"], "a host started for a finished match"
+        assert json.load(open(os.path.join(ag5.ctl, mid6, "result.posted")))["status"] == 200
+        print("ok    a result left in result.pending by an agent that stopped: posted by the next one (attempt %d), no new host"
+              % ok["attempt"])
     finally:
         for a in agents:
             a.kill()
