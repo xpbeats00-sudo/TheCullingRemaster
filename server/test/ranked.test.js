@@ -163,5 +163,16 @@ test('profiles from before the cap are brought within it', () => {
   assert.deepStrictEqual([p.ranked.rating, p.ranked.mmr, p.ranked.peakRating, p.ranked.peakTier], [1399, 1399, 1399, 'Hunter']);
 });
 
+test('cancelMatch drops the pending match unscored: no last place, nothing counted', () => {
+  const p = profile();
+  const { match } = R.startMatch(p);
+  assert.strictEqual(R.cancelMatch(p, 'solo', 'rk-other'), false, 'only the named match');
+  assert.strictEqual(R.cancelMatch(p, 'solo', match.id), true);
+  assert.deepStrictEqual([p.ranked.pending, p.ranked.matches, p.ranked.rating, p.ranked.history.length], [null, 0, 1000, 0]);
+  const next = R.startMatch(p);
+  assert.strictEqual(next.abandoned, null, 'the next match has nothing to abandon');
+  assert.strictEqual(R.cancelMatch(p, 'duo', next.match.id), false, 'another mode is left alone');
+});
+
 if (failures) { console.log(failures + ' failing'); process.exit(1); }
 console.log('all ranked tests passed');

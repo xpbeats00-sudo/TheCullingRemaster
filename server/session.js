@@ -198,6 +198,16 @@ class MatchTickets {
     return t;
   }
 
+  // Closes a player's open ticket `id` unpaid (the menu turned the match
+  // down). Returns whether it was open.
+  cancel(userID, id) {
+    const t = this.open.get(userID);
+    if (!t || t.id !== id) return false;
+    this.open.delete(userID);
+    this.save();
+    return true;
+  }
+
   // The open ticket for a player (by userID, or the only one from an address),
   // without taking it: the HUD asking about the match it is in.
   peek({ userID, ip }) {

@@ -362,6 +362,16 @@ function finishMatch(profile, result, now = Date.now(), grant, mode = 'solo') {
   return { entry: apply(r, Object.assign({}, match, { field }), Object.assign({}, result, { placement }), now, grant, mode) };
 }
 
+// Drops the pending match of `mode` without scoring it: the player never went
+// in (the menu turned down the match it was sent). Only the match named by
+// `matchId` (the ticket's); returns whether one was dropped.
+function cancelMatch(profile, mode = 'solo', matchId = null) {
+  const r = record(profile, mode);
+  if (!r || !r.pending || (matchId && r.pending.id !== matchId)) return false;
+  r.pending = null;
+  return true;
+}
+
 // A team match's placement from the HUD's report: 1 for the team's win (the
 // HUD posts a victory when your team wins, even after your own death); a loss
 // is the team-sized slice of the field the reported position falls in
@@ -414,4 +424,4 @@ function summaries(profile, now = Date.now()) {
 }
 
 module.exports = { CONFIG, TIERS, MODES, MODE_IDS, TEAM_MODE_IDS, modeId, modeForPlaylist, teamField, teamPlacement, record,
-  tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, summary, summaries, seasonAt };
+  tierFor, expected, opponentsFor, ratingChange, ensure, startMatch, finishMatch, cancelMatch, summary, summaries, seasonAt };

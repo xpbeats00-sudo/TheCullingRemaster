@@ -255,6 +255,9 @@ function dailyPay(p, now = Date.now()) {
     take(credits, xp) { t.credits = (Number(t.credits) || 0) + credits; t.xp = (Number(t.xp) || 0) + xp; }
   };
 }
+// The menu turning a match down this soon after its match-ready (a cancel
+// that crossed it, or match-declined) means the player never went in.
+const DECLINE_WINDOW_MS = intEnv('CULLING_DECLINE_WINDOW_MS', 15000);
 // The menu logging in again this long after a match started means that match
 // is over: a ticket still open then had no result (quit or crash).
 const ABANDON_GRACE_MS = parseInt(process.env.CULLING_ABANDON_GRACE_MS || '60000', 10);
@@ -1671,6 +1674,22 @@ function launchMatch(socket, queue, map, shared = {}) {
   });
 }
 
+// The menu turned down the match it was just sent: the player left the search
+// as the match-ready crossed it (leave-mm), or the menu ignored the
+// match-ready (match-declined). Within DECLINE_WINDOW_MS of the match-ready
+// and with no result yet, the match is closed: its ticket, and its pending
+// ranked match without any penalty (it was never played); friends see the
+// player back in the menu. Returns whether a match was closed.
+function declineMatch(userID, why) {
+  const t = tickets.peek({ userID });
+  if (!t || Date.now() - t.startedAt > DECLINE_WINDOW_MS) return false;
+  tickets.cancel(userID, t.id);
+  if (t.ranked && ranked.cancelMatch(getProfile(userID), ranked.modeId(t.rankedMode), t.ranked)) saveProfiles();
+  setPresence(userID, 'menu');
+  log('match declined', userID, why, t.mode || '', t.ranked ? 'ranked ' + t.ranked + ' dropped' : '');
+  return true;
+}
+
 // The whole series is this match (any team size): one left unfinished is
 // forfeited first. The menu gets the series, friends see the round.
 function beginSeries(socket, playlist) {
@@ -2013,6 +2032,8 @@ io.on('connection', (socket) => {
   on('join-mm', (msg) => startLocalMatch(socket, msg && msg.queueName));
   on('leave-mm', () => {
     const me = socket.userID;
+    // Sent as the match-ready crossed it: the menu ignores that match.
+    declineMatch(me, 'leave-mm');
     // A party queued together leaves together, whoever cancels: the others'
     // menus are told who did.
     const p = friends.party(me);
@@ -2023,6 +2044,8 @@ io.on('connection', (socket) => {
     socket.emit('leave-mm-ack');
     setPresence(me, 'menu');
   });
+  // The menu ignored a match-ready (the player had asked to leave).
+  on('match-declined', () => { declineMatch(socket.userID, 'match-declined'); });
   // Showdown: leave the series from the menu (the next round isn't played).
   on('showdown-leave', () => {
     const series = showdowns.leave(socket.userID);
