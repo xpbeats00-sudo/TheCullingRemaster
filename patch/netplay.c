@@ -840,6 +840,9 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
     else
 #endif
     FN(R_GAME_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
+    /* Refused by the game's own checks: not a join (its ticket stays good). */
+    if (((struct fstring *)error)->num)
+        t->pend = 0;
     if (trace_begin(&l, "prelogin")) {
         kv(&l, "error_len", (u64)((struct fstring *)error)->num, 0);
         kv(&l, "game_checks", prematch_expected() > 0, 0);

@@ -515,6 +515,8 @@ def test_native():
         print("native: no control folder (M1)")
         run_scenario(exe, "nocontrol", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_CONTROL": None}, ctl)
         run_scenario(exe, "nocontrol", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_CONTROL": os.path.join(tmp, "missing")}, ctl)
+        print("native: the game refuses (M5)")
+        run_scenario(exe, "gamerefuses", [ta, ua], {"CULLING_NETPLAY_PREMATCH": "2"}, ctl, [(ta, 1, ua)])
         print("native: pass")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
