@@ -1,6 +1,6 @@
 # Changelog
 
-## Server (next update)
+## Server (deployed 2026-11-07)
 
 **Match pay can't be farmed with fake results**
 - Fixed: a match result paid kills, damage, XP and credits however short the match was (the minimum match length only blocked the win). Posting fake results in a loop paid about 725 credits each, enough to buy the whole shop in minutes and top the kills leaderboard (FULL_AUDIT_2026-11-06, P0 #1).
@@ -42,7 +42,7 @@
 - A friends panel gets at most one update per 300 ms, with the latest state. A panel you ask for (opening Friends) is still answered at once. With 100 friends online, 40 status changes went from 4,040 panel pushes to 2,121, and from 823 ms to 233 ms of server time.
 - Password hashing leaves one CPU thread free, and connections are pinged every 25 s instead of 10 s. A menu that vanished without closing its connection is now noticed after up to 55 s instead of 40 s.
 
-## Game (next release)
+## Game 1.3.14 (release 1.3.14)
 
 **Connection, results and menus (FULL_AUDIT_2026-11-06, client items)**
 - The menu reconnects on its own after the connection drops (a server update, a network blip) or a sign-in fails: it tries again after 5 s, then 10, 20, 40 and 60 s at most, with a small "Offline — reconnecting" note bottom left. Before, it stayed offline until you queued or opened Friends. A refusal that retrying can't fix (no account, banned, out of date) doesn't retry until you press Retry. When the server no longer knows your session, the menu signs in again from scratch.
@@ -121,7 +121,7 @@
 - Up to 24 contestants instead of 16 (Victory.exe patched by `patch/patch_exe.py`): 23 bots on Jungle. Bots have 25 names, so none show an ID.
 - Ranked scores a match out of the contestants it really had: 24 on Jungle from the new build, 16 on Prison and from older builds.
 
-## Launcher (next release)
+## Launcher 1.3.4 (release 1.3.14)
 
 **Game Sync**
 - Files changed in the game folder at the release already installed now read "Repair needed (N files changed)", not "Update available". PLAY offers Repair or Play anyway instead of forcing a sync, and a repair keeps the files it replaces in the game folder's `.remaster\replaced` folder (the newest repair's only, up to 1 GB).
