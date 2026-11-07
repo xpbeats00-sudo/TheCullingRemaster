@@ -58,8 +58,13 @@ const FIELD_BY_MAP = weather.fieldByMap(WEATHER);
 // over fast, so its result needs 15 s, not the 2 minutes of a normal match. The
 // kits (the same for both sides; the game picks the round's) come from
 // data/showdown.json, written by make_showdown.py.
+// A round reported sooner than minRoundSeconds after the series started or the
+// round before doesn't count (FULL_AUDIT_2026-11-06 round 2: instant "W"
+// rounds); the series' result is held to the match-pay limits (PAY,
+// MIN_MATCH_SECONDS) like any other match.
 const SHOWDOWN = { queue: 'showdown', map: 'arena', format: '1v1', field: 2, roundsToWin: 4,
-  minSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_SECONDS || '15', 10) };
+  minSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_SECONDS || '15', 10),
+  minRoundSeconds: parseInt(process.env.CULLING_SHOWDOWN_MIN_ROUND_SECONDS || '20', 10) };
 let showdownKit = null, showdownKits = null;
 try {
   const data = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'showdown.json'), 'utf8'));
@@ -365,7 +370,7 @@ const tickets = new MatchTickets(Date.now, path.join(DATA_DIR, 'tickets.json'), 
 // Showdown series (showdown.js), in data/showdown-series.json so a restart
 // mid-series keeps the score.
 const showdowns = new ShowdownSeries({ roundsToWin: SHOWDOWN.roundsToWin, file: path.join(DATA_DIR, 'showdown-series.json'),
-  saveDelayMs: SAVE_DELAY_MS, onSaveError: (e) => { metrics.error('save'); log('saving showdown series failed:', e.message); } });
+  minRoundMs: SHOWDOWN.minRoundSeconds * 1000, saveDelayMs: SAVE_DELAY_MS, onSaveError: (e) => { metrics.error('save'); log('saving showdown series failed:', e.message); } });
 // Friends (friends.json) and parties (memory); see friends.js.
 // Recent activity for the launcher: matches today, players this week.
 const activity = new Activity(Date.now, path.join(DATA_DIR, 'activity.json'));
@@ -706,8 +711,13 @@ function careerMatch(userID, p, r, ticketMode) {
 // once, when it is over: seriesPayout's XP and credits, one game on the
 // career, a win only for the series. Older builds play one round per match:
 // the round counts here and the series pays when its last round does.
+// The match-pay limits hold here too: a series shorter than MIN_MATCH_SECONDS
+// (its match's ticket time) or a forfeit with no round played pays nothing and
+// puts nothing on the career, kills and damage are bounded by the series' time
+// at the PAY rates, and the daily cap applies.
 function showdownMatchResult(res, claim, body, userID) {
   const p = getProfile(userID);
+  const tooShort = claim.elapsed < MIN_MATCH_SECONDS;
   const victory = claim.elapsed >= SHOWDOWN.minSeconds && (body.victory === true || body.victory === 'true');
   const round = parseInt(body.showdownRound, 10);
   const before = showdowns.current(userID);
@@ -724,9 +734,17 @@ function showdownMatchResult(res, claim, body, userID) {
   const startXP = p.stats.xp;
   const st = p.stats;
   let earned = 0, credits = 0;
-  if (paid) {
+  const played = paid ? paid.rounds.filter((x) => x !== 'left').length : 0;
+  if (paid && (tooShort || !played)) {
+    // Nothing paid and no win on the record (a loss still counts as one).
+    if (showdowns.markRecorded(userID) && !paid.won) recordShowdown(userID, false, paid.mode);
+    log('showdown series not paid', userID, paid.wins + '-' + paid.losses,
+      tooShort ? 'too short (' + Math.round(claim.elapsed) + ' s)' : 'no round played');
+  } else if (paid) {
     const r = seriesPayout(paid, { kills: body.kills, damage: body.damage, timeAlive: body.timeAlive,
-      maxTime: Math.min(4 * 3600, claim.elapsed + 30) });
+      maxTime: Math.min(4 * 3600, claim.elapsed + 30),
+      maxKills: PAY.secondsPerKill > 0 ? Math.floor(claim.elapsed / PAY.secondsPerKill) : Infinity,
+      maxDamage: PAY.damagePerSecond > 0 ? claim.elapsed * PAY.damagePerSecond : Infinity });
     const today = dailyPay(p);
     earned = today.xp(r.xp);
     credits = today.credits(r.credits);
@@ -770,7 +788,10 @@ app.post('/api/showdown/round', (req, res) => {
   const view = showdowns.recordInMatch(userID, round, result);
   if (view) {
     log('showdown round', userID, round, result, view.wins + '-' + view.losses, view.over ? (view.won ? 'VICTORY' : 'defeat') : '');
-    if (view.over && showdowns.markRecorded(userID)) recordShowdown(userID, view.won, view.mode);
+    // A series over sooner than a real match could be goes on the record with
+    // its match result (showdownMatchResult), which holds it to the limits.
+    const realLength = (Date.now() - ticket.startedAt) / 1000 >= MIN_MATCH_SECONDS;
+    if (view.over && realLength && showdowns.markRecorded(userID)) recordShowdown(userID, view.won, view.mode);
     setPresence(userID, 'match', { mode: view.mode, round: view.round });
   }
   const s = showdowns.last(userID);

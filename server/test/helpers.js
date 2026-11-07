@@ -50,7 +50,7 @@ function startServer(env = {}, legacyEnv) {
       CULLING_REQUIRE_ACCOUNT: "0",
       CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100",
       // Results right after the match starts (season.test.js tests the real minimum).
-      CULLING_MIN_MATCH_SECONDS: "0", CULLING_SHOWDOWN_MIN_SECONDS: "0",
+      CULLING_MIN_MATCH_SECONDS: "0", CULLING_SHOWDOWN_MIN_SECONDS: "0", CULLING_SHOWDOWN_MIN_ROUND_SECONDS: "0",
       // The pay limits off, so tests can post results at once (test/matchpay.test.js turns them on).
       CULLING_SECONDS_PER_KILL: "0", CULLING_DAMAGE_PER_SECOND: "0", CULLING_DAILY_MATCH_CREDITS: "0",
       CULLING_DAILY_MATCH_XP: "0" }, env.vars || {}),
