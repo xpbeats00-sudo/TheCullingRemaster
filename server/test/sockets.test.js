@@ -18,7 +18,7 @@ function raw(port, method, url, body, headers = {}) {
     const r = http.request({ host: "127.0.0.1", port, path: url, method, headers, agent: false }, (res) => {
       const chunks = [];
       res.on("data", (c) => chunks.push(c));
-      res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("latin1") }));
+      res.on("end", () => { const buf = Buffer.concat(chunks); resolve({ status: res.statusCode, buf, body: buf.toString("latin1") }); });
     });
     r.on("error", (e) => resolve({ status: 0, error: e.code }));
     if (body) r.end(body); else r.end();
@@ -31,6 +31,15 @@ const handshake = (srv, ip) => raw(srv.port, "GET", "/socket.io/?EIO=3&transport
   const sockets = [];
   try {
     await srv.ready();
+
+    await test("polling answers are binary frames the stock parser decodes (eioframing.js)", async () => {
+      const hs = await handshake(srv, "203.0.113.19");
+      assert.strictEqual(hs.buf[0], 0, "a string frame");
+      const got = [];
+      require("engine.io-parser").decodePayloadAsBinary(hs.buf, (p) => { got.push(p); });
+      assert.strictEqual(got[0].type, "open");
+      assert.ok(JSON.parse(got[0].data).sid, "the handshake");
+    });
 
     await test("a polling upload over 64 KB is refused (413) before its body is read", async () => {
       const hs = await handshake(srv, "203.0.113.20");

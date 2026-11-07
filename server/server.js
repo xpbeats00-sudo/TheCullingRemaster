@@ -21,6 +21,8 @@ eioParser.encodePayload = function (packets, supportsBinary, callback) {
   if (supportsBinary) return eioParser.encodePayloadAsBinary(packets, callback);
   return stockEncodePayload.call(this, packets, supportsBinary, callback);
 };
+// The same binary frames, built natively instead of byte by byte (eioframing.js).
+eioParser.encodePayloadAsBinary = require('./eioframing').encodePayloadAsBinary;
 
 const HOST = process.env.CULLING_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.CULLING_PORT || '8000', 10);
