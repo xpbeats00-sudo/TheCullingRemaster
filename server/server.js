@@ -158,11 +158,15 @@ function inventoryTypes() {
 // (patch/make_vfx_camos.py, ".../Katana_XP_VFX_Dark_Matter") work the same way.
 const CAMO_SOURCES = new Set(['xp-camos', 'xp-vfx-camos']);
 const camoKey = (i) => (CAMO_SOURCES.has(i.source) ? String(i.asset).split('_XP_')[1] || null : null);
+// Each catalog item's camo, worked out once (the owned-items list checks all
+// ~5,500 items, and split() per item per login added up: performance review P2).
+const camoByTid = new Map();
+for (const i of catalog) { const key = camoKey(i); if (key) camoByTid.set(i.tid, key); }
 
 function ownedCamos(p) {
   const out = new Set();
   for (const tid of p.owned || []) {
-    const key = camoKey(catalogByTid.get(tid) || {});
+    const key = camoByTid.get(tid);
     if (key) out.add(key);
   }
   return out;
@@ -171,20 +175,53 @@ function ownedCamos(p) {
 // owned: the player's owned type IDs as a Set (ownedItems checks every
 // catalog item against it).
 function ownsItem(p, i, camos = ownedCamos(p), owned = null) {
-  return (owned ? owned.has(i.tid) : (p.owned || []).includes(i.tid)) || camos.has(camoKey(i));
+  return (owned ? owned.has(i.tid) : (p.owned || []).includes(i.tid)) || camos.has(camoByTid.get(i.tid) || null);
 }
 
 // Items with an unlockLevel (the airdrops that start locked, from
 // patch/make_airdrop_unlocks.py) are owned once the player reaches it.
 const levelReached = (p, i) => !i.unlockLevel || ((p.stats && p.stats.level) || 1) >= i.unlockLevel;
 
+// The items a profile can own, with what decides it, worked out once.
+const OWNABLE = catalog.filter((i) => !NOT_OWNABLE.has(i.class))
+  .map((i) => ({ tid: i.tid, custom: isCustom(i), unlockLevel: i.unlockLevel || 0, camo: camoByTid.get(i.tid) || null }));
+
 function ownedItems(p) {
   const camos = ownedCamos(p);
   const owned = new Set(p.owned || []);
-  return catalog.filter((i) => !NOT_OWNABLE.has(i.class) && levelReached(p, i) && (!isCustom(i) || ownsItem(p, i, camos, owned)))
-    .map((i) => ({ i: i.tid, q: 1 }));
+  const level = (p.stats && p.stats.level) || 1;
+  const out = [];
+  for (const x of OWNABLE) {
+    if (x.unlockLevel && level < x.unlockLevel) continue;
+    if (x.custom && !owned.has(x.tid) && !(x.camo && camos.has(x.camo))) continue;
+    out.push({ i: x.tid, q: 1 });
+  }
+  return out;
 }
-const entitlements = (p) => ({ data: { items: ownedItems(p) } });
+// What a profile owns depends only on its owned list (which only grows) and
+// its level: the payload is kept per profile until one of them changes.
+const entitlementsKey = (p) => {
+  const o = p.owned || [];
+  return o.length + '|' + ((p.stats && p.stats.level) || 1) + '|' + (o.length ? o[o.length - 1] : '');
+};
+const entitlementsCache = new WeakMap();      // profile -> { key, payload }
+function entitlements(p) {
+  const key = entitlementsKey(p);
+  let c = entitlementsCache.get(p);
+  if (!c || c.key !== key) entitlementsCache.set(p, (c = { key, payload: { data: { items: ownedItems(p) } } }));
+  return c.payload;
+}
+// Sends a menu its owned items (~100 KB): when it asked (get-entitlements), or
+// when they changed since this socket last got them (a login's timed pushes
+// used to send the same list three times). (socket.binary(false), which
+// skips socket.io's walk of the payload for binary data, saved ~0.2 ms here
+// but measured ~1.2 ms slower to arrive on loopback, so it isn't used.)
+function pushEntitlements(socket, p, asked = false) {
+  const key = entitlementsKey(p);
+  if (!asked && socket.entitlementsKey === key) return;
+  socket.entitlementsKey = key;
+  socket.emit('entitlements-response', entitlements(p));
+}
 
 // Cull credits: a starting balance, then earned in matches.
 const STARTING_CREDITS = 10000;
@@ -727,7 +764,7 @@ app.post('/api/matchresult', (req, res) => {
   const socket = socketsByUser.get(userID);
   if (socket) sendPlayer(socket, p);
   // A new level can unlock airdrops: the menu gets them without a restart.
-  if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
+  if (socket && levelled) pushEntitlements(socket, p);
   setPresence(userID, 'menu');
   send({ startXP, xpEarned: xpAdded, stats: s, credits, ranked: rankedResult, showdown: null });
 });
@@ -821,7 +858,7 @@ function showdownMatchResult(send, claim, body, userID) {
       '+' + earned + ' XP, +' + credits + ' credits');
     const socket = socketsByUser.get(userID);
     if (socket) sendPlayer(socket, p);
-    if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
+    if (socket && levelled) pushEntitlements(socket, p);
   } else if (view) {
     log('showdown round', userID, view.round, victory ? 'won' : 'lost', view.wins + '-' + view.losses);
   }
@@ -892,7 +929,7 @@ app.post('/api/setlevel', (req, res) => {
     p.stats.level = level;
     saveProfiles();
     const socket = levelled && socketsByUser.get(userID);
-    if (socket) socket.emit('entitlements-response', entitlements(p));
+    if (socket) pushEntitlements(socket, p);
   }
   res.json({ ok: true });
 });
@@ -2180,9 +2217,8 @@ io.on('connection', (socket) => {
   // Inventory / cosmetics: the item catalog and the player's owned items.
   // The game only asks for owned items now and then, so push them whenever
   // the catalog has (re)loaded as well.
-  const sendEntitlements = () => socket.emit('entitlements-response',
-    entitlements(getProfile(socket.userID)));
-  on('get-entitlements', sendEntitlements);
+  const sendEntitlements = (asked) => pushEntitlements(socket, getProfile(socket.userID), asked === true);
+  on('get-entitlements', () => sendEntitlements(true));
   on('get-inventory-types', (version) => {
     if (version === CATALOG_VERSION) {
       socket.emit('inventory-types-response', { data: { versionOK: true, currentVersion: CATALOG_VERSION } });
@@ -2222,7 +2258,7 @@ io.on('connection', (socket) => {
     }
     socket.emit('purchase-success', { data: JSON.stringify({ itemAddData: { typeId, quantity: 1 } }) });
     sendPlayer(socket, p);
-    sendEntitlements();
+    sendEntitlements(true);
   });
   on('get-premium-types', () => {
     socket.emit('premium-types-response', { data: { versionOK: false, currentVersion: 'local-1', types: [] } });

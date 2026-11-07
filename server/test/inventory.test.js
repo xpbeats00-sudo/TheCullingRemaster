@@ -1,7 +1,9 @@
 // The item list push (get-inventory-types): about 800 KB, so a stale version
 // can't make the server send it over and over (FULL_AUDIT_2026-11-06 P1: about
 // 24 MB/s per address at the socket limits). The full list goes to a socket at
-// most once a minute; the up-to-date answer is always sent.
+// most once a minute; the up-to-date answer is always sent. The owned
+// items (entitlements, ~100 KB) go to a menu once per change, not three times
+// per login (performance review P2).
 "use strict";
 
 const assert = require("assert");
@@ -54,6 +56,22 @@ const catalog = require("../data/catalog.json");
         other.emit("get-inventory-types", "");
         assert.strictEqual((await reply).data.types.length, catalog.length);
       } finally { other.close(); }
+    });
+
+    await test("a menu login gets its owned items once, not once per timer", async () => {
+      const s = await srv.connect(await srv.login("steam:76561190000000133"));
+      try {
+        let n = 0, items = null;
+        s.on("entitlements-response", (m) => { n++; items = m.data.items; });
+        s.emit("get-inventory-types", "old");          // what the menu does after its login
+        s.emit("get-entitlements");
+        await sleep(3000);
+        assert.strictEqual(n, 1, "pushes: " + n);
+        assert.ok(items.length > 1000, "the owned list: " + items.length);
+        const again = next(s, "entitlements-response");
+        s.emit("get-entitlements");
+        assert.deepStrictEqual((await again).data.items, items, "asked again: answered again, the same");
+      } finally { s.close(); }
     });
 
     console.log("all %d inventory tests passed", passed);
