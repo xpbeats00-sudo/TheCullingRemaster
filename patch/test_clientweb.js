@@ -18,6 +18,7 @@
 // - a queue whose connection fails resets IsStartingMatchmaking (or every
 //   later queue was refused for good) and the TRIO/QUAD tiles (Teams.js, run
 //   here too) work again.
+// - the Steam login ticket and the session token never reach the console log.
 // The functions are the shipped ones (the whole file is run).
 // usage: node test_clientweb.js
 "use strict";
@@ -113,7 +114,7 @@ function ajax(opts) {
 function serverUp() {
   answer = {
     "https://srv/api": (o) => [200, o.headers && o.headers.Authorization ? ROOT_PRIVATE : ROOT_PUBLIC],
-    "https://srv/api/login": () => [200, { token: "tok", redirect: "https://srv/api", userID: "steam:7656119", build: "1" }]
+    "https://srv/api/login": () => [200, { token: "tok-SECRET-9", redirect: "https://srv/api", userID: "steam:7656119", build: "1" }]
   };
 }
 
@@ -238,7 +239,7 @@ test("a normal sign-in reaches auth-response (the stand-ins work)", () => {
   reset();
   const s = signIn();
   assert.strictEqual(emits(s, "login").length, 1);
-  assert.strictEqual(emits(s, "login")[0][1].token, "tok");
+  assert.strictEqual(emits(s, "login")[0][1].token, "tok-SECRET-9");
 });
 
 const REFUSALS = [
@@ -550,6 +551,19 @@ test("a refused purchase says why (purchase-fail's reason); none known: the stoc
   modals.length = 0;
   fire(s, "purchase-fail", {});
   assert.ok(modals.some((m) => m.title == "Purchase failed."));
+});
+
+// ---------------------------------------------------------------- secrets
+test("signing in and queueing: the login ticket and the session token are never logged", () => {
+  reset();
+  const s = signIn();
+  run("QueueMatchmaking('ffa_jungle')");
+  assert.ok(engineCalls.some((c) => c[0] == "MatchQueueWithTicket" && c[2].ticket == "TICKET-SECRET-0123"), "the queue still sends the ticket");
+  assert.ok(emits(s, "login")[0][1].token == "tok-SECRET-9", "the socket login still sends the token");
+  assert.ok(requests.some((r) => r.headers && r.headers.Authorization == "Bearer tok-SECRET-9"), "root data still asked with the token");
+  const leaked = logs.filter((l) => /TICKET-SECRET|tok-SECRET/.test(l));
+  assert.deepStrictEqual(leaked, []);
+  assert.ok(logs.length > 10, "the log itself is still there");
 });
 
 console.log("all %d ClientWeb connection tests passed", passed);

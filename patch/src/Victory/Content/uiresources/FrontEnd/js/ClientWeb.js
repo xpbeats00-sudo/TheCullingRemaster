@@ -546,17 +546,19 @@ function ConnectToClientweb(url)
   });
 }
 
+// Remaster: for console.log of a request or message: the Steam ticket and the
+// session token are never written to the log (JSON.stringify's replacer).
+function RemasterNoSecrets(key, value) {
+  return (key === "ticket" || key === "token" || key === "Authorization") && value ? "(hidden)" : value;
+}
+
 function LoadRootData(url) {
   console.log("LoadRootData from: " + url);
   var headers = {};
   if (ClientwebData && ClientwebData.AuthToken) {
       headers.Authorization = "Bearer " + ClientwebData.AuthToken;
-      console.log("LoadRootData::  " + headers.Authorization);
+      console.log("LoadRootData:: with the session token");
   }
-
-  console.log("LoadRootData::  " + url);
-  console.log("LoadRootData::  " + headers);
-  console.log("LoadRootData::  " + JSON.stringify(headers));
 
 
   return $.ajax({
@@ -692,7 +694,7 @@ function LoginWithTicket(ticket, userid) {
     return $.Deferred().reject().promise();
   }
 
-  console.log("Engine provided ticket " + ticket);
+  console.log("Engine provided a login ticket (" + (ticket ? String(ticket).length : 0) + " characters)");
   var authType = GetAuthType();
   console.log("Providing authType: " + authType);
   var postData = {
@@ -721,7 +723,7 @@ function LoginWithTicket(ticket, userid) {
     //  call for all platforms
       console.log("using javascript login");
       console.log("ClientwebRootData.login,: " + ClientwebRootData.login);
-      console.log("postData: " + JSON.stringify(postData));
+      console.log("postData: " + JSON.stringify(postData, RemasterNoSecrets));
 
     var nextPromise = null;
 
@@ -1435,7 +1437,7 @@ function fillPlayersTopTenMatches(arr){
 
 function BindClientwebEvents(deferred) {
     console.log("BindClientwebEvents start " + bCheckDLCAtLogin);
-  console.log("Doing Socket Login with auth token: " + ClientwebData.AuthToken);
+  console.log("Doing Socket Login with the session token");
   if("userID" in ClientwebData && "build" in ClientwebData)
   {
 	if(GetAuthType() == "xblive")
@@ -1449,7 +1451,7 @@ function BindClientwebEvents(deferred) {
 			  bCheckDLC:bCheckDLCAtLogin,
 			  dlcEntitlements:result
 			};
-			console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg));
+			console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg, RemasterNoSecrets));
 
 			socketConnection.emit("login", loginMsg);
 		});
@@ -1463,7 +1465,7 @@ function BindClientwebEvents(deferred) {
 		  build: ClientwebData.build,
 		  bCheckDLC:bCheckDLCAtLogin
 		};
-		console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg));
+		console.log("BindClientwebEvents:: " + JSON.stringify(loginMsg, RemasterNoSecrets));
 
 		socketConnection.emit("login", loginMsg);
 	}
@@ -2864,7 +2866,7 @@ function DoQueueMatchmaking(GameType, ticket, userid)
           badFilterStr = Matchmaking.BadFilters.join("|");
         }
 
-        console.log("Engine provided ticket " + ticket);
+        console.log("Engine provided a login ticket (" + (ticket ? String(ticket).length : 0) + " characters)");
         console.log("Engine provided userid " + userid);
 
         console.log("Providing authType: " + authType);
@@ -2881,7 +2883,7 @@ function DoQueueMatchmaking(GameType, ticket, userid)
           __Type: "JSMatchQueuePostData"
         };
 
-        console.log("using c++ MatchQueueWithTicket postData: " + JSON.stringify(postData));
+        console.log("using c++ MatchQueueWithTicket postData: " + JSON.stringify(postData, RemasterNoSecrets));
         engine.call("MatchQueueWithTicket", ClientwebRootData.matchqueue, postData);
       }
       else {
