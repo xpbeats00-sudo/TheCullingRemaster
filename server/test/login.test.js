@@ -1,6 +1,8 @@
 // /api/login refusals: every one says why in `errorCode`, which the menu
 // shows (FULL_AUDIT_2026-11-06 round 2: most carried no errorCode, so the menu
-// stayed offline without a word).
+// stayed offline without a word). And what /api/login logs: no client text
+// beyond short plain fields (P1: up to 1 MB with newlines rolled the logs
+// away), no raw Steam ID of a refused login.
 "use strict";
 
 const assert = require("assert");
@@ -65,6 +67,32 @@ const login = (srv, userid, ip, extra = {}) => srv.request("POST", "/api/login",
       const limited = all.filter((r) => r.status === 429);
       assert.ok(limited.length > 0, "some refused");
       for (const r of limited) assert.strictEqual(r.json.errorCode, "rate-limited");
+    });
+  });
+
+  await test("the login log keeps only short plain authType, appid and build", async () => {
+    await withServer({ output: true }, async (srv) => {
+      const flood = "x".repeat(5000);
+      const r = await login(srv, "steam:76561190000000503", null,
+        { authType: "steam\n12:00:00 login FORGED LINE " + flood, appid: "437220<script>", build: "1.3.13-b\r\n" + flood });
+      assert.strictEqual(r.status, 200);
+      await new Promise((res) => setTimeout(res, 300));
+      const line = srv.output().split("\n").find((l) => l.includes("login steam:76561190000000503"));
+      assert.ok(line, "logged: " + srv.output().slice(-300));
+      assert.ok(!srv.output().includes("FORGED LINE") && !srv.output().includes("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), "no injected or long text");
+      const fields = line.match(/authType=(\S*) appid=(\S*) build=(\S*)/);
+      assert.ok(fields, line);
+      for (const f of fields.slice(1)) assert.ok(/^[\w.-]{0,32}$/.test(f), "a short plain field: " + f);
+      assert.strictEqual(fields[2], "437220script");
+    });
+  });
+
+  await test("a refused login doesn't log the raw Steam ID", async () => {
+    await withServer({ output: true, vars: { CULLING_REQUIRE_ACCOUNT: "1" } }, async (srv) => {
+      assert.strictEqual((await login(srv, "steam:76561190000000777")).status, 403);
+      await new Promise((res) => setTimeout(res, 300));
+      assert.ok(/login refused/.test(srv.output()), "the refusal is logged");
+      assert.ok(!srv.output().includes("76561190000000777"), srv.output().slice(-300));
     });
   });
 

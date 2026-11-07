@@ -428,6 +428,12 @@ function normalizeUserID(raw) {
 // A user ID the server will store: short, printable, no control characters.
 const validUserID = (id) => typeof id === 'string' && id.length <= MAX_USERID_LENGTH && /^[\x21-\x7e]+$/.test(id);
 
+// Client text in the log: only letters, digits, _ . - and at most 32 of them
+// (a 1 MB field with newlines could forge lines and roll the logs away).
+const logField = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v).replace(/[^\w.-]/g, '').slice(0, 32) : '');
+// A user ID in a log line about a refusal: a short hash, never the Steam ID.
+const loggedID = (userID) => 'id#' + crypto.createHash('sha256').update(String(userID)).digest('hex').slice(0, 12);
+
 // ---------------------------------------------------------------- HTTP
 
 const app = express();
@@ -519,7 +525,7 @@ app.post('/api/login', (req, res) => {
   if (!validUserID(userID)) return res.status(400).json({ errorCode: 'invalid-userid', error: 'invalid-userid' });
   const ipHash = accounts.hashIp(requestIp(req));
   if (REQUIRE_ACCOUNT && !accounts.useGrant(userID, ipHash)) {
-    log('login refused (no play grant)', userID);
+    log('login refused (no play grant)', loggedID(userID));
     return res.status(403).json({ errorCode: 'account-required', error: 'account-required' });
   }
   if (!hasProfile(userID)) {
@@ -533,7 +539,7 @@ app.post('/api/login', (req, res) => {
   // Where this profile last played from (hashed): an account can claim an
   // existing profile only from that address.
   if (p.lastLoginIpHash !== ipHash) { p.lastLoginIpHash = ipHash; saveProfiles(); }
-  log('login', userID, 'authType=' + body.authType, 'appid=' + body.appid, 'build=' + body.build);
+  log('login', userID, 'authType=' + logField(body.authType), 'appid=' + logField(body.appid), 'build=' + logField(body.build));
   res.json({ token, redirect: `${BASE}/api`, userID, build: body.build || '0' });
 });
 
