@@ -27,7 +27,8 @@
 // usage: node agent.js --backend http://127.0.0.1:8123 --id gs1 --secret <hex>
 //          --host 127.0.0.1 --port 7777 --control <dir> [--log <file>]
 //          [--launcher <Func.Launcher.exe> --client-dll <dll> [--headless]
-//           [--steam-settings <dir>] [--host-trace <file>] [--linger-ms 35000]]
+//           [--steam-settings <dir>] [--host-trace <file>] [--linger-ms 35000]
+//           [--victory-exe <the host exe, when the install's Victory.exe is a client's>]]
 // The secret is the per-server one: `node server/allocator.js secret gs1 [dataDir]`.
 "use strict";
 
@@ -53,6 +54,7 @@ const o = {
   headless: process.argv.includes("--headless"),
   steamSettings: arg("steam-settings"),
   hostTrace: arg("host-trace"),
+  victoryExe: arg("victory-exe"),     // the host's own exe (the launcher's -FuncVictoryExe), when the install's Victory.exe is the client's
   lingerMs: parseInt(arg("linger-ms", "35000"), 10),
 };
 for (const k of ["backend", "id", "secret", "control"]) if (!o[k]) { console.error("missing --" + k); process.exit(2); }
@@ -109,10 +111,13 @@ function hostUrl(a) {
   return map + "?listen?bIsLanMatch?bEnableBots=true?game=" + MODE + "?servernonce=" + a.serverNonce;
 }
 
+// The host game the launcher started: its child process named after the exe
+// it runs (Victory.exe, or the --victory-exe file).
 function victoryChildOf(parent) {
+  const name = o.victoryExe ? path.basename(o.victoryExe) : "Victory.exe";
   try {
     const out = execFileSync("powershell", ["-NoProfile", "-Command",
-      "(Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + parent + " and Name='Victory.exe'\").ProcessId"], { encoding: "utf8" });
+      "(Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + parent + " and Name='" + name + "'\").ProcessId"], { encoding: "utf8" });
     const pid = parseInt(out.trim().split(/\s+/)[0], 10);
     return pid > 0 ? pid : null;
   } catch { return null; }
@@ -130,6 +135,7 @@ function startHost(a) {
   }
   const args = ["-FuncSkipUpdateCheck", "-FuncClientDll=" + o.clientDll, "-FuncClientLog=" + ctl("host.func.log"), "-FuncJoin=" + url];
   if (o.headless) args.push("-FuncHeadlessClient");
+  if (o.victoryExe) args.push("-FuncVictoryExe=" + o.victoryExe);
   if (o.steamSettings) args.push("-FuncSteamSettingsDir=" + o.steamSettings);
   const env = Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1", CULLING_NETPLAY_PREMATCH: String(a.players),
     CULLING_NETPLAY_CONTROL: o.control });

@@ -361,7 +361,13 @@ def menu_chain(a):
         if os.path.exists(f):
             os.remove(f)
     try:
-        shutil.copyfile(host_exe, dst)
+        host_dst = os.path.join(WIN64, "VictoryHost.exe")
+        if a.client_exe:
+            shutil.copyfile(a.client_exe, dst)            # the clients: a released client
+            shutil.copyfile(host_exe, host_dst)           # the host: the netplay exe, by -FuncVictoryExe
+            log("clients run", a.client_exe, "; the host runs VictoryHost.exe")
+        else:
+            shutil.copyfile(host_exe, dst)
         shutil.copyfile(pak, os.path.join(paks, OVERRIDE_PAK))
         log("installed the host exe and", OVERRIDE_PAK, "into the test copy")
         os.environ["CULLING_TEST_HOOKS"] = "1"
@@ -377,6 +383,8 @@ def menu_chain(a):
             # didn't take in game: the host ran with the shared files' ID.
             agent_args += ["--launcher", os.path.join(WIN64, "Func.Launcher.exe"), "--client-dll", CLIENT_DLL,
                            "--host-trace", traces["host"], "--linger-ms", "15000"]
+            if a.client_exe:
+                agent_args += ["--victory-exe", host_dst]
             if a.headless_host:
                 agent_args.append("--headless")
         procs.append(subprocess.Popen(agent_args, stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
@@ -458,10 +466,11 @@ def menu_chain(a):
             if pr.poll() is None:
                 pr.kill()
         shutil.copy2(keep, dst)
-        try:
-            os.remove(os.path.join(paks, OVERRIDE_PAK))
-        except OSError:
-            pass
+        for leftover in (os.path.join(paks, OVERRIDE_PAK), os.path.join(WIN64, "VictoryHost.exe")):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
         if settings_bytes is not None:
             open(SETTINGS, "wb").write(settings_bytes)
         restore_ids(ids_bytes)
@@ -514,6 +523,10 @@ def restore_from(out):
     if os.path.exists(pak):
         os.remove(pak)
         done.append("removed " + OVERRIDE_PAK)
+    host = os.path.join(WIN64, "VictoryHost.exe")
+    if os.path.exists(host):
+        os.remove(host)
+        done.append("removed VictoryHost.exe")
     log("restored from", out + ":", ", ".join(done) or "nothing to restore")
 
 
@@ -530,6 +543,8 @@ def main():
                     " locally (backend, game-server agent, two test players queueing; the clients join with their tickets)")
     ap.add_argument("--backend-port", type=int, default=8123)
     ap.add_argument("--agent-host", action="store_true", help="with --menu: the game-server agent starts (and stops) the host")
+    ap.add_argument("--client-exe", help="with --menu --agent-host: the clients run this exe (a released client) as the"
+                    " install's Victory.exe; the host runs the netplay exe as VictoryHost.exe (-FuncVictoryExe)")
     ap.add_argument("--headless-host", action="store_true", help="with --agent-host: the host runs headless (-nullrhi -nosound)")
     ap.add_argument("--restore", metavar="OUT", help="put back what an interrupted run into OUT changed, and exit")
     ap.add_argument("--menu", action="store_true", help="with --backend-repo: the clients start at their menus, are queued"

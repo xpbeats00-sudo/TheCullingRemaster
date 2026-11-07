@@ -162,13 +162,25 @@ The game gave the winner a death order that tied with a bot's, so the host's res
 - **no human left, bots alive** (`CULLING_NETPLAY_END=2` takes out the last human): the match ended with 14 bots alive (`alive=14 humans=0`). The players were placed 15th and 16th, with no human winner.
 - no game crashed.
 
+## Released clients (2026-11-06)
+
+The clients ran the released 1.3.12 `Victory.exe` (`releases/1.3.12`, with the Remaster module) as the install's exe, and the host ran the netplay exe as `VictoryHost.exe`, through the launcher's `-FuncVictoryExe` (`netplay_run.py --client-exe`, the agent's `--victory-exe`). The attack test is in the netplay module, which a released client doesn't have, so the host applies the damage (`CULLING_NETPLAY_DAMAGE`). In game, with real menus and a headless host started by the agent:
+- **joining:** both menus joined with their tickets and stayed connected to the end, so the released client's server-nonce check passed too;
+- **the match:** the host waited for both and started, and its damage took Player Two down (75, 50, 25, 0) while Player One stayed at 100. The match played on against the 14 bots until the test cleared them;
+- **the result:** the winner 1st, Player Two 16th, paid;
+- **health:** no crashes, and the agent stopped the host after the post-match.
+
+In one earlier run Player One died 4 s after Player Two, with the pair 300 units apart, most likely to a bot in the arena. The match then ended with no human left, as the rule says, the players placed 15th and 16th.
+
+Fixed on the way: the agent looked for a host process named `Victory.exe`. It found none, declared the host never started and aborted a running match; it now looks for the exe it launched.
+
 ## On the VPS (not done: needs the owner)
 
 Nothing below has been run on the VPS. It's the plan, and the list of what blocks real players.
 
 **Blockers before players use it:**
 1. ~~The host's own player is a contestant.~~ Fixed (2026-11-06), see "No player for the host" below.
-2. **Clients ran the netplay test exe in every test.** The test copy's exe was swapped for all three games. The released Remaster client (with `patch_exe.py`'s module) hasn't joined a host yet.
+2. ~~Clients ran the netplay test exe in every test.~~ Released 1.3.12 clients join and play (2026-11-06), see "Released clients" below.
 3. **Solo only.** The agent refuses team modes; Duos and up need the team layout passed to the host.
 4. **Capacity unmeasured:** the CPU, memory and bandwidth of a headless host with 16 contestants.
 5. **The menu's server.** Released builds should point `RemasterServer.js` at the live backend, and their `FrontEnd.html` must load it. The test copy's page doesn't (it falls back to `127.0.0.1:8000`). Check this in the release pak.
@@ -193,7 +205,7 @@ Nothing below has been run on the VPS. It's the plan, and the list of what block
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless.
+Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless. `--client-exe <exe>` gives the clients another exe (a released client) while the host runs the netplay exe as `VictoryHost.exe`.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.
