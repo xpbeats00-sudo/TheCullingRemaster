@@ -1,5 +1,14 @@
 # Changelog
 
+## Server (next update)
+
+**Match pay can't be farmed with fake results**
+- Fixed: a match result paid kills, damage, XP and credits however short the match was (the minimum match length only blocked the win). Posting fake results in a loop paid about 725 credits each, enough to buy the whole shop in minutes and top the kills leaderboard (FULL_AUDIT_2026-11-06, P0 #1).
+- A result less than 2 minutes after the match started (`CULLING_MIN_MATCH_SECONDS`) now pays nothing and isn't counted on the career or in today's matches. Ranked still scores it as last place, as before.
+- Kills count up to 1 per 20 s of match (`CULLING_SECONDS_PER_KILL`) and damage up to 10 per second (`CULLING_DAMAGE_PER_SECOND`). The time includes loading and the pod countdown, so real matches stay well inside both.
+- Match credits and XP stop at 8,000 credits and 40,000 XP a day, UTC (`CULLING_DAILY_MATCH_CREDITS`, `CULLING_DAILY_MATCH_XP`). Showdown series pay counts toward the same cap. Games still count past the cap; set a limit to 0 to turn it off.
+- A normal match pays exactly as before. Tests: `server/test/matchpay.test.js`.
+
 ## Game (next release)
 
 **Pods: one contestant each, and nobody starts armed**

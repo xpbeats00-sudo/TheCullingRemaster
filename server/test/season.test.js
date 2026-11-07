@@ -25,15 +25,17 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
     const a = await srv.connect(await srv.login(A));
     sockets.push(a);
 
-    await test("an instant 'victory' with huge numbers is paid as a short loss", async () => {
+    await test("an instant 'victory' with huge numbers pays nothing and isn't on the career", async () => {
       a.emit("join-mm", { queueName: "ffa" });
       await next(a, "match-ready");
       const r = await srv.request("POST", "/api/matchresult",
         { victory: true, kills: 999, damage: 1e9, timeAlive: 99999, func: 5, placement: 1 });
       assert.strictEqual(r.status, 200);
       assert.strictEqual(r.json.stats.wins, 0, "no win before 120 s");
-      assert.strictEqual(r.json.stats.kills, 15, "at most the 15 other contestants");
-      assert.ok(r.json.xpEarned <= 250 + 150 * 15 + 5000 + 15, "XP bounded: " + r.json.xpEarned);
+      assert.strictEqual(r.json.stats.kills, 0, "a match under 120 s isn't on the career");
+      assert.strictEqual(r.json.stats.gamesPlayed, 0);
+      assert.strictEqual(r.json.xpEarned, 0, "no XP before 120 s");
+      assert.strictEqual(r.json.credits, 0, "no credits before 120 s");
     });
 
     await test("a ranked result before 120 s counts as last place", async () => {

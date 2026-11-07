@@ -47,7 +47,8 @@ function dataDir() {
 function envFor(port, dir, saveDelay) {
   return Object.assign({}, process.env, { CULLING_PORT: String(port), CULLING_DATA_DIR: dir,
     CULLING_SAVE_DELAY_MS: String(saveDelay), CULLING_REQUIRE_ACCOUNT: "0",
-    CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100", CULLING_MIN_MATCH_SECONDS: "0" });
+    CULLING_LOBBY_GATHER_MS: "300", CULLING_LOBBY_COUNTDOWN_MS: "100", CULLING_MIN_MATCH_SECONDS: "0",
+    CULLING_SECONDS_PER_KILL: "0", CULLING_DAMAGE_PER_SECOND: "0", CULLING_DAILY_MATCH_CREDITS: "0", CULLING_DAILY_MATCH_XP: "0" });
 }
 
 // Starts the server; returns { pid, exited: Promise<{code, how}>, hardKill() }.
