@@ -214,12 +214,14 @@ struct fstring { void *data; i32 num; i32 max; };
  * The host and the agent talk through small files there:
  *   listening            the host writes it once it listens (the agent posts ready)
  *   tickets.txt          the agent: the match's tickets, by hash (PreLogin's check)
- *   used-<n>             the host: a ticket used ("<hash> <userID>")
+ *   used-<n>             the host: a ticket used ("<hash> <userID> <net id>")
  *   result.txt + .done   at the end of the match: each joined player's result
  * Without the variable nothing here runs. */
 #define IAT_READFILE       0x253f260
 #define IAT_CLOSEHANDLE    0x253f330
 #define R_STRING_RESIZE    0x1a3420    /* TArray<TCHAR>::ResizeForCopy(NewMax, PrevMax) */
+#define R_FREE             0x50c510    /* FMemory::Free */
+typedef void (*free_fn)(void *p);
 typedef i32 (*readfile_fn)(void *h, void *buf, u32 n, u32 *got, void *ovl);
 typedef i32 (*closehandle_fn)(void *h);
 typedef void (*resize_fn)(struct fstring *s, i32 new_max, i32 prev_max);
@@ -328,7 +330,7 @@ static void set_fstring(struct fstring *e, const char *msg)
  * check asked the backend through the agent and slept the game thread up to
  * 8 s per login, so looping logins froze a running match.) A ticket lets one
  * player in once: the join table keeps the hashes used. Each use goes to the
- * agent as used-<n> ("<hash> <userID>\n"), which it confirms with the
+ * agent as used-<n> ("<hash> <userID> <net id>\n"), which it confirms with the
  * backend (ticket-used). A refusal costs a hash and a file read; refusals
  * are traced only at first (32), then every 100th. */
 
@@ -406,12 +408,14 @@ static void sha256_hex(const char *msg, u32 len, char *out)
  * which this position-independent blob doesn't have. */
 #define MAX_JOINS          64
 #define USER_MAX           48          /* a userID ("steam:" + 17 digits) and room to spare */
+#define UID_MAX            32          /* a player's net id as text (a Steam ID: 17 digits) */
 struct join_entry {
     void *conn, *ps;
     i32 seq, team;
     u32 died;
     char hash[65];                     /* the ticket's SHA-256: used once */
     char user[USER_MAX];               /* the ticket's userID */
+    char uid[UID_MAX];                 /* the player's net id (one join each) */
 };
 struct join_table {
     struct join_entry e[MAX_JOINS];
@@ -423,6 +427,7 @@ struct join_table {
     i32 pend_team;
     char pend_hash[65];
     char pend_user[USER_MAX];
+    char pend_uid[UID_MAX];
     u32 refused;                       /* logins refused (the trace is capped) */
 };
 static struct join_table join_store;
@@ -477,14 +482,60 @@ static void str_copy(char *dst, const char *src, i32 max)
     dst[i] = 0;
 }
 
+/* The joining player's net id as text: PreLogin's UniqueId is an
+ * FUniqueNetIdRepl, whose TSharedPtr<const FUniqueNetId> object is at +8
+ * (AGameModeBase::PreLogin passes uid + 8 on, VA 0x141343282); the id's
+ * vtable +0x18 is IsValid and +0x20 ToString(FString *out), as the game
+ * reads a player state's (VA 0x140249040). A Steam ID reads as its 17
+ * decimal digits (the records' ids, in game). 0 when there is none. */
+#define VT_ID_IS_VALID     0x18
+#define VT_ID_TO_STRING    0x20
+typedef struct fstring *(*id_string_fn)(void *id, struct fstring *out);
+typedef u8 (*id_valid_fn)(void *id);
+
+static i32 net_id_text(void *uid, char *out)
+{
+    u8 *id = uid ? F(uid, 8, u8 *) : 0;
+    struct fstring s = { 0, 0, 0 };
+    i32 i, ok;
+    out[0] = 0;
+    if (!id || !((id_valid_fn)(*(void ***)id)[VT_ID_IS_VALID / 8])(id))
+        return 0;
+    ((id_string_fn)(*(void ***)id)[VT_ID_TO_STRING / 8])(id, &s);
+    for (i = 0; s.data && i < s.num && i < UID_MAX - 1 && ((u16 *)s.data)[i]; i++)
+        out[i] = (char)(((u16 *)s.data)[i] > 0x20 && ((u16 *)s.data)[i] < 0x7f ? ((u16 *)s.data)[i] : '?');
+    out[i] = 0;
+    ok = i > 0 && (!s.data || i >= s.num || !((u16 *)s.data)[i]);    /* the whole id fit */
+    if (s.data)
+        FN(R_FREE, free_fn)(s.data);
+    return ok;
+}
+
+/* "steam:<digits>": the userID's Steam ID (the launcher makes the game's
+ * Steam ID the account's userID, docs/ACCOUNTS.md), else 0. */
+static const char *steam_digits(const char *user)
+{
+    const char *p = user + 6;
+    if (user[0] != 's' || user[1] != 't' || user[2] != 'e' || user[3] != 'a' || user[4] != 'm' || user[5] != ':' || !*p)
+        return 0;
+    for (; *p; p++)
+        if (*p < '0' || *p > '9')
+            return 0;
+    return user + 6;
+}
+
 /* PreLogin's ticket check: the ticket from ?Nonce=, known (tickets.txt)
- * and not used yet. On success the login is pending (join_table pend). */
-static void ticket_check(struct fstring *options, struct fstring *error)
+ * and not used yet, for this player: the joining player's net id must be
+ * the ticket's Steam ID (a "steam:" userID), and neither the id nor the
+ * userID may be in the match already (a copied id would merge two players'
+ * records). On success the login is pending (join_table pend). */
+static void ticket_check(struct fstring *options, void *uid, struct fstring *error)
 {
     const char *key = "?nonce=";       /* matched case-insensitively */
     struct join_table *t = join_table();
     u16 *o = (u16 *)options->data;
-    char tok[400], hash[65], user[USER_MAX];
+    char tok[400], hash[65], user[USER_MAX], idtext[UID_MAX];
+    const char *steam;
     i32 i, k, start = -1, len, n = options->num, team = 0, found;
     for (i = 0; o && i < n && start < 0; i++) {
         for (k = 0; key[k] && i + k < n && (o[i + k] | (o[i + k] >= 'A' && o[i + k] <= 'Z' ? 0x20 : 0)) == (u16)key[k]; k++)
@@ -518,10 +569,25 @@ static void ticket_check(struct fstring *options, struct fstring *error)
             set_fstring(error, "Match ticket already used");
             return;
         }
+    if (!net_id_text(uid, idtext)) {
+        set_fstring(error, "No player id");
+        return;
+    }
+    steam = steam_digits(user);
+    if (steam && !str_same(steam, idtext)) {
+        set_fstring(error, "Match ticket is for another player");
+        return;
+    }
+    for (i = 0; i < t->n; i++)
+        if (str_same(t->e[i].uid, idtext) || str_same(t->e[i].user, user)) {
+            set_fstring(error, "Player already in the match");
+            return;
+        }
     t->pend = 1;
     t->pend_team = team;
     str_copy(t->pend_hash, hash, 65);
     str_copy(t->pend_user, user, USER_MAX);
+    str_copy(t->pend_uid, idtext, UID_MAX);
 }
 
 /* A joined player: in the table, and its ticket's use reported to the agent. */
@@ -540,12 +606,15 @@ static void add_join(void *conn)
     e->died = 0;
     str_copy(e->hash, t->pend_hash, 65);
     str_copy(e->user, t->pend_user, USER_MAX);
+    str_copy(e->uid, t->pend_uid, UID_MAX);
     t->pend = 0;
     q = put_str(name, "used-");
     put_dec(q, e->seq);
     q = put_str(buf, e->hash);
     q = put_str(q, " ");
     q = put_str(q, e->user);
+    q = put_str(q, " ");
+    q = put_str(q, e->uid);
     q = put_str(q, "\n");
     ctl_write(name, buf, (u32)(q - buf));
 }
@@ -735,7 +804,7 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
     struct join_table *t = join_table();
     t->pend = 0;
     if (ctl_on()) {
-        ticket_check((struct fstring *)options, (struct fstring *)error);
+        ticket_check((struct fstring *)options, uid, (struct fstring *)error);
         if (((struct fstring *)error)->num) {
             t->refused++;
             if ((t->refused <= 32 || t->refused % 100 == 0) && trace_begin(&l, "prelogin-refused")) {
@@ -862,7 +931,6 @@ static void kv_s(struct line *l, const char *k, i32 v)
 #define MAX_INVENTORY      32
 #define MAX_REP            384
 #define R_ACTORS_OF_CLASS  0x1336ca0   /* UGameplayStatics::GetAllActorsOfClass(ctx, class, TArray<AActor*> *out) */
-#define R_FREE             0x50c510    /* FMemory::Free */
 #define R_FNAME            0x5b0e60    /* FName::FName(this, const TCHAR *, EFindName) -> this */
 #define O_CLASS_CHAIN      0x88        /* UStruct base chain: data (each entry = an ancestor + 0x88), then count - 1; [1] is Actor */
 #define O_OBJ_NAME         0x18        /* UObjectBase::NamePrivate (FName: index, number) */
@@ -986,7 +1054,6 @@ static i32 replicate_to(u8 *conn, u8 *actor, void *pc, struct rep_stats *st)
 
 typedef u64 *(*fname_fn)(u64 *out, const u16 *name, i32 find);
 typedef void (*actors_fn)(void *ctx, void *cls, void *out);
-typedef void (*free_fn)(void *p);
 
 /* The base Actor class: depth 1 of any actor class's base chain, checked by
  * its name ("Actor"). 0 if that doesn't hold. */

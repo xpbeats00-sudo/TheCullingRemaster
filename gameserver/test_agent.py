@@ -56,6 +56,10 @@ def wait_log(path, pred, timeout=30):
     raise AssertionError("timed out waiting for an agent event in " + path)
 
 
+# The players' userIDs: the game's Steam IDs, which the host binds tickets to.
+USERIDS = ("steam:76561197960266902", "steam:76561197960266903")
+
+
 def sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -77,7 +81,8 @@ def main():
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         time.sleep(1.5)
         players = subprocess.Popen(["node", os.path.join(HERE, "test_players.js"), "--backend", url,
-                                    "--server-dir", os.path.join(a.backend_repo, "server"), "--out", out, "--count", "2"],
+                                    "--server-dir", os.path.join(a.backend_repo, "server"), "--out", out, "--count", "2",
+                                    "--userids", ",".join(USERIDS)],
                                    stdout=open(os.path.join(out, "players.log"), "wb"), stderr=subprocess.STDOUT)
         procs.append(players)
         wait(os.path.join(ctl, "assignment.json"))
@@ -88,7 +93,8 @@ def main():
         wait(os.path.join(out, "tickets.json"))
         tickets = json.load(open(os.path.join(out, "tickets.json")))
         assert all(t["gameServer"] == "127.0.0.1:7777" and t["netplay"] and t["nonce"] for t in tickets), tickets
-        print("ok    both players got match-ready for 127.0.0.1:7777 with a ticket")
+        assert [t["userID"] for t in tickets] == list(USERIDS), tickets
+        print("ok    both players (claimed userIDs %s) got match-ready for 127.0.0.1:7777 with a ticket" % ", ".join(USERIDS))
         agent_log = os.path.join(out, "agent.log")
         wait(os.path.join(ctl, "tickets.txt"))
         lines = sorted(open(os.path.join(ctl, "tickets.txt")).read().splitlines())

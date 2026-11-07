@@ -89,6 +89,27 @@ static u8 *block(size_t n) { return (u8 *)calloc(1, n); }
 
 static FStr cur_options, cur_error;
 static u8 *cur_uid;
+
+/* A player's net id: FUniqueNetIdRepl {vtable, TSharedPtr object at +8}; the
+ * id's vtable +0x18 IsValid, +0x20 ToString(FString *out). */
+static u8 id_valid(u8 *id) { (void)id; return 1; }
+static FStr *id_to_string(u8 *id, FStr *out) { set_wide(out, F(id, 8, const char *)); return out; }
+static void *id_vtable[8];
+
+static u8 *net_id(const char *text)
+{
+    u8 *repl, *id;
+    if (!text)
+        return 0;
+    repl = (u8 *)calloc(1, 0x20);
+    id = (u8 *)calloc(1, 0x20);
+    id_vtable[0x18 / 8] = (void *)id_valid;
+    id_vtable[0x20 / 8] = (void *)id_to_string;
+    F(id, 0, void **) = id_vtable;
+    F(id, 8, const char *) = _strdup(text);
+    F(repl, 8, u8 *) = id;
+    return repl;
+}
 static int game_prelogins, base_prelogins, game_refuses;
 
 static void game_prelogin(void *g, void *options, void *address, void *uid, FStr *error)
@@ -119,10 +140,12 @@ static u8 *new_conn(void)
     return c;
 }
 
-/* A login with these URL options on conn: "" when let in, else the refusal. */
-static const char *login_opts(u8 *conn, const char *opts)
+/* A login with these URL options on conn, as the player whose net id reads
+ * uid (NULL: none): "" when let in, else the refusal. */
+static const char *login_opts(u8 *conn, const char *opts, const char *uid)
 {
     char buf[600];
+    cur_uid = net_id(uid);
     _snprintf(buf, sizeof(buf), "%s", opts);
     free(cur_options.data);
     set_wide(&cur_options, buf);
@@ -132,12 +155,15 @@ static const char *login_opts(u8 *conn, const char *opts)
     return cur_error.num ? narrow(&cur_error) : "";
 }
 
-static const char *login(u8 *conn, const char *ticket)
+static const char *login(u8 *conn, const char *ticket, const char *uid)
 {
     char buf[600];
     _snprintf(buf, sizeof(buf), "?Name=Player?Nonce=%s?SplitscreenCount=1", ticket);
-    return login_opts(conn, buf);
+    return login_opts(conn, buf, uid);
 }
+
+/* "steam:7656..." -> "7656...": the net id of the ticket's own player. */
+static const char *steam_of(const char *user) { return strncmp(user, "steam:", 6) ? user : user + 6; }
 
 static char ctl[MAX_PATH];
 
@@ -205,34 +231,56 @@ static int scenario_tickets(char **v)
     char buf[512], want[512];
     u32 t0, ms;
     int i;
-    CHECK(strcmp(login(new_conn(), ta), "") == 0);
+    CHECK(strcmp(login(new_conn(), ta, steam_of(ua)), "") == 0);
     CHECK(read_file("used-1", buf, sizeof(buf)) > 0);
-    _snprintf(want, sizeof(want), "%s %s\n", ha, ua);
+    _snprintf(want, sizeof(want), "%s %s %s\n", ha, ua, steam_of(ua));
     CHECK(strcmp(buf, want) == 0);
-    printf("ok    a known ticket lets its player in; its use goes to the agent (used-1: hash and userID)\n");
-    CHECK(strcmp(login(new_conn(), ta), "Match ticket already used") == 0);
+    printf("ok    a known ticket lets its player in; its use goes to the agent (used-1: hash, userID, net id)\n");
+    CHECK(strcmp(login(new_conn(), ta, steam_of(ua)), "Match ticket already used") == 0);
     printf("ok    the same ticket again is refused (one use)\n");
-    CHECK(strcmp(login(new_conn(), forged), "Match ticket refused") == 0);
-    CHECK(strcmp(login_opts(new_conn(), "?Name=Player?SplitscreenCount=1"), "No match ticket") == 0);
+    CHECK(strcmp(login(new_conn(), forged, steam_of(ua)), "Match ticket refused") == 0);
+    CHECK(strcmp(login_opts(new_conn(), "?Name=Player?SplitscreenCount=1", steam_of(ua)), "No match ticket") == 0);
     printf("ok    a forged ticket and a login without one are refused\n");
     t0 = GetTickCount();
     for (i = 0; i < 300; i++) {
         _snprintf(buf, sizeof(buf), "v1.junk%d.%08x", i, i * 2654435761u);
-        CHECK(strcmp(login(new_conn(), buf), "Match ticket refused") == 0);
+        CHECK(strcmp(login(new_conn(), buf, "76561190000000000"), "Match ticket refused") == 0);
     }
     ms = GetTickCount() - t0;
     CHECK(ms < 1500);
     printf("ok    300 refused logins in %u ms: no wait on the game thread\n", ms);
-    CHECK(strcmp(login(new_conn(), tb), "") == 0);
+    CHECK(strcmp(login(new_conn(), tb, steam_of(ub)), "") == 0);
     CHECK(read_file("used-2", buf, sizeof(buf)) > 0);
-    _snprintf(want, sizeof(want), "%s %s\n", hb, ub);
+    _snprintf(want, sizeof(want), "%s %s %s\n", hb, ub, steam_of(ub));
     CHECK(strcmp(buf, want) == 0);
     printf("ok    the second player's ticket: in, used-2\n");
     CHECK(game_prelogins == 2 && base_prelogins == 0);
     printf("ok    the game's own PreLogin runs for the ticketed logins only; never the test host's bypass\n");
     remove_file("tickets.txt");
-    CHECK(strcmp(login(new_conn(), "v1.abc.def"), "Server not ready") == 0);
+    CHECK(strcmp(login(new_conn(), "v1.abc.def", "76561190000000000"), "Server not ready") == 0);
     printf("ok    no tickets.txt (the agent hasn't written one): refused\n");
+    return 0;
+}
+
+/* H5: one join per player, and the ticket bound to its player.
+ * argv: tickets A, B (steam: userIDs) and C (a non-Steam userID) with their users. */
+static int scenario_players(char **v)
+{
+    const char *ta = v[0], *ua = v[1], *tb = v[2], *ub = v[3], *tc = v[4];
+    char buf[512];
+    CHECK(strcmp(login(new_conn(), ta, steam_of(ua)), "") == 0);
+    CHECK(strcmp(login(new_conn(), tb, steam_of(ua)), "Match ticket is for another player") == 0);
+    printf("ok    B's ticket with A's Steam ID (a copied id) is refused: the ticket's Steam ID must be the player's\n");
+    CHECK(strcmp(login(new_conn(), tb, "76561190000000999"), "Match ticket is for another player") == 0);
+    CHECK(strcmp(login(new_conn(), tc, 0), "No player id") == 0);
+    printf("ok    another Steam ID, or none, is refused\n");
+    CHECK(strcmp(login(new_conn(), tb, steam_of(ub)), "") == 0);
+    printf("ok    B's own ticket still lets B in (refusals don't use a ticket up)\n");
+    CHECK(strcmp(login(new_conn(), tc, steam_of(ua)), "Player already in the match") == 0);
+    printf("ok    a net id already in the match is refused (C's non-Steam ticket with A's id)\n");
+    CHECK(strcmp(login(new_conn(), tc, "76561190000000777"), "") == 0);
+    CHECK(read_file("used-3", buf, sizeof(buf)) > 0 && strstr(buf, " 76561190000000777\n"));
+    printf("ok    a non-Steam userID's ticket: in with its player's id recorded (used-3)\n");
     return 0;
 }
 
@@ -243,6 +291,8 @@ int main(int argc, char **argv)
     setup();
     if (!strcmp(argv[1], "tickets") && argc >= 9)
         return scenario_tickets(argv + 2);
+    if (!strcmp(argv[1], "players") && argc >= 7)
+        return scenario_players(argv + 2);
     printf("FAIL unknown scenario %s\n", argv[1]);
     return 2;
 }

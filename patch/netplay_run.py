@@ -216,8 +216,12 @@ def start_chain(a):
                              stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb"))
     procs.append(agent)
     time.sleep(2)
+    # The accounts take the game clients' test Steam IDs: the host binds each
+    # ticket to the joining game's Steam ID.
+    ids = ",".join("steam:" + TEST_IDS[w][0] for w in ("client", "client2")[:a.clients])
     players = subprocess.Popen(["node", os.path.join(GAMESERVER, "test_players.js"), "--backend", url[:-4],
-                                "--server-dir", os.path.join(a.backend_repo, "server"), "--out", a.out, "--count", str(a.clients)],
+                                "--server-dir", os.path.join(a.backend_repo, "server"), "--out", a.out, "--count", str(a.clients),
+                                "--userids", ids],
                                stdout=open(os.path.join(a.out, "players.log"), "wb"), stderr=subprocess.STDOUT)
     procs.append(players)
     t0 = time.time()

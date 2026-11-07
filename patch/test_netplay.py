@@ -311,6 +311,15 @@ def test_real_exe(path):
     assert IMAGE_BASE + base in calls, "AShooterGameMode::PreLogin doesn't call AGameModeBase::PreLogin %#x" % base
     msg = "Match is over!".encode("utf-16-le")
     assert data.find(msg) > 0, "no 'Match is over!' string"
+    # 2b1. The joining player's net id (H5): AGameModeBase::PreLogin hands the FUniqueNetIdRepl's
+    # TSharedPtr (uid + 8) on, and the game reads a player state's id object (+0x460, the
+    # Repl's +8) through vtable +0x18 (IsValid) then +0x20 (ToString into the FString out).
+    body = data[PN._off(IMAGE_BASE + base):PN._off(IMAGE_BASE + base) + 0x20]
+    assert bytes.fromhex("4983c108") in body, "AGameModeBase::PreLogin: add r9, 8 (the Repl's shared pointer)"
+    psid = data[PN._off(IMAGE_BASE + mac("R_PS_ID")):PN._off(IMAGE_BASE + mac("R_PS_ID")) + 0x40]
+    assert bytes.fromhex("488b8960040000") in psid, "the player state's id object at +0x460"
+    i, j = psid.find(bytes.fromhex("ff50") + bytes([mac("VT_ID_IS_VALID")])), psid.find(bytes.fromhex("ff50") + bytes([mac("VT_ID_TO_STRING")]))
+    assert 0 <= i < j, "IsValid (+0x18) then ToString (+0x20)"
     # 2b2. FreeForAll's end-of-match check slot (relocated) holds the stock check, which reads
     # the player state's flags and contestant byte and calls HasLeft and IsAlive, as the
     # host's own rule (np_should_end) does.
@@ -498,6 +507,10 @@ def test_native():
         run_scenario(exe, "tickets", [ta, sha(ta), ua, tb, sha(tb), ub, forged], {"CULLING_NETPLAY_PREMATCH": "2"}, ctl,
                      [(ta, 1, ua), (tb, 2, ub)])
         assert len(tb) > 200, "a ticket over three SHA-256 blocks"
+        print("native: players (H5)")
+        tc = ta.replace("v1.", "v1.c")
+        run_scenario(exe, "players", [ta, ua, tb, ub, tc], {"CULLING_NETPLAY_PREMATCH": "2"}, ctl,
+                     [(ta, 1, ua), (tb, 2, ub), (tc, 3, "acct:not-a-steam-id")])
         print("native: pass")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

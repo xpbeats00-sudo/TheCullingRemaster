@@ -288,7 +288,7 @@ async function postReady() {
   if (readyPosted && r.json && r.json.assignment && r.json.assignment.matchId === assignment.matchId) takeTickets(r.json.assignment.tickets);
 }
 
-// used-<n> from the host: "<hash> <userID>\n" (the newline: written whole).
+// used-<n> from the host: "<hash> <userID> <net id>\n" (the newline: written whole).
 // The player is in; the backend is told (ticket-used), which uses the ticket
 // up there too. A refusal is logged (the host already let the player in).
 async function confirmUse(n) {
@@ -296,13 +296,13 @@ async function confirmUse(n) {
   let text;
   try { text = fs.readFileSync(ctl("used-" + n), "utf8"); } catch { confirming.delete(n); return; }
   if (!text.endsWith("\n")) { confirming.delete(n); return; }     // still being written: next poll
-  const [hash, userID] = text.trim().split(/\s+/);
+  const [hash, userID, netId] = text.trim().split(/\s+/);
   const t = tickets.get(hash);
   if (t) { t.used = true; writeTickets(); }
   verified.set(n, { userID: t ? t.userID : userID, team: t ? t.team : 0, hash });
   let r;
   try { r = await call("ticket-used", { matchId: assignment.matchId, hash, userID }); } catch (e) { r = { status: 0, json: { error: e.message } }; }
-  log("ticket-used", { n, userID, status: r.status, ok: !!(r.json && r.json.ok), error: r.json && r.json.error });
+  log("ticket-used", { n, userID, netId, status: r.status, ok: !!(r.json && r.json.ok), error: r.json && r.json.error });
 }
 
 // result.txt -> the backend's result body (section 4.4).

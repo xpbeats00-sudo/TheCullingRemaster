@@ -7,6 +7,11 @@
 //
 // usage: node test_players.js --backend http://127.0.0.1:8123 --server-dir <backend repo>/server
 //          --out <dir> [--count 2] [--queue ffa_jungle] [--wait-ms 900000]
+//          [--userids steam:7656...,steam:7656...]
+// --userids: the accounts' userIDs, in order (claimed: a game login from
+// the player's address first, then the account claims that profile). The
+// host binds a ticket to the joining game's Steam ID, so a test whose game
+// clients have fixed Steam IDs gives them here.
 "use strict";
 
 const fs = require("fs");
@@ -20,6 +25,7 @@ const out = arg("out");
 const count = parseInt(arg("count", "2"), 10);
 const queue = arg("queue", "ffa_jungle");
 const waitMs = parseInt(arg("wait-ms", "900000"), 10);
+const userids = (arg("userids", "") || "").split(",").filter(Boolean);
 // The backend checkout's own socket.io-client, else one on NODE_PATH (a worktree without node_modules).
 const ioClient = (() => { try { return require(path.join(arg("server-dir"), "node_modules", "socket.io-client")); } catch { return require("socket.io-client"); } })();
 
@@ -45,9 +51,16 @@ const once = (socket, event) => new Promise((resolve) => socket.once(event, reso
 async function player(i) {
   const name = "Shared Tester " + (i + 1);
   const xff = { "X-Forwarded-For": "198.51.100." + (20 + i) };
+  const want = userids[i];
+  if (want) {
+    const first = await request("POST", "/api/login", { userid: want, authType: "steam" }, xff);
+    if (first.status !== 200) throw new Error(name + ": login as " + want + " " + first.status);
+  }
   const reg = await request("POST", "/api/account/register",
-    { username: name, email: "shared.tester." + (i + 1) + "." + Date.now() + "@example.com", password: "long enough password" }, xff);
+    Object.assign({ username: name, email: "shared.tester." + (i + 1) + "." + Date.now() + "@example.com", password: "long enough password" },
+      want ? { claimUserID: want } : {}), xff);
   if (reg.status !== 200) throw new Error(name + ": register " + reg.status + " " + JSON.stringify(reg.json));
+  if (want && reg.json.userID !== want) throw new Error(name + ": wanted " + want + ", got " + reg.json.userID);
   const login = await request("POST", "/api/login", { userid: reg.json.userID, authType: "steam" });
   const socket = ioClient(backend, { transports: ["websocket"], forceNew: true, reconnection: false });
   await once(socket, "login_ready");
