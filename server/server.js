@@ -2327,8 +2327,16 @@ io.on('connection', (socket) => {
   on('lobby-leave', () => { socket.lobby = null; socket.emit('lobby-leave-ack'); });
   on('lobby-start-match', () => {
     if (!socket.lobby) return socket.emit('lobby-start-match-fail', { reason: 'not-in-lobby' });
-    // Out of any matchmaking lobby: its match-ready would land on top of this one.
-    lobbies.leave(socket.userID);
+    // Out of any matchmaking lobby: its match-ready would land on top of this
+    // one. A party queued together stops its search for everyone, with the
+    // reason, as the other exits do (never a party sent on without a member).
+    const me = socket.userID;
+    const party = friends.party(me);
+    if (!(party && partyQueued(party, me) && cancelPartyQueue(party,
+      party.leader === me ? 'party-leader-cancelled' : 'party-member-cancelled',
+      (usernameOf(me) || 'A party member') + ' started a custom match: the search was stopped.', me))) {
+      lobbies.leave(me);
+    }
     const map = custom.mapIndex(socket.lobby.mapName);
     const gameServer = custom.gameServer(socket.lobby.mapName, socket.lobby.mods);
     tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom' });
