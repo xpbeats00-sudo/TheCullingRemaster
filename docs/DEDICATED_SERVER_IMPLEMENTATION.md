@@ -64,7 +64,7 @@ Players who join after the pods opened stand in pods that never open; in a real 
 
   The host and the agent talk through files in a control folder (`CULLING_NETPLAY_CONTROL`):
   - `listening`: the host is up, so the agent posts ready;
-  - `verify-<n>.req/.ans`: the host's PreLogin reads the ticket from `?Nonce=` in the login options, the agent asks the backend, and the host refuses on a "deny" (up to 8 s);
+  - `verify-<n>.req/.ans`: the host's PreLogin reads the ticket from `?Nonce=` in the login options, the agent asks the backend, and the host refuses on a "deny" (up to 8 s). **Replaced on 2026-11-07** by a local check (`tickets.txt` and `used-<n>`, see "Hardening for real players" below): the old wait froze the game thread;
   - `result.txt`: written at WaitingPostMatch, then posted by the agent.
 
   Every game uses a copy of the Func client DLL pointed at the local backend, never the live server. `netplay_run.py --backend-repo <checkout>` runs it all. In game:
@@ -95,7 +95,7 @@ Players who join after the pods opened stand in pods that never open; in a real 
   - teams beyond Solo (Duos and up) were only checked in the agent's code, not in game;
   - the host is started by the test runner. A real game server starts it from the assignment (milestone 7);
   - the pair teleport and eliminations are still test switches. |
-| 7 | A headless host on the VPS (`-nullrhi`) | **PARTIAL: a headless host started by the agent runs a whole match, on this PC** (2026-11-06). Not on the VPS yet (see "On the VPS" below). | **The agent starts and stops the host.** With `--launcher`, the agent starts one host per assignment: the map from the assignment (0 `Jungle_P`, 1 `Jungle2_P`), `?servernonce=`, the pre-match player count, and `-FuncHeadlessClient` (`-nullrhi -nosound`) with `--headless`. It stops the host `--linger-ms` after the result (the players' post-match screen). A host that exits before its result aborts the match with the backend (`host-exited`, seen in game), and one that never starts does too. Team modes are refused for now (`unsupported-mode`), and the backend re-queues them. Each new match starts with a clean control folder.
+| 7 | A headless host on the VPS (`-nullrhi`) | **PARTIAL: a headless host started by the agent runs a whole match, on this PC** (2026-11-06). Not on the VPS yet (see "On the VPS" below). | **The agent starts and stops the host.** With `--launcher`, the agent starts one host per assignment: the map from the assignment (0 `Jungle_P`, 1 `Jungle2_P`), `?servernonce=`, the pre-match player count, and `-FuncHeadlessClient` (`-nullrhi -nosound`) with `--headless`. It stops the host `--linger-ms` after the result (the players' post-match screen). A host that exits before its result aborts the match with the backend (`host-exited`, seen in game), and one that never starts does too. Team modes are refused for now (`unsupported-mode`), and the backend re-queues them. Each new match starts with a clean control folder (since 2026-11-07: a folder of its own, `<control>/<matchId>`).
 
   **In game** (`netplay_run.py --menu --agent-host --headless-host`):
   - **the start:** the headless host was ready 5 to 7 s after launch (about 25 s with graphics);
@@ -201,6 +201,50 @@ In game, with the host putting the two players on different teams (`CULLING_NETP
 
 No crashes. Not yet released: it ships with the next client release.
 
+## Hardening for real players (2026-11-07, the audit's P2 list)
+
+Branches `netplay-hardening` (host module, agent, test tools) and `shared-match-hardening` (backend, with `master-audit` merged in). None of it was run in game: the in-game runs are another session's (the commands are under "Party tests"). Each fix has its test; the host module's code now runs in a native harness (`patch/test_netplay_native.c`, run by `test_netplay.py`): the release build's own code against fake game objects, with a real control folder.
+
+| Finding | What changed | Test |
+|---|---|---|
+| **H1** PreLogin froze the match (8 s wait per login on the game thread) | The backend gives the agent each ticket's SHA-256, player and team (the assignment once running, and the ready answer). The agent writes `tickets.txt` (temp file + rename): `<sha256> <team> <userID>` per ticket still good. PreLogin hashes the `?Nonce=` ticket (SHA-256 in the module) and looks it up: no wait, no `Sleep`. One use per ticket (the join table keeps the hashes); each use goes to the agent as `used-<n>`, which it confirms with the backend's new `ticket-used` (single use there too). No `tickets.txt` = "Server not ready". 64 joins at most; refusals traced at first, then every 100th. | native `tickets`: let in, replay, forged, none, 300 refusals in ~15 ms, no file; `test_no_sleep`; `sharedmatch.test.js` "local ticket checks"; `test_agent.py` part 1 |
+| **H2** a failed result post blocked the server for 90 min | `result.pending` in the match folder until the backend answers 200, 409 (has it / gone) or 400 (refused); retried 1 s, doubling to a minute; posted by the next agent run if this one stops; the host still stops `--linger-ms` after the result | `test_agent.py` part 2: 503, 503, 200; 409 once; resumed by a new agent |
+| **H3** an orphan host stole the next match | `CULLING_NETPLAY_PORT` (the agent's `--port`) is set on the listen URL; `listening` says the port bound (`port=<n>`) and any other aborts the match (`port-mismatch`); one folder per match, `<control>/<matchId>`; `<control>/host.pid` (pid and exe): a starting agent kills a host its last run left once its image name matches | native `listen`; real exe: InitListen writes the bound port back; `test_agent.py` part 2 (fake launcher and host, `test_fake_host.c`) |
+| **H4** the host used a freed player state when a team player left | The join table keeps the connection and player state as `FWeakObjectPtr`s and skips one that's gone; each player's record is cached while it lives, and a leaver is reported from it (`left=1`, placed as out when it left) | native `leaver`: the old code crashed with an access violation |
+| **H5** results follow a client-chosen Steam ID | PreLogin reads the player's net id (UniqueId: the FUniqueNetIdRepl's object at +8, IsValid +0x18, ToString +0x20) and refuses: none, a `steam:` ticket for another Steam ID, an id or userID already in. The id goes into `used-<n>` | native `players`; real exe: AGameModeBase::PreLogin passes uid+8, the game reads ids that way |
+| **M1** no control folder = no ticket check | a pre-match (real) host without its folder lets nobody in | native `nocontrol` |
+| **M2** two alive at the time limit = two winners (refused) | the winner flag 1st, other living after it, the dead after them; teams likewise; the agent also keeps one winner | native `timelimit` (Solo, Duos); `test_agent.py` part 2 |
+| **M3** a cancel didn't stop the host | a cancel (or the match released) stops it | `test_agent.py` part 2 |
+| **M4** the test hook passed behind Caddy | loopback with no proxy header (the operator check), never with `NODE_ENV=production` | `sharedmatch.test.js` |
+| **M5** a refused login entered the join table | a refusal by the game's own PreLogin cancels the join (the ticket stays good) | native `gamerefuses` |
+| **M7** the host got the agent's environment, the secret on argv | the host gets Windows' variables, `FUNC_*` and `CULLING_NETPLAY_*` only; the secret is read from `CULLING_GAMESERVER_SECRET` (or `--secret-file`), `--secret` is refused | `test_agent.py` part 2 |
+| **M8** test switches shipped | compiled only with `NETPLAY_TEST`: `build_netplay.py` writes `netplay_blob.py` (release) and `netplay_blob_test.py`; `patch_netplay.py --test`; `netplay_run.py` uses the test build | `test_switches_only_in_the_test_build` |
+| **L1** `.req` written in place | there is no `.req` any more; the agent's files for the host (`tickets.txt`, `assignment.json`) are temp + rename, and the agent waits for the newline the host ends `used-<n>` and `listening` with | (H1, H3 tests) |
+| **L2** verify-ticket didn't check `joined` | refused "already-joined"; the joined flag is now saved (a backend restart lost it) | `sharedmatch.test.js` "a backend restart mid-match" |
+| **L3** sync PowerShell in the poll loop, no backoff | the host's pid looked up asynchronously; heartbeats, register and poll errors back off; a backend that forgot the server gets a new register | `test_agent.py` part 2 |
+
+Also found and fixed: `server_replicate`'s stack frame was 0x1038 bytes, over a page with no stack probes in the blob; `build_netplay.py` now refuses a frame of 0x1000 or more (from the object's unwind data), and `test_netplay.py` checks it.
+
+**The control folder now** (`<control>/<matchId>`, the host's `CULLING_NETPLAY_CONTROL`): `listening` (host: `port=<n>`), `tickets.txt` (agent), `used-<n>` (host: `<hash> <userID> <net id>`), `result.txt` and `result.done` (host), `result.pending` and `result.posted` (agent), `host.func.log`. At `<control>`: `assignment.json` (with `control`, the match folder) and `host.pid`.
+
+**Not done here:** the M6, M9 and M10 items (anti-cheat and relevancy, the fixed 3-minute hold, per-tick cost at 16 players), the merged Remaster module, and the rest of the go-live list. Nothing was run in game.
+
+### Party tests (the owner's: party members verified as teammates)
+
+`--party SIZES` lists the players as parties in client order (`2`, `3`, `2,1`, `2,2`), sets `--clients` to the total and needs a team `--queue`. In `--menu` runs the backend's test hook (`POST /api/test/join-mm` with `party: [...]`, `CULLING_TEST_HOOKS=1`, loopback only, never in production) makes each group one real party through the friends and party code, and queues it from its leader's menu as PLAY does; without `--menu` (2 players) `test_players.js --parties` does it through the socket API. With the agent's host (`--agent-host`) the host opens the team mode and puts each player on the ticket's team.
+
+The run's report (`<out>/netplay_run.json`) has:
+- `parties on one team (the backend's assignment)`: each party on one team; groups that fit one team together share it (Trios 2+1, Quads 2+2); groups that don't never do (Trios 2+2);
+- `parties teammates on the host (result.txt)`: the same from the host's own result (`team=` per `user=`), i.e. the teams the players had in game at the end; `evidence.host_teams_trace` has the host's last `teams` lines (`join_team=` per joined player, `order=` with every player state's team).
+
+The commands (from `C:\Culling\wt-netplay`, the backend checkout `C:\Culling\wt-sharedmatch`, with `NODE_PATH=C:\Culling\combined\server\node_modules`):
+- **Duos, a party of 2:** `python patch/netplay_run.py --backend-repo C:\Culling\wt-sharedmatch --menu --agent-host --headless-host --queue ffa_jungle_coop2 --party 2 --out %TEMP%\np-duos-party`
+- **Trios, a party of 3:** `python patch/netplay_run.py --backend-repo C:\Culling\wt-sharedmatch --menu --agent-host --headless-host --queue ffa_jungle_coop3 --party 3 --out %TEMP%\np-trios-party3`
+- **Trios, a party of 2 and a solo:** `python patch/netplay_run.py --backend-repo C:\Culling\wt-sharedmatch --menu --agent-host --headless-host --queue ffa_jungle_coop3 --party 2,1 --out %TEMP%\np-trios-party21`
+- **Quads, two parties of 2:** `python patch/netplay_run.py --backend-repo C:\Culling\wt-sharedmatch --menu --agent-host --headless-host --queue ffa_jungle_coop4 --party 2,2 --out %TEMP%\np-quads-party22`
+
+Trios and Quads start 3 or 4 game clients on one PC (each 960x540, its own test Steam ID `76561197960266902`..`905`). The match must end for the result check: with the test switches (for example `CULLING_NETPLAY_END`) in the environment, or by `--after-join` running out (then only the assignment check is reported). `--restore <out>` undoes an interrupted run.
+
 ## On the VPS (not done: needs the owner)
 
 Nothing below has been run on the VPS. It's the plan, and the list of what blocks real players.
@@ -218,7 +262,7 @@ Nothing below has been run on the VPS. It's the plan, and the list of what block
 2. `Func.Client.dll` patched to the backend's local URL (`patch_client_dll.py`), and the install's `steam_settings` set to the host's own ID and name.
 3. Windows firewall: inbound UDP 7777 for that `Victory.exe`.
 4. The backend: `shared-match-backend` merged into the live server, then `CULLING_SHARED_MATCHES=1`, `CULLING_SHARED_PLAYLISTS=ffa`, `CULLING_GAMESERVER_SECRET=<master>` and `CULLING_GAMESERVER_POOL=gs1@<public IP>:7777`.
-5. The agent as a service, restarted by the watchdog: `node gameserver/agent.js --backend http://127.0.0.1:<port> --id gs1 --secret <node server/allocator.js secret gs1> --host <public IP> --port 7777 --control C:\culling\gameserver\control --launcher <Win64>\Func.Launcher.exe --client-dll <patched dll> --headless`.
+5. The agent as a service, restarted by the watchdog, with `CULLING_GAMESERVER_SECRET=<node server/allocator.js secret gs1>` in the service's environment (never on the command line; `--secret` is refused): `node gameserver/agent.js --backend http://127.0.0.1:<port> --id gs1 --host <public IP> --port 7777 --control C:\culling\gameserver\control --launcher <Win64>\Func.Launcher.exe --client-dll <patched dll> --headless`. The host exe is `patch_netplay.py` applied to a copy of the stock exe: the release build of the module, with no test switches.
 6. Two real PCs (not this one) join a Solo match before the setting is turned on for everyone.
 
 ## How to run it
@@ -232,7 +276,9 @@ Nothing below has been run on the VPS. It's the plan, and the list of what block
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless. `--queue ffa_jungle_coop2` queues Duos. `--client-exe <exe>` gives the clients another exe (a released client) while the host runs the netplay exe as `VictoryHost.exe`.
+The host exe is built with the module's **test build** (`patch_netplay.py --test`): the test switches below exist only there.
+
+Options: `--clients 2` starts a second player (`--menu`: up to 4). `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`, `_PREMATCH=N`. `--no-client` now watches a lone host for `--after-join` seconds. `--shots N` saves a desktop screenshot every N seconds after the joins. `--backend-repo <checkout of shared-match-backend>` runs the whole chain locally (backend, agent, test players, tickets); `--bad-ticket` tampers with the second client's ticket. `--menu` (with `--backend-repo`) starts the clients at their menus and lets them join by the menu's own match-ready handling. `--restore <out>` undoes an interrupted run. `--agent-host` (with `--menu`) has the agent start and stop the host; `--headless-host` makes it headless. `--queue ffa_jungle_coop2` queues Duos (`_coop3` Trios, `_coop4` Quads). `--party SIZES` queues the players as parties (see "Party tests" below). `--client-exe <exe>` gives the clients another exe (a released client) while the host runs the netplay exe as `VictoryHost.exe`. A backend checkout without `server/node_modules` (a worktree) runs with `NODE_PATH=C:\Culling\combined\server\node_modules`.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.
