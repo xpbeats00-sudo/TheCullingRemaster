@@ -357,8 +357,11 @@ async function postResults() {
 
 function take(a) {
   if (!a) {
-    if (assignment && readyPosted) log("released", { matchId: assignment.matchId });
-    if (assignment && readyPosted) drop();
+    if (assignment && readyPosted && !results.has(assignment.matchId)) {
+      log("released", { matchId: assignment.matchId });
+      if (host && host.matchId === assignment.matchId && !host.stopAt) stopHost("released");
+      drop();
+    }
     return;
   }
   if (assignment && assignment.matchId === a.matchId) { takeTickets(a.tickets); return; }
@@ -400,8 +403,12 @@ async function heartbeat() {
     if (r.status === 200 && r.json) {
       if (r.json.heartbeatMs) heartbeatMs = r.json.heartbeatMs;
       if (r.json.cancel) {
-        log("cancel", { matchId: r.json.cancel });
-        if (assignment && assignment.matchId === r.json.cancel) drop();
+        // The backend gave the match up (cancelled, or no longer this server's):
+        // its host goes too, or it would run on with nobody's result counting.
+        const mine = assignment && assignment.matchId === r.json.cancel;
+        if (mine || (host && host.matchId === r.json.cancel)) log("cancel", { matchId: r.json.cancel });
+        if (host && host.matchId === r.json.cancel) stopHost("cancelled");
+        if (mine) drop();
       }
       take(r.json.assignment);
     } else log("heartbeat-refused", { status: r.status, json: r.json });

@@ -440,6 +440,19 @@ def scripted():
         assert json.load(open(os.path.join(ag5.ctl, mid6, "result.posted")))["status"] == 200
         print("ok    a result left in result.pending by an agent that stopped: posted by the next one (attempt %d), no new host"
               % ok["attempt"])
+
+        # The backend cancels a running match (a player crashed out, the backend gave up on it): the host is stopped.
+        mid7 = "7777777777777777"
+        backend.match(mid7)
+        h7 = ag5.event("host-started", pred=lambda e: e.get("matchId") == mid7)["pid"]
+        until(lambda: any(c[1].get("matchId") == mid7 for c in backend.of("ready")), 15, "ready")
+        backend.assignment, backend.cancel = None, mid7
+        ag5.event("cancel", pred=lambda e: e.get("matchId") == mid7)
+        stopped = ag5.event("host-stopped", pred=lambda e: e.get("matchId") == mid7)
+        until(lambda: not running(h7), 10, "the cancelled match's host to stop")
+        assert stopped["why"] == "cancelled", stopped
+        backend.cancel = None
+        print("ok    a cancelled match: its host stopped")
     finally:
         for a in agents:
             a.kill()
