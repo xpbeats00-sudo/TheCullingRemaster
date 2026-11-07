@@ -40,6 +40,13 @@ typedef int i32;
 typedef unsigned char u8;
 typedef unsigned short u16;
 
+/* Test switches (CULLING_NETPLAY_GIVE, _TELEPORT, _DAMAGE, _ATTACK,
+ * _ATTACK_ONE_SIDE, _END, _MOVE, _TEAM_SPLIT) and the old test host without
+ * CULLING_NETPLAY_PREMATCH (no "Match is over!" check, the no-end flag) are
+ * compiled only into the test build (build_netplay.py --test, defines
+ * NETPLAY_TEST; netplay_run.py uses it). The release build has none of
+ * them: a host there always runs the game's own PreLogin and end checks. */
+
 /* ---- the game (RVA = VA - 0x140000000) --------------------------------- */
 
 /* Globals. */
@@ -575,10 +582,12 @@ void np_prelogin(void *gm, void *options, void *address, void *uid, void *error)
             return;
         }
     }
-    if (prematch_expected() > 0)
-        FN(R_GAME_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
+#ifdef NETPLAY_TEST
+    if (prematch_expected() <= 0)
+        FN(R_BASE_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);   /* the old test host: no "Match is over!" */
     else
-        FN(R_BASE_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
+#endif
+    FN(R_GAME_PRELOGIN, prelogin_fn)(gm, options, address, uid, error);
     if (trace_begin(&l, "prelogin")) {
         kv(&l, "error_len", (u64)((struct fstring *)error)->num, 0);
         kv(&l, "game_checks", prematch_expected() > 0, 0);
@@ -986,6 +995,7 @@ static i32 prerep_on(void)
     return env_on(var, &prerep_state);
 }
 
+#ifdef NETPLAY_TEST   /* test switches: GIVE, TELEPORT, ATTACK, DAMAGE (build_netplay.py --test) */
 /* CULLING_NETPLAY_GIVE=1: 10 s after the joined player has a pawn, the host
  * gives it, once, a weapon class a bot carries that it doesn't (SpawnWeapon),
  * so the test can see a mid-match inventory change reach the client. */
@@ -1106,12 +1116,15 @@ static void host_teleport_pair(u8 **conns, i32 nconn, u32 now)
  * (UGameplayStatics::ApplyDamage, as the autotest mode kills with), until
  * it dies; each hit and the victim's health are traced. */
 #define R_APPLY_DAMAGE     0x132cec0   /* float UGameplayStatics::ApplyDamage(victim, amount, instigator controller, causer, damage type) */
-#define R_HEALTH           0x262d20    /* health component (pawn +0x830): current health */
-#define O_CH_HEALTH        0x830       /* AShooterCharacter health component */
 typedef float (*apply_damage_fn)(void *victim, float amount, void *instigator, void *causer, void *type);
-typedef float (*health_fn)(void *comp);
 static i32 dmg_state = 1, dmg_hits;
 static u32 dmg_next;
+
+#endif
+
+#define R_HEALTH           0x262d20    /* health component (pawn +0x830): current health */
+#define O_CH_HEALTH        0x830       /* AShooterCharacter health component */
+typedef float (*health_fn)(void *comp);
 
 /* Is obj an AShooterCharacter? The class base-chain test the Remaster
  * module uses (showdown_rounds.c is_a): the class's own chain entry at its
@@ -1140,6 +1153,7 @@ static i32 health_of(u8 *pawn)
     return h ? (i32)FN(R_HEALTH, health_fn)(h) : -1;
 }
 
+#ifdef NETPLAY_TEST   /* CULLING_NETPLAY_DAMAGE */
 static void host_damage(u8 **conns, i32 nconn, u32 now)
 {
     static const u16 var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','D','A','M','A','G','E',0 };
@@ -1173,6 +1187,8 @@ static void host_damage(u8 **conns, i32 nconn, u32 now)
     }
 }
 
+#endif
+
 /* Kill credit and the scoreboard: the game state's player records
  * (AVictoryGameState +0x468, 0x150 bytes each, the scoreboard's source; the
  * Remaster module reads the same ones). Traced for the two joined players on
@@ -1192,6 +1208,7 @@ static void host_damage(u8 **conns, i32 nconn, u32 now)
 #define O_C_PLAYERSTATE    0x420       /* AController::PlayerState */
 #define O_PAWN_PLAYERSTATE 0x420       /* APawn::PlayerState (registered at 0x420 like AController's; host_watch checks it) */
 
+#ifdef NETPLAY_TEST   /* the attack test's record traces */
 static u8 *target_ps;               /* a client's first opponent (client_attack) */
 
 static void trace_records(u8 *world, const char *tag, u8 *ps_a, u8 *ps_b)
@@ -1253,6 +1270,8 @@ static void trace_records(u8 *world, const char *tag, u8 *ps_a, u8 *ps_b)
     }
     trace_end(&l);
 }
+
+#endif
 
 /* The scoreboard's own copy: AVictoryGameState::ScoreboardData (+0x498, a
  * replicated TArray of 0xb0-byte FPlayerScoreboardData; its property list,
@@ -1344,13 +1363,18 @@ static void trace_scoreboard(u8 *world, const char *tag)
 #define O_GS_REMAINING     0x4e0       /* AShooterGameState::RemainingTime */
 #define O_GS_ELAPSED       0x4e8       /* seconds InProgress (showdown_rounds.c GS_ELAPSED) */
 #define REC_FLAGS          0x28        /* bIsAlive, then the record's other bools (bIsWinner among them) */
+#ifdef NETPLAY_TEST   /* CULLING_NETPLAY_END */
 static const u16 end_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','E','N','D',0 };
+#endif
+
 static const u16 ms_waiting[] = { 'W','a','i','t','i','n','g','T','o','S','t','a','r','t',0 };
 static const u16 ms_progress[] = { 'I','n','P','r','o','g','r','e','s','s',0 };
 static const u16 ms_post[] = { 'W','a','i','t','i','n','g','P','o','s','t','M','a','t','c','h',0 };
 static const u16 ms_leaving[] = { 'L','e','a','v','i','n','g','M','a','p',0 };
+#ifdef NETPLAY_TEST
 static i32 end_state = 1, end_phase;  /* end_state: 1 unread, 2 "1", 3 "2", 4 off; end_phase: 0 holding, 1 waiting, 2 released */
 static u32 end_at;
+#endif
 static u64 state_names[4];
 
 /* 1 WaitingToStart, 2 InProgress, 3 WaitingPostMatch, 4 LeavingMap, 0 other, -1 no game state */
@@ -1392,6 +1416,7 @@ static u8 *record_of(u8 *world, u8 *ps)
     return 0;
 }
 
+#ifdef NETPLAY_TEST   /* CULLING_NETPLAY_END */
 static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
 {
     u8 *pc0 = nconn > 0 && conns[0] ? F(conns[0], O_CONN_PC, u8 *) : 0;
@@ -1443,6 +1468,8 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
 }
 
 
+#endif
+
 /* The match result for the agent (CULLING_NETPLAY_CONTROL), written once
  * when the match reaches WaitingPostMatch: per joined player (by the verify
  * request it passed with) its record's death order and placement, kills,
@@ -1468,11 +1495,13 @@ static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
 typedef void (*set_team_fn)(void *ps, i32 team, u8 b);
 static const u16 teamsize_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','A','M','S','I','Z','E',0 };
 static i32 team_n = -1;
+#ifdef NETPLAY_TEST
 /* CULLING_NETPLAY_TEAM_SPLIT=1 (a test): the second joined player goes to
  * team 2 whatever the backend said, so the players are on different teams,
  * as a party and a solo would be (two solos get one team in Duos). */
 static const u16 split_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','T','E','A','M','_','S','P','L','I','T',0 };
 static i32 split_state = 1;
+#endif
 
 static i32 team_size_env(void)
 {
@@ -1508,8 +1537,10 @@ static void host_teams(u8 *world)
         return;
     for (k = 0; k <= MAX_TEAMS; k++)
         used[k] = 0;
+#ifdef NETPLAY_TEST
     if (t->n >= 2 && t->team[1] == t->team[0] && env_on(split_var, &split_state))
         t->team[1] = t->team[0] + 1;
+#endif
     for (i = 0; i < t->n; i++)
         if (t->ps[i] && t->team[i] > 0 && t->team[i] <= MAX_TEAMS) {
             used[t->team[i]]++;
@@ -1698,6 +1729,7 @@ static void ctl_result(u8 *driver, u8 *world)
     }
 }
 
+#ifdef NETPLAY_TEST   /* the attack test's watch, CULLING_NETPLAY_TELEPORT=1 */
 static u32 watch_next;
 
 static void host_watch(u8 *world, u8 **conns, i32 nconn, u32 now)
@@ -1760,6 +1792,8 @@ static void host_teleport(u8 *remote, u32 now)
     }
 }
 
+#endif
+
 /* The pass's actor list, kept off the stack: with it there the frame was
  * 0x1038 bytes, more than a page, and the blob has no stack probes
  * (build_netplay.py MAX_FRAME). Through a pointer, as join_table(). */
@@ -1805,6 +1839,7 @@ static void server_replicate(u8 *driver)
     if (!world || nconn <= 0 || now - last_rep < REP_PERIOD_MS)
         return;
     last_rep = now;
+#ifdef NETPLAY_TEST
     {
         i32 c0;
         for (c0 = 0; c0 < nconn; c0++) {
@@ -1819,6 +1854,7 @@ static void server_replicate(u8 *driver)
         host_damage(conns, nconn, now);
         host_watch(world, conns, nconn, now);
     }
+#endif
     {
         u8 *gm1 = F(world, O_WORLD_AUTH_GM, u8 *);
         i32 c1;
@@ -2048,6 +2084,7 @@ static void client_trace(u8 *driver)
     }
 }
 
+#ifdef NETPLAY_TEST   /* CULLING_NETPLAY_MOVE, _ATTACK on a client */
 /* A client with CULLING_NETPLAY_MOVE=1 walks its own pawn: AddMovementInput
  * (APawn vtable +0x6b0, as the autotest mode drives it), +X for 3 s then -X
  * for 3 s, every frame. The client's movement component sends that to the
@@ -2148,6 +2185,8 @@ static void client_attack(u8 *driver)
         trace_end(&l);
     }
 }
+
+#endif
 
 /* Replaces the Steam driver's vtable slot +0x278 (TickFlush). */
 
@@ -2459,16 +2498,20 @@ void np_tick_flush(void *driver, float dt)
                 }
             }
         }
+#ifdef NETPLAY_TEST
         else if (gm && end_phase < 2)
             F(gm, O_GM_NO_END, u8) = 1;
         else if (gm && end_phase == 2 && F(gm, O_GM_NO_END, u8))
             F(gm, O_GM_NO_END, u8) = 0;             /* released once (CULLING_NETPLAY_END) */
+#endif
         server_replicate((u8 *)driver);
         if (world)
             ctl_result((u8 *)driver, world);
     } else if (driver && F(driver, O_ND_SERVERCONN, void *)) {
+#ifdef NETPLAY_TEST
         client_move((u8 *)driver);
         client_attack((u8 *)driver);
+#endif
         client_trace((u8 *)driver);
     }
     FN(R_STEAM_TICKFLUSH, tick_flush_fn)(driver, dt);

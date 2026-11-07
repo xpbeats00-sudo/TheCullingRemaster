@@ -58,13 +58,14 @@ def stand_in(path):
     open(path, "wb").write(data)
 
 
-def _verify_patched(path):
+def _verify_patched(path, test=False):
+    NP = PN.blob(test)
     data = open(path, "rb").read()
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     nsec_at, size_at = pe + 6, pe + 24 + 56
     table = pe + 24 + struct.unpack_from("<H", data, pe + 20)[0]
     at = table + 40 * PN.STOCK_NUM_SECTIONS
-    header, raw, image_size, edits = PN.layout()
+    header, raw, image_size, edits = PN.layout(test)
     sect_va = IMAGE_BASE + NP.SECTION_RVA
     # 10 sections, the bumped image size, the section header and its raw bytes appended.
     assert struct.unpack_from("<H", data, nsec_at)[0] == PN.STOCK_NUM_SECTIONS + 1
@@ -119,6 +120,12 @@ def test_trampolines():
 def test_stand_in():
     tmp = tempfile.mkdtemp()
     try:
+        # The test build of the module patches the same way.
+        pt = os.path.join(tmp, "VictoryTest.exe")
+        stand_in(pt)
+        assert PN.patch(pt, test=True) is True
+        _verify_patched(pt, test=True)
+        assert PN.check(pt, test=True) == {"section": True, "edits": True}
         p = os.path.join(tmp, "Victory.exe")
         stand_in(p)
         st = PN.check(p)
@@ -146,18 +153,44 @@ def test_stand_in():
 
 def test_blob_is_position_independent():
     # The builder rejects any relocation that isn't REL32, so a successful
-    # build proves the blob needs no base relocations. Rebuild and compare.
-    blob, where = build_netplay.build()
-    assert blob == NP.BLOB, "netplay_blob.py is OUT OF DATE (run build_netplay.py)"
-    assert where["np_listen"] == NP.NP_LISTEN and where["np_self_rva"] == NP.NP_SELF_RVA
-    for slot, stock_fn, entry in PN.NOTIFY_SLOTS:
-        assert where[entry] == getattr(NP, entry.upper()), entry
-    print("blob: pass (%d bytes, position independent, up to date)" % len(blob))
+    # build proves the blob needs no base relocations. Rebuild and compare
+    # (both builds: release and test).
+    for test in (False, True):
+        mod = PN.blob(test)
+        blob, where = build_netplay.build(test)
+        assert blob == mod.BLOB, "%s is OUT OF DATE (run build_netplay.py)" % mod.__name__
+        assert mod.TEST_BUILD is test
+        assert where["np_listen"] == mod.NP_LISTEN and where["np_self_rva"] == mod.NP_SELF_RVA
+        for slot, stock_fn, entry in PN.NOTIFY_SLOTS:
+            assert where[entry] == getattr(mod, entry.upper()), entry
+        print("blob%s: pass (%d bytes, position independent, up to date)" % (" (test build)" if test else "", len(blob)))
+
+
+# The test switches (environment variables) only the test build reads.
+TEST_SWITCHES = ("CULLING_NETPLAY_GIVE", "CULLING_NETPLAY_TELEPORT", "CULLING_NETPLAY_DAMAGE", "CULLING_NETPLAY_ATTACK",
+                 "CULLING_NETPLAY_ATTACK_ONE_SIDE", "CULLING_NETPLAY_END", "CULLING_NETPLAY_MOVE", "CULLING_NETPLAY_TEAM_SPLIT")
+
+
+def test_switches_only_in_the_test_build():
+    # A variable's name is in the blob as the UTF-16 string the module asks
+    # GetEnvironmentVariableW for (NUL-terminated, so _ATTACK isn't found in
+    # _ATTACK_ONE_SIDE). The release build has none; the test build all.
+    rel, tst = PN.blob(False).BLOB, PN.blob(True).BLOB
+    for name in TEST_SWITCHES:
+        w = (name + "\0").encode("utf-16-le")
+        assert w not in rel, "the release build reads " + name
+        assert w in tst, "the test build doesn't read " + name
+    # Kept in both: the real host's settings.
+    for name in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_TEAMSIZE", "CULLING_NETPLAY_TRACE"):
+        w = (name + "\0").encode("utf-16-le")
+        assert w in rel and w in tst, name
+    print("test switches: pass (%d only in the test build; the release build has none)" % len(TEST_SWITCHES))
 
 
 def test_stack_frames():
     # No stack probes in the blob (/Gs1000000, no __chkstk): every function's
-    # frame, from its unwind data, stays under a page.
+    # frame, from its unwind data, stays under a page (the test build's too).
+    assert max(build_netplay.build_frames(test=True).values()) < build_netplay.MAX_FRAME
     frames = build_netplay.build_frames()
     assert len(frames) >= 10, "unwind data for %d functions only" % len(frames)
     name, size = max(frames.items(), key=lambda kv: kv[1])
@@ -402,6 +435,7 @@ def test_real_exe(path):
 
 if __name__ == "__main__":
     test_blob_is_position_independent()
+    test_switches_only_in_the_test_build()
     test_stack_frames()
     test_trampolines()
     test_stand_in()

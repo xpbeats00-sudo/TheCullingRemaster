@@ -9,8 +9,9 @@ UE handshake gets (Hello, Login, Join, the connection's PlayerController).
 
 How it runs, the way the launcher's PLAY does and the autotest runner does:
 - Builds the host exe: a copy of the stock exe (C:/Culling/TheCulling, read
-  only) with patch_netplay.py (the .netp module; not the Remaster's
-  patch_exe.py fixes: the two are exclusive on one exe for now).
+  only) with patch_netplay.py and the module's TEST build (the
+  CULLING_NETPLAY_* test switches; a release host has none), not the
+  Remaster's patch_exe.py fixes: the two are exclusive on one exe for now.
 - Waits until no Victory.exe runs (one it didn't start is the user's or the
   autotest's: never touched).
 - Backs up the test copy's Victory.exe (%LOCALAPPDATA%/TheCullingRemaster/Game:
@@ -347,7 +348,7 @@ def menu_chain(a):
     paks = os.path.join(GAME, "Victory", "Content", "Paks")
     host_exe = os.path.join(a.out, "Victory.netplay.exe")
     shutil.copyfile(STOCK_EXE, host_exe)
-    PN.patch(host_exe)
+    PN.patch(host_exe, test=True)            # the test build: the CULLING_NETPLAY_* test switches work
     dst = os.path.join(WIN64, "Victory.exe")
     keep = os.path.join(a.out, "Victory.exe.backup")
     if not os.path.exists(keep):
@@ -570,8 +571,8 @@ def main():
 
     host_exe = os.path.join(a.out, "Victory.netplay.exe")
     shutil.copyfile(STOCK_EXE, host_exe)
-    PN.patch(host_exe)
-    st = PN.check(host_exe)
+    PN.patch(host_exe, test=True)            # the test build: the CULLING_NETPLAY_* test switches work
+    st = PN.check(host_exe, test=True)
     assert st["section"] and st["edits"], st
     log("built", host_exe)
 

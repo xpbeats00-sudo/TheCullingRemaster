@@ -37,8 +37,12 @@ What it does, from exact stock bytes (each checked first):
 Idempotent (running it again is a no-op). check(path) reports state without
 changing the file.
 
-usage: python patch_netplay.py <copy of Victory.exe>
-       python patch_netplay.py --check <Victory.exe>
+The release build of the module (netplay_blob.py) by default; the test
+build (netplay_blob_test.py: the test switches, build_netplay.py) with
+test=True / --test, for netplay_run.py.
+
+usage: python patch_netplay.py [--test] <copy of Victory.exe>
+       python patch_netplay.py --check [--test] <Victory.exe>
 """
 import os
 import struct
@@ -113,8 +117,17 @@ def trampoline(at, base_reg, demo, join):
     return bytes(code)
 
 
-def layout():
+def blob(test=False):
+    """The module: the release build, or the test one (the test switches)."""
+    if not test:
+        return NP
+    import netplay_blob_test
+    return netplay_blob_test
+
+
+def layout(test=False):
     """(section header, raw data, image size, [(file offset, stock bytes, new bytes)])."""
+    NP = blob(test)
     sect_va = IMAGE_BASE + NP.SECTION_RVA
     content = bytearray(NP.BLOB)
     target = sect_va + NP.NP_LISTEN
@@ -149,13 +162,13 @@ def _pe(data, path):
     return pe, pe + 6, pe + 24 + 56, pe + 24 + optsz      # header, &NumberOfSections, &SizeOfImage, section table
 
 
-def check(path):
-    """{"section": bool, "edits": bool}: whether the .netp module and every
-    byte edit are in place. Raises ValueError for an exe this patch isn't for
-    (any edited range neither stock nor patched)."""
+def check(path, test=False):
+    """{"section": bool, "edits": bool}: whether the .netp module (the build
+    asked for) and every byte edit are in place. Raises ValueError for an exe
+    this patch isn't for (any edited range neither stock nor patched)."""
     data = bytearray(open(path, "rb").read())
     pe, nsec_at, size_at, table = _pe(data, path)
-    header, raw, image_size, edits = layout()
+    header, raw, image_size, edits = layout(test)
     nsec = struct.unpack_from("<H", data, nsec_at)[0]
     at = table + 40 * STOCK_NUM_SECTIONS
     done = []
@@ -177,13 +190,14 @@ def check(path):
     raise ValueError("%s is not the Victory.exe this patch is for (%d sections)" % (path, nsec))
 
 
-def patch(path):
-    """Apply the edits and the section to the file at path (a copy; never the
-    stock exe). Returns True when the file changed. Idempotent."""
+def patch(path, test=False):
+    """Apply the edits and the section to the file at path (a copy of the
+    stock exe; never the stock exe itself). Returns True when the file
+    changed. Idempotent. test: the test build of the module."""
     data = bytearray(open(path, "rb").read())
     pe, nsec_at, size_at, table = _pe(data, path)
-    header, raw, image_size, edits = layout()
-    state = check(path)
+    header, raw, image_size, edits = layout(test)
+    state = check(path, test)
     if state["section"] and state["edits"]:
         return False
     nsec = struct.unpack_from("<H", data, nsec_at)[0]
@@ -209,9 +223,11 @@ def patch(path):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:2] == ["--check"]:
-        st = check(sys.argv[2])
-        print("%s: section %s, edits %s" % (sys.argv[2], st["section"], st["edits"]))
+    args = [x for x in sys.argv[1:] if x != "--test"]
+    test = "--test" in sys.argv
+    if args[:1] == ["--check"]:
+        st = check(args[1], test)
+        print("%s: section %s, edits %s" % (args[1], st["section"], st["edits"]))
         sys.exit(0 if st["section"] and st["edits"] else 1)
-    changed = patch(sys.argv[1])
-    print("%s: netplay module + edits%s" % (sys.argv[1], "" if changed else " (already)"))
+    changed = patch(args[0], test)
+    print("%s: netplay module%s + edits%s" % (args[0], " (test build)" if test else "", "" if changed else " (already)"))
