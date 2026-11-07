@@ -168,6 +168,63 @@ def real_backend(repo, port):
         shutil.rmtree(out, ignore_errors=True)
 
 
+def real_backend_parties(repo, port):
+    """Part 1b: test_players.js --parties against the real backend: real
+    parties (the socket API) queue Trios as 2 + 1 and Quads as 2 + 2; the
+    assignment, match-ready and tickets.txt put each party on one team."""
+    ids = ("steam:76561197960266902", "steam:76561197960266903", "steam:76561197960266904", "steam:76561197960266905")
+    for queue, parties, teamsize in (("ffa_jungle_coop3", "2,1", 3), ("ffa_jungle_coop4", "2,2", 4), ("ffa_jungle_coop3", "2,2", 3)):
+        out = tempfile.mkdtemp(prefix="culling-agent-party-")
+        ctl = os.path.join(out, "control")
+        url = "http://127.0.0.1:%d" % port
+        procs = []
+        try:
+            procs.append(LB.start(repo, os.path.join(out, "backend-data"), port, log=os.path.join(out, "backend.log")))
+            procs.append(subprocess.Popen(["node", os.path.join(HERE, "agent.js"), "--backend", url, "--id", LB.SERVER_ID,
+                                           "--control", ctl, "--log", os.path.join(out, "agent.log")],
+                                          env=agent_env(LB.secret()), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            time.sleep(1.5)
+            n = sum(int(x) for x in parties.split(","))
+            players = subprocess.Popen(["node", os.path.join(HERE, "test_players.js"), "--backend", url, "--server-dir",
+                                        os.path.join(repo, "server"), "--out", out, "--parties", parties, "--queue", queue,
+                                        "--userids", ",".join(ids[:n])],
+                                       stdout=open(os.path.join(out, "players.log"), "wb"), stderr=subprocess.STDOUT)
+            procs.append(players)
+            wait(os.path.join(ctl, "assignment.json"))
+            asg = json.load(open(os.path.join(ctl, "assignment.json")))
+            assert asg["teamSize"] == teamsize and asg["players"] == n, asg
+            team = {p["userID"]: t["team"] for t in asg["teams"] for p in t["players"]}
+            with open(os.path.join(asg["control"], "listening"), "w", newline="\n") as f:
+                f.write("port=7777\n")
+            wait(os.path.join(out, "tickets.json"))
+            tickets = json.load(open(os.path.join(out, "tickets.json")))
+            groups = {}
+            for t in tickets:
+                assert t["team"] == team[t["userID"]], (t, team)
+                groups.setdefault(t["group"], []).append(t)
+            for g in groups.values():
+                assert len({t["team"] for t in g}) == 1, ("a party split", g)
+                if len(g) > 1:
+                    assert g[0]["partyId"] and all(t["readyPartyId"] == g[0]["partyId"] for t in g), g
+            sizes = [len(g) for g in groups.values()]
+            if sum(sizes) <= teamsize:
+                assert len({t["team"] for t in tickets}) == 1, "everyone fits one team: " + str(team)
+            else:
+                assert len({t["team"] for t in tickets}) == len(groups), "parties that don't fit together never share: " + str(team)
+            wait(os.path.join(asg["control"], "tickets.txt"))
+            lines = sorted(open(os.path.join(asg["control"], "tickets.txt")).read().splitlines())
+            assert lines == sorted("%s %d %s" % (sha(t["nonce"]), t["team"], t["userID"]) for t in tickets), lines
+            print("ok    %s as %s: teams %s (each party one team%s); tickets.txt has each player's team"
+                  % (queue, " + ".join(parties.split(",")), [team[t["userID"]] for t in tickets],
+                     ", together: they fit" if sum(sizes) <= teamsize else ", apart: they don't fit one team"))
+        finally:
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+            time.sleep(0.5)
+            shutil.rmtree(out, ignore_errors=True)
+
+
 # ---- part 2: a scripted backend and a fake host ------------------------------------
 
 class Backend:
@@ -532,6 +589,8 @@ def main():
     if a.backend_repo:
         print("part 1: the real backend")
         real_backend(a.backend_repo, a.port)
+        print("part 1b: parties through test_players.js (Trios 2 + 1, Quads 2 + 2, Trios 2 + 2)")
+        real_backend_parties(a.backend_repo, a.port)
     else:
         print("part 1: skipped (no --backend-repo)")
     print("part 2: a scripted backend, a fake launcher and host")

@@ -7,11 +7,16 @@
 //
 // usage: node test_players.js --backend http://127.0.0.1:8123 --server-dir <backend repo>/server
 //          --out <dir> [--count 2] [--queue ffa_jungle] [--wait-ms 900000]
-//          [--userids steam:7656...,steam:7656...]
+//          [--userids steam:7656...,steam:7656...] [--parties 2,1]
 // --userids: the accounts' userIDs, in order (claimed: a game login from
 // the player's address first, then the account claims that profile). The
 // host binds a ticket to the joining game's Steam ID, so a test whose game
 // clients have fixed Steam IDs gives them here.
+// --parties: the players as groups, in order ("2,1": a party of the first
+// two and a solo; "2,2": two parties of 2), made real parties through the
+// backend's socket API as the Friends panel does (friend request and
+// accept, party invite and accept). Each party's leader queues it (the
+// members follow, as with PLAY); --count is the parties' total.
 "use strict";
 
 const fs = require("fs");
@@ -26,6 +31,8 @@ const count = parseInt(arg("count", "2"), 10);
 const queue = arg("queue", "ffa_jungle");
 const waitMs = parseInt(arg("wait-ms", "900000"), 10);
 const userids = (arg("userids", "") || "").split(",").filter(Boolean);
+const parties = (arg("parties", "") || "").split(",").filter(Boolean).map((n) => parseInt(n, 10));
+const total = parties.length ? parties.reduce((a, b) => a + b, 0) : count;
 // The backend checkout's own socket.io-client, else one on NODE_PATH (a worktree without node_modules).
 const ioClient = (() => { try { return require(path.join(arg("server-dir"), "node_modules", "socket.io-client")); } catch { return require("socket.io-client"); } })();
 
@@ -47,6 +54,35 @@ function request(method, p, body, headers = {}) {
 }
 
 const once = (socket, event) => new Promise((resolve) => socket.once(event, resolve));
+
+// A Friends-panel action, answered with remaster-friend-result.
+function act(p, event, msg) {
+  const r = new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(p.name + ": no answer to " + event)), 10000);
+    const on = (m) => { if (m && m.action === event) { clearTimeout(t); p.socket.off("remaster-friend-result", on); resolve(m); } };
+    p.socket.on("remaster-friend-result", on);
+  });
+  p.socket.emit(event, msg);
+  return r;
+}
+
+// leader + members: one party, as two menus would make it.
+async function makeParty(leader, members) {
+  let partyId = null;
+  for (const m of members) {
+    await act(leader, "friend-request", { username: m.name });
+    const fr = await act(m, "friend-accept", { username: leader.name });
+    if (!fr.ok && fr.error !== "no-request") throw new Error(m.name + ": friend-accept " + JSON.stringify(fr));
+    const invited = once(m.socket, "remaster-party-invite");
+    const inv = await act(leader, "party-invite", { username: m.name });
+    if (!inv.ok) throw new Error(leader.name + ": party-invite " + JSON.stringify(inv));
+    const got = await act(m, "party-accept", { partyId: (await invited).partyId });
+    if (!got.ok) throw new Error(m.name + ": party-accept " + JSON.stringify(got));
+    partyId = got.partyId;
+  }
+  log("party", { leader: leader.name, members: members.map((m) => m.name), partyId });
+  return partyId;
+}
 
 async function player(i) {
   const name = "Shared Tester " + (i + 1);
@@ -74,7 +110,17 @@ async function player(i) {
 (async () => {
   fs.mkdirSync(out, { recursive: true });
   const players = [];
-  for (let i = 0; i < count; i++) players.push(await player(i));
+  for (let i = 0; i < total; i++) players.push(await player(i));
+  // The groups: [leader, ...members] (each solo its own group).
+  const groups = [];
+  if (parties.length) {
+    let k = 0;
+    for (const n of parties) { groups.push(players.slice(k, k + n)); k += n; }
+  } else for (const p of players) groups.push([p]);
+  for (const g of groups) {
+    const partyId = g.length > 1 ? await makeParty(g[0], g.slice(1)) : null;
+    for (const p of g) { p.partyId = partyId; p.group = groups.indexOf(g); }
+  }
   const readies = players.map((p) => new Promise((resolve) => p.socket.on("match-ready", (m) => { p.ready = m; log("match-ready", { name: p.name, gameServer: m.gameServer, netplay: m.netplay, team: m.team }); resolve(m); })));
   const finished = players.map((p) => new Promise((resolve) => p.socket.on("remaster-shared-match", (m) => {
     p.events.push(m);
@@ -82,15 +128,13 @@ async function player(i) {
     fs.writeFileSync(path.join(out, "finished.json"), JSON.stringify(players.map((x) => ({ name: x.name, userID: x.userID, events: x.events })), null, 1));
     if (m.state === "finished" || m.state === "cancelled") resolve(m);
   })));
-  for (const p of players) {
-    p.socket.on("join-mm-fail", (m) => log("join-mm-fail", { name: p.name, m }));
-    p.socket.emit("join-mm", { queueName: queue });
-  }
-  log("queued", { queue, players: players.length });
+  for (const p of players) p.socket.on("join-mm-fail", (m) => log("join-mm-fail", { name: p.name, m }));
+  for (const g of groups) g[0].socket.emit("join-mm", { queueName: queue });      // a party's leader queues it
+  log("queued", { queue, players: players.length, groups: groups.map((g) => g.length) });
   await Promise.all(readies);
   fs.writeFileSync(path.join(out, "tickets.json"), JSON.stringify(players.map((p) => ({ name: p.name, userID: p.userID,
     gameServer: p.ready.gameServer, nonce: p.ready.nonce, serverNonce: p.ready.serverNonce, matchId: p.ready.matchId, team: p.ready.team,
-    netplay: p.ready.netplay })), null, 1));
+    netplay: p.ready.netplay, group: p.group, partyId: p.partyId || null, readyPartyId: p.ready.partyId || null })), null, 1));
   log("tickets-written");
   const timer = setTimeout(() => { log("timeout"); process.exit(3); }, waitMs);
   await Promise.all(finished);

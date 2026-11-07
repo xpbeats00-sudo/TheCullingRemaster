@@ -30,7 +30,7 @@ def secret(server_id=SERVER_ID, master=MASTER):
 def start(repo, data, port=8123, game_port=7777, log=None):
     os.makedirs(data, exist_ok=True)
     env = dict(os.environ, CULLING_PORT=str(port), CULLING_DATA_DIR=data, CULLING_REQUIRE_ACCOUNT="0",
-               CULLING_SHARED_MATCHES="1", CULLING_SHARED_PLAYLISTS="ffa,coop2",
+               CULLING_SHARED_MATCHES="1", CULLING_SHARED_PLAYLISTS="ffa,coop2,coop3,coop4",
                CULLING_GAMESERVER_SECRET=MASTER, CULLING_GAMESERVER_POOL="%s@127.0.0.1:%d" % (SERVER_ID, game_port),
                CULLING_GAMESERVER_READY_TIMEOUT_MS="300000", CULLING_GAMESERVER_HEARTBEAT_TIMEOUT_MS="30000",
                CULLING_TICKET_TTL_MS="300000", CULLING_LOBBY_GATHER_MS="4000", CULLING_LOBBY_COUNTDOWN_MS="500",

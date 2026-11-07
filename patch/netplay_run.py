@@ -53,7 +53,11 @@ SETTINGS = os.path.join(LOCAL, "TheCulling", "Saved", "Config", "WindowsClient",
 STEAM_SETTINGS = os.path.join(GAME, "Engine", "Binaries", "ThirdParty", "Steamworks", "Steamv136", "Win64", "steam_settings")
 ID_FILES = ("force_steamid.txt", "force_account_name.txt")
 TEST_IDS = {"host": ("76561197960266901", "NetHost"), "client": ("76561197960266902", "NetPlayerOne"),
-            "client2": ("76561197960266903", "NetPlayerTwo")}
+            "client2": ("76561197960266903", "NetPlayerTwo"), "client3": ("76561197960266904", "NetPlayerThree"),
+            "client4": ("76561197960266905", "NetPlayerFour")}
+CLIENTS = ("client", "client2", "client3", "client4")
+# Where each client's 960x540 window goes (the host at 0,40 when it has one).
+WINDOW_AT = {"client": (970, 40), "client2": (485, 40), "client3": (970, 600), "client4": (485, 600)}
 
 
 def shot(path):
@@ -92,11 +96,11 @@ WINDOW = {"FullscreenMode": "2", "LastConfirmedFullscreenMode": "2", "PreferredF
           "LastUserConfirmedResolutionSizeY": "540", "MasterVolume": "0"}
 
 
-def set_window(original, x):
-    """GameUserSettings.ini: windowed 960x540 at (x, 40), from the original bytes (restored after)."""
+def set_window(original, x, y=40):
+    """GameUserSettings.ini: windowed 960x540 at (x, y), from the original bytes (restored after)."""
     if original is None:
         return
-    want = dict(WINDOW, WindowPosX=str(x), WindowPosY="40")
+    want = dict(WINDOW, WindowPosX=str(x), WindowPosY=str(y))
     lines = original.decode("utf-8", errors="replace").splitlines()
     seen = set()
     for i, ln in enumerate(lines):
@@ -111,6 +115,19 @@ STOCK_EXE = r"C:\Culling\TheCulling\Victory\Binaries\Win64\Victory.exe"
 PORT = 7777
 HOST_URL = ("Jungle_P?listen?bIsLanMatch?bEnableBots=true"
             "?game=/Game/Blueprints/GameMode/VictoryGameMode.VictoryGameMode_C")
+PAIRS_MODE = "/Game/Blueprints/GameMode/VictoryGameMode_CoopRanked.VictoryGameMode_CoopRanked_C"   # make_duo.py MODE
+
+
+def host_url_for(asg, nonce=True):
+    """The host's URL for an assignment, as gameserver/agent.js hostUrl makes it: the map, the pairs mode
+    with ?TeamSize= for Trios and Quads, ?servernonce= (not for clients started with -FuncJoin, which have
+    no server nonce of their own). Its team size goes to CULLING_NETPLAY_TEAMSIZE."""
+    size = asg.get("teamSize") or 1
+    url = HOST_URL.replace("Jungle_P", ("Jungle_P", "Jungle2_P")[asg.get("mapIndex") or 0])
+    if size > 1:
+        url = url.split("?game=")[0] + "?game=" + PAIRS_MODE + ("?TeamSize=%d" % size if size > 2 else "")
+    os.environ["CULLING_NETPLAY_TEAMSIZE"] = str(size)
+    return url + ("?servernonce=" + asg["serverNonce"] if nonce else "")
 
 
 def log(*a):
@@ -218,10 +235,10 @@ def start_chain(a):
     time.sleep(2)
     # The accounts take the game clients' test Steam IDs: the host binds each
     # ticket to the joining game's Steam ID.
-    ids = ",".join("steam:" + TEST_IDS[w][0] for w in ("client", "client2")[:a.clients])
+    ids = ",".join("steam:" + TEST_IDS[w][0] for w in CLIENTS[:a.clients])
     players = subprocess.Popen(["node", os.path.join(GAMESERVER, "test_players.js"), "--backend", url[:-4],
                                 "--server-dir", os.path.join(a.backend_repo, "server"), "--out", a.out, "--count", str(a.clients),
-                                "--userids", ids],
+                                "--userids", ids, "--queue", a.queue] + (["--parties", a.party] if a.party else []),
                                stdout=open(os.path.join(a.out, "players.log"), "wb"), stderr=subprocess.STDOUT)
     procs.append(players)
     t0 = time.time()
@@ -272,7 +289,7 @@ def finish_chain(a, chain, result):
     result["chain"] = {"assignment": chain["assignment"]["matchId"],
                        "ticket_uses": [l for l in read(os.path.join(a.out, "agent.log")).splitlines() if "\"ticket-used\"" in l],
                        "finished": json.load(open(finished)) if os.path.exists(finished) else None}
-    for k in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_PORT"):
+    for k in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_PORT", "CULLING_NETPLAY_TEAMSIZE"):
         os.environ.pop(k, None)
 
 
@@ -364,7 +381,7 @@ def menu_chain(a):
     save_originals(a.out, settings_bytes, ids_bytes)
     procs, started = [], []
     asg = None
-    traces = {w: os.path.join(a.out, w + ".trace") for w in ("host", "client", "client2")}
+    traces = {w: os.path.join(a.out, w + ".trace") for w in ("host",) + CLIENTS}
     for f in traces.values():
         if os.path.exists(f):
             os.remove(f)
@@ -397,10 +414,10 @@ def menu_chain(a):
                 agent_args.append("--headless")
         procs.append(subprocess.Popen(agent_args, env=dict(os.environ, CULLING_GAMESERVER_SECRET=LB.secret()),
                                       stdout=subprocess.DEVNULL, stderr=open(os.path.join(a.out, "agent.err"), "wb")))
-        # 1. The two clients, at their menus, each with its own test ID.
+        # 1. The clients, at their menus, each with its own test ID.
         users = []
-        for who, x in (("client", 970), ("client2", 485)):
-            set_window(settings_bytes, x)
+        for who in CLIENTS[:a.clients]:
+            set_window(settings_bytes, *WINDOW_AT[who])
             write_ids(who)
             users.append("steam:" + TEST_IDS[who][0])
             l = launch(None, traces[who], os.path.join(a.out, who + ".func.log"))
@@ -408,23 +425,31 @@ def menu_chain(a):
             started += [pid] if pid else []
             log(who, "Victory.exe pid", pid, "at its menu as", users[-1])
             time.sleep(20)                 # let it read its ID before the next game overwrites it
-        # 2. Both menus logged in to the local backend.
+        # 2. Every menu logged in to the local backend.
         t0 = time.time()
         while time.time() - t0 < 180:
             st, h = http_json("GET", base + "/health")
-            if h.get("users", 0) >= 2:
+            if h.get("users", 0) >= a.clients:
                 break
             time.sleep(3)
-        result["steps"]["menus logged in"] = "PASS: %s users" % h.get("users") if h.get("users", 0) >= 2 else "FAIL: %s" % h
+        result["steps"]["menus logged in"] = "PASS: %s users" % h.get("users") if h.get("users", 0) >= a.clients else "FAIL: %s" % h
         log(result["steps"])
-        if h.get("users", 0) < 2:
+        if h.get("users", 0) < a.clients:
             return result
         if a.agent_host:
             write_ids("host")              # the agent's host reads it when it starts
-        # 3. Queue them (the PLAY -> Solo a player would press).
-        for u in users:
-            st, r = http_json("POST", base + "/api/test/join-mm", {"userID": u, "queueName": a.queue})
-            log("queued", u, st, r)
+        # 3. Queue them (the PLAY a player would press). With --party: each
+        # group's leader with its members, made one real party by the hook
+        # (the friends and party code), then queued as the party.
+        groups = party_groups(a)
+        for g in groups:
+            body = {"userID": users[g[0]], "queueName": a.queue}
+            if a.party:
+                body["party"] = [users[i] for i in g[1:]]
+            st, r = http_json("POST", base + "/api/test/join-mm", body)
+            log("queued", users[g[0]], "with", body.get("party"), st, r)
+            if a.party and (st != 200 or sorted(r.get("members", [])) != sorted(users[i] for i in g)):
+                result["steps"]["party formed"] = "FAIL: %s %s" % (st, r)
         t0 = time.time()
         while not os.path.exists(os.path.join(ctl, "assignment.json")):
             if time.time() - t0 > 60:
@@ -450,21 +475,25 @@ def menu_chain(a):
             os.environ["CULLING_NETPLAY_PORT"] = str(PORT)
             set_window(settings_bytes, 0)
             write_ids("host")
-            hl = launch(HOST_URL + "?servernonce=" + asg["serverNonce"], traces["host"], os.path.join(a.out, "host.func.log"))
+            hl = launch(host_url_for(asg), traces["host"], os.path.join(a.out, "host.func.log"))
             host = wait_game(hl, 90)
         started += [host] if host else []
         log("host Victory.exe pid", host)
-        # 5. Wait for both menus to join, then for the match to run.
+        if a.party:
+            result["steps"]["parties on one team (the backend's assignment)"] = party_check(groups, users,
+                {p["userID"]: t["team"] for t in asg["teams"] for p in t["players"]}, team_size(a.queue))
+            log(result["steps"])
+        # 5. Wait for every menu to join, then for the match to run.
         t0 = time.time()
         joins = 0
         while time.time() - t0 < 240:
             joins = len(re.findall(r"control server=1 type=9 ", read(traces["host"])))
-            if joins >= 2:
+            if joins >= a.clients:
                 break
             time.sleep(3)
-        result["steps"]["both menus joined the host"] = "PASS" if joins >= 2 else "FAIL: %d joined" % joins
+        result["steps"]["every menu joined the host"] = "PASS: %d" % joins if joins >= a.clients else "FAIL: %d joined" % joins
         log(result["steps"])
-        if joins >= 2:
+        if joins >= a.clients:
             time.sleep(a.after_join)
         t0 = time.time()
         while not os.path.exists(os.path.join(asg["control"], "result.posted")) and time.time() - t0 < 20:
@@ -486,13 +515,24 @@ def menu_chain(a):
         if settings_bytes is not None:
             open(SETTINGS, "wb").write(settings_bytes)
         restore_ids(ids_bytes)
-        for k in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_PORT"):
+        for k in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_PORT", "CULLING_NETPLAY_TEAMSIZE"):
             os.environ.pop(k, None)
         log("restored the test copy's Victory.exe, GameUserSettings.ini and Steam ID files; removed", OVERRIDE_PAK)
         mdir = asg["control"] if asg else ctl
         for name in ("assignment.json", "result.txt", "result.posted", "tickets.txt"):
             if os.path.exists(os.path.join(mdir, name)):
                 shutil.copy2(os.path.join(mdir, name), os.path.join(a.out, name))
+        if a.party and asg:
+            # In game: the host's own teams, from its result (team= per user=) and its "teams" trace.
+            host_team = {}
+            for ln in read(os.path.join(mdir, "result.txt")).splitlines():
+                f = dict(x.split("=", 1) for x in ln.split() if "=" in x)
+                if f.get("user") and f.get("team"):
+                    host_team[f["user"]] = int(f["team"])
+            result["steps"]["parties teammates on the host (result.txt)"] = (party_check(party_groups(a), users, host_team, team_size(a.queue))
+                                                                            if host_team else "NOT TESTED: no result.txt with teams")
+            teams_lines = [ln for ln in read(traces["host"]).splitlines() if " teams " in ln]
+            result["evidence"]["host_teams_trace"] = teams_lines[-3:]
         result["agent"] = read(os.path.join(a.out, "agent.log")).splitlines()[-30:]
         json.dump(result, open(os.path.join(a.out, "netplay_run.json"), "w"), indent=1)
         log("wrote", os.path.join(a.out, "netplay_run.json"))
@@ -543,6 +583,41 @@ def restore_from(out):
     log("restored from", out + ":", ", ".join(done) or "nothing to restore")
 
 
+def team_size(queue):
+    m = re.search(r"coop(\d)", queue or "")
+    return int(m.group(1)) if m else 1
+
+
+def party_groups(a):
+    """The players (client indices) as [leader, ...members] groups: --party "2,1" is [[0, 1], [2]]."""
+    if not a.party:
+        return [[i] for i in range(a.clients)]
+    groups, k = [], 0
+    for n in (int(x) for x in a.party.split(",")):
+        groups.append(list(range(k, k + n)))
+        k += n
+    return groups
+
+
+def party_check(groups, users, team, size):
+    """PASS when each party is on one team, groups whose sizes add up to more
+    than a team are on different teams, and everyone is on one team when they
+    all fit in one (the backend's packing: largest first, each group into the
+    first team with room)."""
+    got = [[team.get(users[i]) for i in g] for g in groups]
+    if any(None in t for t in got):
+        return "FAIL: not every player has a team: %s" % got
+    if any(len(set(t)) != 1 for t in got):
+        return "FAIL: a party split across teams: %s" % got
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            if len(groups[i]) + len(groups[j]) > size and got[i][0] == got[j][0]:
+                return "FAIL: groups that don't fit one team share one: %s" % got
+    if sum(len(g) for g in groups) <= size and len({t[0] for t in got}) != 1:
+        return "FAIL: everyone fits one team but got %s" % got
+    return "PASS: teams %s" % got
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(os.environ.get("TEMP", "."), "culling-netplay-run"))
@@ -550,7 +625,11 @@ def main():
     ap.add_argument("--client-wait", type=int, default=90)
     ap.add_argument("--no-client", action="store_true")
     ap.add_argument("--after-join", type=int, default=45)
-    ap.add_argument("--clients", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--clients", type=int, default=1, choices=(1, 2, 3, 4),
+                    help="game clients (3 and 4 with --menu only); --party sets it to the party sizes' total")
+    ap.add_argument("--party", metavar="SIZES", help="with --backend-repo (--menu --agent-host for 3 or 4 players): the players as"
+                    " parties, comma-separated sizes in client order: 2 (a party of 2), 3, 2,1 (a party of 2 and a solo),"
+                    " 2,2 (two parties of 2). Formed as real parties by the backend (test hook or socket API); needs a team --queue")
     ap.add_argument("--shots", type=int, default=0, help="a desktop screenshot every N seconds after the joins")
     ap.add_argument("--backend-repo", help="a checkout of branch shared-match-backend: run the whole shared-match chain"
                     " locally (backend, game-server agent, two test players queueing; the clients join with their tickets)")
@@ -558,7 +637,8 @@ def main():
     ap.add_argument("--agent-host", action="store_true", help="with --menu: the game-server agent starts (and stops) the host")
     ap.add_argument("--client-exe", help="with --menu --agent-host: the clients run this exe (a released client) as the"
                     " install's Victory.exe; the host runs the netplay exe as VictoryHost.exe (-FuncVictoryExe)")
-    ap.add_argument("--queue", default="ffa_jungle", help="with --menu: the queue the menus join (ffa_jungle Solo, ffa_jungle_coop2 Duos)")
+    ap.add_argument("--queue", default="ffa_jungle", help="the queue the players join: ffa_jungle Solo, ffa_jungle_coop2 Duos,"
+                    " ffa_jungle_coop3 Trios, ffa_jungle_coop4 Quads")
     ap.add_argument("--headless-host", action="store_true", help="with --agent-host: the host runs headless (-nullrhi -nosound)")
     ap.add_argument("--restore", metavar="OUT", help="put back what an interrupted run into OUT changed, and exit")
     ap.add_argument("--menu", action="store_true", help="with --backend-repo: the clients start at their menus, are queued"
@@ -569,6 +649,15 @@ def main():
     a = ap.parse_args()
     if a.restore:
         return restore_from(a.restore)
+    if a.party:
+        sizes = [int(x) for x in a.party.split(",")]
+        a.clients = sum(sizes)
+        if not a.backend_repo or a.clients > 4 or max(sizes) > team_size(a.queue) or team_size(a.queue) < 2:
+            ap.error("--party needs --backend-repo, a team --queue (coop2/3/4) its parties fit, and 4 players at most")
+        if a.clients > 2 and not a.menu:
+            ap.error("3 or 4 players need --menu")
+    if a.clients > 2 and not a.menu:
+        ap.error("3 or 4 clients need --menu")
     os.makedirs(a.out, exist_ok=True)
     if a.menu:
         return menu_chain(a)
@@ -614,7 +703,7 @@ def main():
         set_window(settings_bytes, 0)
         if ids_bytes is not None:
             write_ids("host")
-        host_l = launch(HOST_URL, host_trace, os.path.join(a.out, "host.func.log"))
+        host_l = launch(host_url_for(chain["assignment"], nonce=False) if chain else HOST_URL, host_trace, os.path.join(a.out, "host.func.log"))
         host = wait_game(host_l, 90)
         started += [p for p in (host,) if p]
         log("host Victory.exe pid", host)
