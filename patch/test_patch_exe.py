@@ -30,6 +30,7 @@ def check(path, rounds=False):
     # Fix 4: the refresh calls the pairing stub in every build (1.3.9's proven hook, which
     # pairs Duo in game); with the module only the stub's sort call leads to sd_teams (fix 9).
     assert data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] == P.DUO_HOOK_NEW
+    assert data[P.DUO_PRE_AT:P.DUO_PRE_AT + len(P.DUO_PRE)] == P.DUO_PRE
     stub = data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)]
     assert P._module_stub(stub) if rounds else stub == P.DUO_STUB
     assert data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] == P.SCORE_JG_NEW
@@ -37,6 +38,7 @@ def check(path, rounds=False):
     changed = [i for i in range(len(stock)) if stock[i] != data[i]]
     duo = set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))      # fix 4 in every build
     duo |= {P.DUO_STUB_AT + i for i in range(len(P.DUO_STUB)) if P.DUO_STUB[i] != 0xCC}
+    duo |= set(range(P.DUO_PRE_AT, P.DUO_PRE_AT + len(P.DUO_PRE)))
     duo |= {P.SCORE_JG_AT + 2, P.SCORE_JG_AT + 3, P.SCORE_JG_AT + 4, P.SCORE_JG_AT + 5}  # the retargeted disp32
     duo |= {P.SCORE_STUB_AT + i for i in range(len(P.SCORE_STUB)) if P.SCORE_STUB[i] != 0xCC}
     expected = set(range(gate, gate + 6)) | {P.TRAIN_JUMP_AT + 1} | set(range(P.TRAIN_STUB_AT, P.TRAIN_STUB_AT + 5)) | duo
@@ -98,6 +100,7 @@ def other_fixes():
             | set(range(P.TRAIN_STUB_AT, P.TRAIN_STUB_AT + 5))
             | set(range(P.DUO_HOOK_AT, P.DUO_HOOK_AT + len(P.DUO_HOOK)))
             | set(range(P.DUO_STUB_AT, P.DUO_STUB_AT + len(P.DUO_STUB)))
+            | set(range(P.DUO_PRE_AT, P.DUO_PRE_AT + len(P.DUO_PRE)))
             | set(range(P.SCORE_JG_AT, P.SCORE_JG_AT + len(P.SCORE_JG)))
             | set(range(P.SCORE_STUB_AT, P.SCORE_STUB_AT + len(P.SCORE_STUB))))
 
@@ -238,10 +241,17 @@ def check_team_hook(path):
     new = open(path, "rb").read()
     sect = P.IMAGE_BASE + ROUNDS.SECTION_RVA
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
-    # The refresh: exactly fix 4's call of the stub at fix 4's site, as 1.3.9 shipped it.
-    assert P.DUO_HOOK_AT == 0x20313A and new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] == P.DUO_HOOK_NEW == bytes.fromhex("e8c470e5ff909090")
+    # The refresh: fix 4's site calls the pre-stub, which runs the stub (1.3.9's) only when the
+    # GameState has authority (Role +0x118 == 3: a local match) and on a network client only
+    # sorts, keeping the server's teams. 1.3.9-1.3.12 called the stub directly.
+    assert P.DUO_HOOK_AT == 0x20313A and new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 8] == P.DUO_HOOK_NEW
+    assert P.DUO_HOOK_STUB == bytes.fromhex("e8c470e5ff909090")
     ins = next(md.disasm(new[P.DUO_HOOK_AT:P.DUO_HOOK_AT + 5], 0x140203B3A))
-    assert (ins.mnemonic, int(ins.op_str, 16)) == ("call", 0x14005AC03), (ins.mnemonic, ins.op_str)
+    assert (ins.mnemonic, int(ins.op_str, 16)) == ("call", P.DUO_PRE_VA), (ins.mnemonic, ins.op_str)
+    pre = [(i.mnemonic, i.op_str) for i in md.disasm(new[P.DUO_PRE_AT:P.DUO_PRE_AT + len(P.DUO_PRE)], P.DUO_PRE_VA)]
+    assert pre == [("cmp", "byte ptr [rdi + 0x118], 3"), ("je", "0x14005ac03"), ("mov", "rcx, rdi"), ("jmp", "0x140243c80")], pre
+    assert P.DUO_PRE_AT - P.DUO_STUB_AT == P.DUO_PRE_VA - 0x14005AC03 and P.DUO_PRE_AT >= P.DUO_STUB_AT + len(P.DUO_STUB)
+
     # The stub: 1.3.9's bytes, pairing (shr edx, 1; inc edx; SetTeamNum), its sort call to sd_teams.
     stub = new[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)]
     assert P.DUO_STUB_AT == 0x5A203 and stub[:P.STUB_SORT] == P.DUO_STUB[:P.STUB_SORT]
@@ -298,6 +308,10 @@ def real_checks(path):
     s = pe.sections[-1]
     assert s.Name.rstrip(b"\0") == P.ROUNDS_NAME and s.VirtualAddress == ROUNDS.SECTION_RVA
     assert pe.get_data(ROUNDS.SECTION_RVA, len(ROUNDS.BLOB)) == ROUNDS.BLOB
+    # Fix 4's hook site has the GameState in rdi (mov rdi, rax just before), as the pre-stub
+    # (and 1.3.9's stub) read it, and rdi survives the sort (callee-saved).
+    site = pe.get_data(0x203B3A - 8, 8)
+    assert bytes.fromhex("488bf8") in site, site.hex()
     slot_rva = 0x25A81E8
     assert pe.get_offset_from_rva(slot_rva) == P.FFA_SLOT_AT
     assert pe.get_offset_from_rva(P.RAND_LEA_VA - P.IMAGE_BASE) == P.RAND_LEA_AT

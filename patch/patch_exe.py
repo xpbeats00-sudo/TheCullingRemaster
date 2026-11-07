@@ -232,7 +232,8 @@ PAD = b"\xcc" * 13
 # 4. Local team pairing (see the module docstring).
 DUO_HOOK_AT = 0x20313A              # file offset of "mov rcx, rax; call 0x140243c80" (VA 0x140203b3a)
 DUO_HOOK = bytes.fromhex("488bc8e83e010400")
-DUO_HOOK_NEW = bytes.fromhex("e8c470e5ff909090")   # call 0x14005ac03 (the stub); nop; nop; nop
+DUO_HOOK_STUB = bytes.fromhex("e8c470e5ff909090")  # call 0x14005ac03 (the stub); nop; nop; nop (1.3.9-1.3.12)
+DUO_HOOK_NEW = bytes.fromhex("e831"[:2]) + b""      # replaced below: call the pre-stub
 DUO_STUB_AT = 0x5A203               # int3 padding at VA 0x14005ac03 (253 bytes free)
 # push rbx/rsi/r12/r13; sub rsp,0x28; r12=GameState; if [+0x4e4]!=2 skip; loop
 # PlayerArray[+0x418] (count [+0x420]) -> SetTeamNum(PS,(i>>1)+1,1); then the sort.
@@ -241,6 +242,24 @@ DUO_STUB = bytes.fromhex(
     "418b9c242004000031f639de7d1c498b4cf5004885c9740e89f2d1eaffc241b0"
     "01e8973b1f00ffc6ebe04c89e1e82b901e004c89e74883c428415d415c5e5bc3")
 DUO_PAD = b"\xcc" * len(DUO_STUB)
+# Connected to a server, the client keeps the server's teams: the refresh calls this
+# pre-stub (after the stub, in the same padding), which runs the stub only when the
+# GameState has authority (AActor::Role +0x118 == 3: a local match). A network
+# client's GameState is a simulated proxy (1): there it only sorts (the stock call),
+# so neither the stub's pairing nor fix 9's re-teaming overrides the TeamNumber the
+# server replicated (in a shared match the client's PlayerArray order isn't the
+# server's teams).
+#   cmp byte [rdi+0x118], 3 ; je 0x14005ac03 ; mov rcx, rdi ; jmp 0x140243c80
+DUO_PRE_AT = 0x5A270                # file offset, VA 0x14005ac70 (in the stub's 253 free bytes)
+DUO_PRE_VA = 0x14005AC70
+DUO_STUB_VA = 0x14005AC03
+SORT_VA = 0x140243C80
+DUO_PRE = (bytes.fromhex("80bf1801000003")
+           + b"\x0f\x84" + (DUO_STUB_VA - (DUO_PRE_VA + 13)).to_bytes(4, "little", signed=True)
+           + bytes.fromhex("4889f9")
+           + b"\xe9" + (SORT_VA - (DUO_PRE_VA + 21)).to_bytes(4, "little", signed=True))
+DUO_PRE_PAD = b"\xcc" * len(DUO_PRE)
+DUO_HOOK_NEW = b"\xe8" + (DUO_PRE_VA - (0x140203B3A + 5)).to_bytes(4, "little", signed=True) + b"\x90\x90\x90"
 
 # 6. Scoreboards with more than 16 contestants (see the module docstring).
 SCORE_JG_AT = 0x24334D              # file offset of "jg 0x14024447d" (VA 0x140243d4d; edi = +0x4a0 count)
@@ -262,7 +281,7 @@ SCORE_PAD = b"\xcc" * len(SCORE_STUB)
 # fix (1-11, the native module as showdown_rounds_blob.py has it) at the default
 # 24 contestants: what a release ships.
 STOCK_SHA256 = "bd818b91d78d99620ff1d003672282fcf7aa23832863a2e93449c945e0ff8758"
-PATCHED_SHA256 = "78e80bf4aa465d9dc0e72ad5637f0934df821e7b0392cd5fab53dc5c29c831a5"
+PATCHED_SHA256 = "20b48ea55ff4e334253810b05c71dd70f6b4fe2bbf1bd3bcf858640ec9d0bc18"
 
 
 def _cap(data, path, contestants):
@@ -334,14 +353,17 @@ def _duoteam(data, path, rounds=True):
     goes back to fix 4's."""
     hook = bytes(data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)])
     stub = bytes(data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)])
-    if ((hook not in (DUO_HOOK, DUO_HOOK_NEW) and not _module_hook(hook))
-            or (stub not in (DUO_STUB, DUO_PAD) and not _module_stub(stub))):
-        raise ValueError("%s is not the Victory.exe this patch is for (team pairing %s / %s)"
-                         % (path, hook.hex(), stub[:8].hex()))
+    pre = bytes(data[DUO_PRE_AT:DUO_PRE_AT + len(DUO_PRE)])
+    if ((hook not in (DUO_HOOK, DUO_HOOK_STUB, DUO_HOOK_NEW) and not _module_hook(hook))
+            or (stub not in (DUO_STUB, DUO_PAD) and not _module_stub(stub))
+            or pre not in (DUO_PRE, DUO_PRE_PAD)):
+        raise ValueError("%s is not the Victory.exe this patch is for (team pairing %s / %s / %s)"
+                         % (path, hook.hex(), stub[:8].hex(), pre[:8].hex()))
     want = stub if rounds and _module_stub(stub) else DUO_STUB
-    if hook == DUO_HOOK_NEW and stub == want:
+    if hook == DUO_HOOK_NEW and stub == want and pre == DUO_PRE:
         return False
     data[DUO_STUB_AT:DUO_STUB_AT + len(DUO_STUB)] = want
+    data[DUO_PRE_AT:DUO_PRE_AT + len(DUO_PRE)] = DUO_PRE
     data[DUO_HOOK_AT:DUO_HOOK_AT + len(DUO_HOOK)] = DUO_HOOK_NEW
     return True
 

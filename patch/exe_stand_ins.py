@@ -33,6 +33,7 @@ def stock_bytes(data):
     data[P.TRAIN_STUB_AT:P.TRAIN_STUB_AT + 13] = P.PAD
     data[P.DUO_HOOK_AT:P.DUO_HOOK_AT + len(P.DUO_HOOK)] = P.DUO_HOOK
     data[P.DUO_STUB_AT:P.DUO_STUB_AT + len(P.DUO_STUB)] = P.DUO_PAD
+    data[P.DUO_PRE_AT:P.DUO_PRE_AT + len(P.DUO_PRE)] = P.DUO_PRE_PAD
     data[P.SCORE_JG_AT:P.SCORE_JG_AT + len(P.SCORE_JG)] = P.SCORE_JG
     data[P.SCORE_STUB_AT:P.SCORE_STUB_AT + len(P.SCORE_STUB)] = P.SCORE_PAD
 
@@ -70,6 +71,7 @@ def full_stand_in(path):
     os.remove(small)
     for at, n in ((P.CAP_AT, 5), (P.SHA_GATE_AT, 13), (P.TRAIN_JUMP_AT, 2), (P.TRAIN_CALL_AT, len(P.TRAIN_CALL)),
                   (P.TRAIN_STUB_AT, 13), (P.DUO_HOOK_AT, len(P.DUO_HOOK)), (P.DUO_STUB_AT, len(P.DUO_STUB)),
+                  (P.DUO_PRE_AT, len(P.DUO_PRE)),
                   (P.SCORE_JG_AT, len(P.SCORE_JG)), (P.SCORE_STUB_AT, len(P.SCORE_STUB))):
         data[at:at + n] = part[at:at + n]
     open(path, "wb").write(data)
