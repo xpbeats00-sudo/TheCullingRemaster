@@ -9,6 +9,38 @@
 - Match credits and XP stop at 8,000 credits and 40,000 XP a day, UTC (`CULLING_DAILY_MATCH_CREDITS`, `CULLING_DAILY_MATCH_XP`). Showdown series pay counts toward the same cap. Games still count past the cap; set a limit to 0 to turn it off.
 - A normal match pays exactly as before. Tests: `server/test/matchpay.test.js`.
 - A custom match (from the CUSTOM screen, with your own settings) pays half the credits and XP of the same result in a normal match, still within the limits above.
+- Fixed: Showdown results skipped all of the above. Instant "W" rounds paid the daily cap in about 15 seconds and added unlimited wins and kills to the leaderboards (FULL_AUDIT_2026-11-06 round 2). A Showdown series now follows the same rules: a series shorter than the minimum match pays nothing and isn't counted, kills and damage are bounded by how long it ran, and the daily cap applies. A forfeit with no round played pays nothing. A round reported less than 20 s after the series started or after the round before doesn't count (`CULLING_SHOWDOWN_MIN_ROUND_SECONDS`).
+- `xpEarned` in the result is the XP really added. Near the season XP cap it used to show what the match was worth.
+
+**Results, cancels and logins**
+- A result the HUD posts twice (it retries when the first answer is slow) now gets the same answer again instead of an error that read as "your result wasn't saved". This holds for 10 minutes, for the same player only, and nothing is paid twice.
+- Cancelling a search just as the match was found no longer leaves the match open on the server. Before, Ranked counted it as last place later, and friends saw you "In match" for up to 45 minutes. If you leave within 15 s of the match being sent and no result has come in, the match is closed, a ranked match is dropped without penalty, and you are back in the menu. The menu can also say it ignored a match (`match-declined`, with the match's nonce). That only works inside the same 15 s, so a match being played can't be declined to dodge a ranked loss.
+- Every refused game login now says why (`errorCode`: `invalid-userid`, `account-required`, `server-full`, `too-many-new-players`, `rate-limited`, `stopping`), so the menu can show the reason instead of staying offline without a word.
+- A party member who starts a custom match while the party is searching now stops the party's search. The others are told why, instead of the leader going on alone.
+
+**Ranked**
+- The rating change shown for a match is the change really applied. At the season cap (1399), a win showed "+14" that wasn't added.
+- A ranked match still running when a season ends is scored in the old season, with its result if it comes in, or as last place otherwise. Before, it was dropped, and an abandoned match escaped its penalty.
+- Player cards, lobby cards and the leaderboard show only this season's Solo rank, as the team modes already did. Last season's rank was shown until your first ranked match of the new season.
+
+**Privacy**
+- Your live status (in menu, searching, in match) and when you were last seen are shown only to your friends and your party, not on a stranger's player card or in friend requests.
+- Player cards are rate limited (one a second, bursts of 10), so names can't be looked up in bulk.
+- Match tickets keep your address hashed, as accounts already did, never raw in `tickets.json` or its backups. Tickets saved raw by the old server are converted when it starts.
+- Refused logins no longer write the Steam ID to the log, and the login log keeps only short plain `authType` / `appid` / `build` values. A client could send up to 1 MB with newlines in those fields, forging log lines and pushing the real ones out.
+- `.gitignore` now covers the player data files, the IP-hash secret, `*.pem` keys and `.env`.
+
+**Performance and load (performance review, measured on this PC)**
+- Socket messages are capped at 64 KB (was 1 MB). A polling upload over the cap is refused before it is read, and uploads and new connections are rate limited per address. Before, four clients that never logged in could keep a core busy uploading 1 MB payloads (server at 110% of a core, players' requests waiting 139 ms). Now those uploads are refused at once (server under 1% CPU, 3 ms).
+- The item list (~800 KB) is built and encoded once, and goes to a menu at most once a minute.
+- Your owned items are worked out once per change instead of three times per menu login, and sent once: 3 pushes (134 KB) became 1 (45 KB), and the server time per request went from 1.06 to 0.46 ms.
+- Polling frames (what the game's menu receives) are built natively, with exactly the same bytes as before: 16 times faster for the owned-items list.
+- Saving no longer freezes the server for up to a third of a second when another program (antivirus, backup) holds the data file open: the longest stall went from 339 ms to 17 ms.
+- Ranked keeps the last 20 matches per mode (the screen shows 10), and the match IDs kept against double results are a short list. A ranked veteran's profile went from 70 KB to 27 KB, so every save of `profiles.json` is smaller.
+- A game login no longer rewrites `accounts.json` every time. The play grant's extension is saved at most once a minute.
+- When `profiles.json` gets slow to save (over 50 ms), it is saved every 5 s instead of every second. Past 200 MB, the log warns loudly (`CULLING_PROFILES_WARN_BYTES`). The real fix is moving profiles to a database, left for later.
+- A friends panel gets at most one update per 300 ms, with the latest state. A panel you ask for (opening Friends) is still answered at once. With 100 friends online, 40 status changes went from 4,040 panel pushes to 2,121, and from 823 ms to 233 ms of server time.
+- Password hashing leaves one CPU thread free, and connections are pinged every 25 s instead of 10 s. A menu that vanished without closing its connection is now noticed after up to 55 s instead of 40 s.
 
 ## Game (next release)
 
