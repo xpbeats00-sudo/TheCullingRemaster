@@ -320,6 +320,12 @@ def test_real_exe(path):
     assert bytes.fromhex("488b8960040000") in psid, "the player state's id object at +0x460"
     i, j = psid.find(bytes.fromhex("ff50") + bytes([mac("VT_ID_IS_VALID")])), psid.find(bytes.fromhex("ff50") + bytes([mac("VT_ID_TO_STRING")]))
     assert 0 <= i < j, "IsValid (+0x18) then ToString (+0x20)"
+    # 2b1b. The listen port (H3): UIpNetDriver::InitListen writes the port it bound back into the
+    # URL's Port (+0x20): mov [rdi + 0x20], eax after LocalAddr->GetPort() (vtable +0x28).
+    ipl = data[PN._off(IMAGE_BASE + ip):PN._off(IMAGE_BASE + ip) + 0x68]
+    k = ipl.find(bytes.fromhex("ff5028"))
+    assert k > 0 and ipl[k + 3:k + 16].find(bytes.fromhex("8947") + bytes([mac("O_URL_PORT")])) >= 0, \
+        "UIpNetDriver::InitListen doesn't store the bound port into the URL: %s" % ipl.hex()
     # 2b2. FreeForAll's end-of-match check slot (relocated) holds the stock check, which reads
     # the player state's flags and contestant byte and calls HasLeft and IsAlive, as the
     # host's own rule (np_should_end) does.
@@ -520,6 +526,9 @@ def test_native():
         print("native: a team player leaves mid-match (H4)")
         run_scenario(exe, "leaver", [ta, ua, tb, ub], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_TEAMSIZE": "2"}, ctl,
                      [(ta, 1, ua), (tb, 2, ub)])
+        print("native: the listen port (H3)")
+        run_scenario(exe, "listen", ["free"], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_PORT": "7790"}, ctl)
+        run_scenario(exe, "listen", ["taken"], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_PORT": "7790"}, ctl)
         print("native: pass")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

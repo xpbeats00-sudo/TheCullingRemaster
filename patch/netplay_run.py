@@ -232,8 +232,10 @@ def start_chain(a):
     assignment = json.load(open(os.path.join(ctl, "assignment.json")))
     log("assignment", assignment["matchId"], "players", assignment["players"], "bots", assignment["bots"])
     os.environ["CULLING_NETPLAY_PREMATCH"] = str(assignment["players"])
-    os.environ["CULLING_NETPLAY_CONTROL"] = ctl
-    return {"procs": procs, "players": players, "ctl": ctl, "assignment": assignment, "tickets": None, "bad": a.bad_ticket}
+    os.environ["CULLING_NETPLAY_CONTROL"] = assignment["control"]     # the match's own folder (the agent made it)
+    os.environ["CULLING_NETPLAY_PORT"] = str(PORT)
+    return {"procs": procs, "players": players, "ctl": ctl, "mdir": assignment["control"], "assignment": assignment, "tickets": None,
+            "bad": a.bad_ticket}
 
 
 def join_url(chain, i):
@@ -263,15 +265,15 @@ def finish_chain(a, chain, result):
     while chain["players"].poll() is None and time.time() - t0 < 20:
         time.sleep(1)
     for name in ("assignment.json", "result.txt", "result.posted"):
-        src = os.path.join(chain["ctl"], name)
+        src = os.path.join(chain["mdir"], name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(a.out, name))
     finished = os.path.join(a.out, "finished.json")
     result["chain"] = {"assignment": chain["assignment"]["matchId"],
                        "ticket_uses": [l for l in read(os.path.join(a.out, "agent.log")).splitlines() if "\"ticket-used\"" in l],
                        "finished": json.load(open(finished)) if os.path.exists(finished) else None}
-    os.environ.pop("CULLING_NETPLAY_PREMATCH", None)
-    os.environ.pop("CULLING_NETPLAY_CONTROL", None)
+    for k in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_PORT"):
+        os.environ.pop(k, None)
 
 
 # ---- --menu: the real menu joins ---------------------------------------------
@@ -361,6 +363,7 @@ def menu_chain(a):
     ids_bytes = read_ids()
     save_originals(a.out, settings_bytes, ids_bytes)
     procs, started = [], []
+    asg = None
     traces = {w: os.path.join(a.out, w + ".trace") for w in ("host", "client", "client2")}
     for f in traces.values():
         if os.path.exists(f):
@@ -434,13 +437,16 @@ def menu_chain(a):
             host = None
             t0 = time.time()
             while not host and time.time() - t0 < 150:
-                if os.path.exists(os.path.join(ctl, "host.pid")):
-                    host = int(open(os.path.join(ctl, "host.pid")).read().strip() or 0) or None
+                try:
+                    host = int(json.load(open(os.path.join(ctl, "host.pid")))["pid"]) or None
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
                 time.sleep(1)
             result["steps"]["the agent started the host"] = "PASS: pid %s%s" % (host, " (headless)" if a.headless_host else "") if host else "FAIL"
         else:
             os.environ["CULLING_NETPLAY_PREMATCH"] = str(asg["players"])
-            os.environ["CULLING_NETPLAY_CONTROL"] = ctl
+            os.environ["CULLING_NETPLAY_CONTROL"] = asg["control"]          # the match's own folder (the agent made it)
+            os.environ["CULLING_NETPLAY_PORT"] = str(PORT)
             set_window(settings_bytes, 0)
             write_ids("host")
             hl = launch(HOST_URL + "?servernonce=" + asg["serverNonce"], traces["host"], os.path.join(a.out, "host.func.log"))
@@ -460,7 +466,7 @@ def menu_chain(a):
         if joins >= 2:
             time.sleep(a.after_join)
         t0 = time.time()
-        while not os.path.exists(os.path.join(ctl, "result.posted")) and time.time() - t0 < 20:
+        while not os.path.exists(os.path.join(asg["control"], "result.posted")) and time.time() - t0 < 20:
             time.sleep(1)
         result["alive_at_end"] = {"host": host in victories(), "clients": [p in victories() for p in started[:2]]}
     finally:
@@ -479,12 +485,13 @@ def menu_chain(a):
         if settings_bytes is not None:
             open(SETTINGS, "wb").write(settings_bytes)
         restore_ids(ids_bytes)
-        os.environ.pop("CULLING_NETPLAY_PREMATCH", None)
-        os.environ.pop("CULLING_NETPLAY_CONTROL", None)
+        for k in ("CULLING_NETPLAY_PREMATCH", "CULLING_NETPLAY_CONTROL", "CULLING_NETPLAY_PORT"):
+            os.environ.pop(k, None)
         log("restored the test copy's Victory.exe, GameUserSettings.ini and Steam ID files; removed", OVERRIDE_PAK)
-        for name in ("assignment.json", "result.txt", "result.posted"):
-            if os.path.exists(os.path.join(ctl, name)):
-                shutil.copy2(os.path.join(ctl, name), os.path.join(a.out, name))
+        mdir = asg["control"] if asg else ctl
+        for name in ("assignment.json", "result.txt", "result.posted", "tickets.txt"):
+            if os.path.exists(os.path.join(mdir, name)):
+                shutil.copy2(os.path.join(mdir, name), os.path.join(a.out, name))
         result["agent"] = read(os.path.join(a.out, "agent.log")).splitlines()[-30:]
         json.dump(result, open(os.path.join(a.out, "netplay_run.json"), "w"), indent=1)
         log("wrote", os.path.join(a.out, "netplay_run.json"))

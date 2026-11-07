@@ -552,6 +552,20 @@ static int scenario_leaver(char **v)
     return 0;
 }
 
+/* H3: the host listens on CULLING_NETPLAY_PORT and says which port it bound.
+ * argv: "taken" when the engine has to take the next port. */
+static int scenario_listen(char **v)
+{
+    char buf[64];
+    listen_port_taken = !strcmp(v[0], "taken");
+    listen_world(7777);
+    CHECK(read_file("listening", buf, sizeof(buf)) > 0);
+    printf("      listening: %s", buf);
+    CHECK(strcmp(buf, listen_port_taken ? "port=7791\n" : "port=7790\n") == 0);
+    printf("ok    listening on CULLING_NETPLAY_PORT (7790, not the URL's 7777)%s\n", listen_port_taken ? ": the port bound instead is reported" : "");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -561,6 +575,8 @@ int main(int argc, char **argv)
         return scenario_tickets(argv + 2);
     if (!strcmp(argv[1], "players") && argc >= 7)
         return scenario_players(argv + 2);
+    if (!strcmp(argv[1], "listen") && argc >= 3)
+        return scenario_listen(argv + 2);
     if (!strcmp(argv[1], "leaver") && argc >= 6)
         return scenario_leaver(argv + 2);
     if (!strcmp(argv[1], "nocontrol") && argc >= 4)

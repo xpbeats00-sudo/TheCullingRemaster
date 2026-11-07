@@ -212,7 +212,7 @@ struct fstring { void *data; i32 num; i32 max; };
  * CULLING_NETPLAY_CONTROL names a folder shared with the game-server agent
  * (gameserver/agent.js), which speaks the backend's signed game-server API.
  * The host and the agent talk through small files there:
- *   listening            the host writes it once it listens (the agent posts ready)
+ *   listening            the host writes it once it listens, "port=<bound>" (the agent posts ready)
  *   tickets.txt          the agent: the match's tickets, by hash (PreLogin's check)
  *   used-<n>             the host: a ticket used ("<hash> <userID> <net id>")
  *   result.txt + .done   at the end of the match: each joined player's result
@@ -658,6 +658,24 @@ static void bind_world(void *world, void *driver)
 /* The driver np_listen bound (compared, never freed here). */
 static void *listen_driver;
 
+/* CULLING_NETPLAY_PORT=N (the agent's --port): the host listens on N, the
+ * address the backend sends its players to. The URL's port is set to it
+ * before InitListen; UIpNetDriver::InitListen then writes the port it bound
+ * back into the URL (+0x20, VA 0x1422d985e), which can be another one when
+ * N is taken (the engine tries the next ports). `listening` says which,
+ * "port=<bound>\n", and the agent refuses any port but N. */
+static const u16 port_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','P','O','R','T',0 };
+
+static i32 port_env(void)
+{
+    u16 v[8];
+    u32 n = (*(getenvw_fn *)(image_base() + IAT_GETENVW))(port_var, v, 8), i;
+    i32 p = 0;
+    for (i = 0; n > 0 && n < 6 && i < n && v[i] >= '0' && v[i] <= '9'; i++)
+        p = p * 10 + (v[i] - '0');
+    return p > 0 && p < 65536 ? p : 0;
+}
+
 /* Replaces LoadMap's call of UWorld::Listen(URL). */
 u8 np_listen(void *world, void *url)
 {
@@ -702,9 +720,15 @@ u8 np_listen(void *world, void *url)
         F(driver, O_STEAM_PASSTHRU, u8) = 1;
         init = FN(R_IP_INITLISTEN, init_listen_fn);
     }
+    if (port_env())
+        F(url, O_URL_PORT, i32) = port_env();
     u8 ok = init(driver, (u8 *)world + O_WORLD_NOTIFY, url, 0, &error);
-    if (ok && ctl_on())
-        ctl_write("listening", "1", 1);
+    if (ok && ctl_on()) {
+        char said[24], *q = put_str(said, "port=");
+        q = put_dec(q, F(url, O_URL_PORT, i32));
+        q = put_str(q, "\n");
+        ctl_write("listening", said, (u32)(q - said));
+    }
     if (trace_begin(&l, "listen-init")) {
         kv(&l, "ok", ok, 0);
         kv(&l, "steam_lan", steam, 0);

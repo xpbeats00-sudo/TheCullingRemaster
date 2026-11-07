@@ -23,11 +23,22 @@
 // The game talks to the agent only through those files (the host module is a
 // no-CRT blob with no network or crypto of its own).
 //
+// Each match has its own folder, <control>/<matchId>, which the host is
+// given as CULLING_NETPLAY_CONTROL (a host of an old match can never read a
+// new match's tickets); <control>/assignment.json is the latest assignment
+// with that folder as "control".
+//
 // It can also start and stop the host game itself (--launcher): one host
 // per assignment, from the assignment's map, with ?servernonce= and the
 // pre-match player count; headless with --headless (-nullrhi -nosound). The
-// host is stopped --linger-ms after the result (the players' post-match
-// screen), and a host that exits before its result aborts the match.
+// host listens on --port exactly (CULLING_NETPLAY_PORT) and reports the port
+// it bound in `listening` ("port=<n>"); any other port (the engine takes the
+// next free one when --port is taken) aborts the match. The host's pid and
+// exe go to <control>/host.pid, and an agent that starts finds a host left
+// running by its last run (a crash, a restart) there and kills it, once its
+// image name is the host exe's. The host is stopped --linger-ms after the
+// result (the players' post-match screen), and a host that exits before its
+// result aborts the match.
 //
 // usage: node agent.js --backend http://127.0.0.1:8123 --id gs1 --secret <hex>
 //          --host 127.0.0.1 --port 7777 --control <dir> [--log <file>]
@@ -37,7 +48,7 @@
 // The secret is the per-server one: `node server/allocator.js secret gs1 [dataDir]`.
 "use strict";
 
-const { spawn, execFileSync } = require("child_process");
+const { spawn, execFileSync, execFile } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
@@ -93,8 +104,51 @@ function call(action, payload) {
   });
 }
 
-const ctl = (name) => path.join(o.control, name);
+// The current match's folder (the host's control folder), and the agent's own.
+let matchDir = null;
+const ctl = (name) => path.join(matchDir || o.control, name);
+const root = (name) => path.join(o.control, name);
 const exists = (name) => fs.existsSync(ctl(name));
+const safeId = (id) => (/^[0-9A-Za-z_-]{1,64}$/.test(String(id)) ? String(id) : crypto.createHash("sha256").update(String(id)).digest("hex").slice(0, 32));
+
+// Old matches' folders: the newest few are kept (logs, results), and any
+// with a result still to post.
+function pruneMatchDirs(keep = 8) {
+  let dirs;
+  try { dirs = fs.readdirSync(o.control, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return; }
+  const list = dirs.map((d) => ({ name: d.name, at: fs.statSync(root(d.name)).mtimeMs }))
+    .filter((d) => root(d.name) !== matchDir && !fs.existsSync(path.join(root(d.name), "result.pending")))
+    .sort((a, b) => b.at - a.at);
+  for (const d of list.slice(keep)) { try { fs.rmSync(root(d.name), { recursive: true, force: true }); } catch { /* in use */ } }
+}
+
+const run = (file, args) => new Promise((resolve) => execFile(file, args, { encoding: "utf8", windowsHide: true },
+  (err, stdout) => resolve(err ? "" : String(stdout))));
+
+// A process's image name ("Victory.exe"), or null when no such process runs.
+async function imageName(pid) {
+  const out = await run("tasklist", ["/FI", "PID eq " + pid, "/FO", "CSV", "/NH"]);
+  const m = /^"([^"]+)","(\d+)"/m.exec(out);
+  return m && parseInt(m[2], 10) === pid ? m[1] : null;
+}
+
+const hostExeName = () => (o.victoryExe ? path.basename(o.victoryExe) : "Victory.exe");
+
+// A host the last run of the agent left (host.pid): killed, if it is still
+// that exe (a pid can be reused by anything once its process is gone).
+async function killOrphan() {
+  let saved;
+  try { saved = JSON.parse(fs.readFileSync(root("host.pid"), "utf8")); } catch { return; }
+  const pid = parseInt(saved && saved.pid, 10);
+  if (pid > 0) {
+    const name = await imageName(pid);
+    if (name && name.toLowerCase() === String(saved.exe || hostExeName()).toLowerCase()) {
+      await run("taskkill", ["/PID", String(pid), "/T", "/F"]);
+      log("orphan-killed", { pid, exe: name, matchId: saved.matchId || null });
+    } else log("orphan-gone", { pid, running: name });
+  }
+  try { fs.unlinkSync(root("host.pid")); } catch { /* gone */ }
+}
 
 let heartbeatMs = 2000;
 let assignment = null;      // the match being run
@@ -186,7 +240,7 @@ function startHost(a) {
   if (o.victoryExe) args.push("-FuncVictoryExe=" + o.victoryExe);
   if (o.steamSettings) args.push("-FuncSteamSettingsDir=" + o.steamSettings);
   const env = Object.assign({}, process.env, { FUNC_CLIENT_DISABLE_PAK_MOUNT: "1", CULLING_NETPLAY_PREMATCH: String(a.players),
-    CULLING_NETPLAY_CONTROL: o.control, CULLING_NETPLAY_TEAMSIZE: String(a.teamSize || 1) });
+    CULLING_NETPLAY_CONTROL: matchDir, CULLING_NETPLAY_TEAMSIZE: String(a.teamSize || 1), CULLING_NETPLAY_PORT: String(o.port) });
   if (o.hostTrace) env.CULLING_NETPLAY_TRACE = o.hostTrace;
   const launcher = spawn(o.launcher, args, { cwd: path.dirname(o.launcher), env, stdio: "ignore" });
   host = { launcher: launcher.pid, pid: null, matchId: a.matchId, stopAt: 0, since: Date.now() };
@@ -196,7 +250,10 @@ function startHost(a) {
 function stopHost(why) {
   if (!host) return;
   if (host.pid && alive(host.pid)) { try { process.kill(host.pid); } catch { /* gone */ } }
+  // The launcher and anything it started (the host, before its pid is known).
+  if (host.launcher && alive(host.launcher)) run("taskkill", ["/PID", String(host.launcher), "/T", "/F"]);
   log("host-stopped", { matchId: host.matchId, pid: host.pid, why });
+  try { fs.unlinkSync(root("host.pid")); } catch { /* gone */ }
   host = null;
 }
 
@@ -205,7 +262,10 @@ async function watchHost() {
   if (!host) return;
   if (!host.pid) {
     host.pid = victoryChildOf(host.launcher);
-    if (host.pid) { fs.writeFileSync(ctl("host.pid"), String(host.pid)); log("host-started", { pid: host.pid }); }
+    if (host.pid) {
+      fs.writeFileSync(root("host.pid"), JSON.stringify({ pid: host.pid, exe: hostExeName(), matchId: host.matchId }));
+      log("host-started", { pid: host.pid, matchId: host.matchId });
+    }
     else if (Date.now() - host.since > 120000) {
       log("host-never-started", { matchId: host.matchId });
       if (assignment && assignment.matchId === host.matchId) { await call("abort", { matchId: host.matchId, reason: "host-not-started" }).catch(() => {}); drop(); }
@@ -223,14 +283,6 @@ async function watchHost() {
     }
     host = null;
   }
-}
-
-// A fresh control folder for a new match: the host numbers its verify requests from 1.
-function clearControl() {
-  for (const f of fs.readdirSync(o.control))
-    if (/^(listening|tickets\.(txt|txt\.tmp)|used-\d+|result\.(txt|done|posted)|host\.(pid|func\.log))$/.test(f)) {
-      try { fs.unlinkSync(ctl(f)); } catch { /* in use */ }
-    }
 }
 
 // The match is over for this server (its result was paid, or the backend
@@ -257,8 +309,13 @@ function take(a) {
   confirming.clear();
   tickets.clear();
   ticketsText = null;
-  if (o.launcher) { stopHost("new match"); clearControl(); }
-  fs.writeFileSync(ctl("assignment.json"), JSON.stringify(a, null, 1));
+  if (o.launcher) stopHost("new match");
+  matchDir = root(safeId(a.matchId));
+  fs.mkdirSync(matchDir, { recursive: true });
+  const saved = JSON.stringify(Object.assign({}, a, { control: matchDir }), null, 1);
+  fs.writeFileSync(ctl("assignment.json"), saved);
+  atomicWrite(root("assignment.json"), saved);
+  pruneMatchDirs();
   log("assignment", { matchId: a.matchId, playlist: a.playlist, players: a.players, bots: a.bots, field: a.field,
     roster: a.teams.flatMap((t) => t.players.map((p) => p.userID)) });
   if (o.launcher) startHost(a);
@@ -278,6 +335,23 @@ async function heartbeat() {
     } else log("heartbeat-refused", { status: r.status, json: r.json });
   } catch (e) { log("heartbeat-error", { error: e.message }); }
   setTimeout(heartbeat, heartbeatMs);
+}
+
+// listening: "port=<n>", the port the host bound. Only --port is ours (the
+// address the backend sends players to): another one means --port was
+// taken (an old host on it), so the match can't run here.
+async function hostListening() {
+  const text = fs.readFileSync(ctl("listening"), "utf8");
+  if (!text.endsWith("\n")) return;                         // still being written: next poll
+  const m = /port=(\d+)/.exec(text);
+  const port = m ? parseInt(m[1], 10) : 0;
+  if (port === o.port) return postReady();
+  log("port-mismatch", { matchId: assignment.matchId, want: o.port, bound: port || null });
+  const matchId = assignment.matchId;
+  const r = await call("abort", { matchId, reason: "port-mismatch" }).catch((e) => ({ status: 0, json: { error: e.message } }));
+  log("abort", { status: r.status, json: r.json });
+  if (host && host.matchId === matchId) stopHost("port-mismatch");
+  drop();
 }
 
 async function postReady() {
@@ -367,10 +441,10 @@ async function postResult() {
 
 async function poll() {
   try {
-    if (assignment && !readyPosted && exists("listening")) await postReady();
+    if (assignment && !readyPosted && exists("listening")) await hostListening();
     if (assignment && readyPosted) {
       writeTickets();                       // drops tickets that expired
-      for (const f of fs.readdirSync(o.control)) {
+      for (const f of fs.readdirSync(matchDir)) {
         const m = /^used-(\d+)$/.exec(f);
         if (m && !confirming.has(+m[1])) confirmUse(+m[1]).catch((e) => log("ticket-used-error", { error: e.message }));
       }
@@ -383,6 +457,7 @@ async function poll() {
 
 (async () => {
   if (o.launcher && !o.clientDll) { console.error("--launcher needs --client-dll"); process.exit(2); }
+  if (o.launcher) await killOrphan();
   const r = await call("register", { host: o.host, port: o.port, version: "route-b-agent-1" });
   log("register", { status: r.status, json: r.json });
   if (r.status !== 200) process.exit(1);
