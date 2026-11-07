@@ -448,9 +448,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// errorCode: what the game's menu reads from a refused /api/login (every
+// refusal carries one, so the menu can say why it is offline).
 app.use((req, res, next) => {
-  if (stopping) { res.setHeader('Connection', 'close'); return res.status(503).json({ error: 'stopping' }); }
-  if (!allowHttp(requestIp(req))) return res.status(429).json({ error: 'too-many-requests' });
+  if (stopping) { res.setHeader('Connection', 'close'); return res.status(503).json({ errorCode: 'stopping', error: 'stopping' }); }
+  if (!allowHttp(requestIp(req))) return res.status(429).json({ errorCode: 'rate-limited', error: 'too-many-requests' });
   next();
 });
 
@@ -505,15 +507,17 @@ app.get(['/api', '/api/'], (req, res) => {
 app.post('/api/login', (req, res) => {
   const body = bodyObject(req);
   const userID = normalizeUserID(body.userid);
-  if (!validUserID(userID)) return res.status(400).json({ error: 'invalid-userid' });
+  if (!validUserID(userID)) return res.status(400).json({ errorCode: 'invalid-userid', error: 'invalid-userid' });
   const ipHash = accounts.hashIp(requestIp(req));
   if (REQUIRE_ACCOUNT && !accounts.useGrant(userID, ipHash)) {
     log('login refused (no play grant)', userID);
     return res.status(403).json({ errorCode: 'account-required', error: 'account-required' });
   }
   if (!hasProfile(userID)) {
-    if (Object.keys(profiles).length >= MAX_PROFILES) return res.status(503).json({ error: 'server-full' });
-    if (!allowNewProfile(requestIp(req))) return res.status(429).json({ error: 'too-many-new-players' });
+    if (Object.keys(profiles).length >= MAX_PROFILES) return res.status(503).json({ errorCode: 'server-full', error: 'server-full' });
+    if (!allowNewProfile(requestIp(req))) {
+      return res.status(429).json({ errorCode: 'too-many-new-players', error: 'too-many-new-players' });
+    }
   }
   const token = sessions.issue(userID);
   const p = getProfile(userID);
@@ -1146,7 +1150,10 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
   if (status >= 500) log('HTTP error', req.method, req.originalUrl.slice(0, 200), err.stack || err.message);
   if (res.headersSent) return;
-  res.status(status).json({ error: status >= 500 ? 'server-error' : String(err.type || 'bad-request') });
+  const out = { error: status >= 500 ? 'server-error' : String(err.type || 'bad-request') };
+  // A login body that can't be read has no user ID in it.
+  if (req.path === '/api/login' && status < 500) out.errorCode = 'invalid-userid';
+  res.status(status).json(out);
 });
 
 // ---------------------------------------------------------------- socket.io
