@@ -366,8 +366,9 @@ const sessions = new Sessions(path.join(DATA_DIR, 'sessions.json'), Date.now, {
   saveDelayMs: SAVE_DELAY_MS,
   onSaveError: (e) => { metrics.error('save'); log('saving sessions failed:', e.message); }
 });
+// Addresses on tickets are kept hashed (accounts.hashIp), never raw.
 const tickets = new MatchTickets(Date.now, path.join(DATA_DIR, 'tickets.json'), {
-  saveDelayMs: SAVE_DELAY_MS,
+  saveDelayMs: SAVE_DELAY_MS, hashIp: (ip) => accounts.hashIp(ip),
   onSaveError: (e) => { metrics.error('save'); log('saving match tickets failed:', e.message); }
 });
 // Showdown series (showdown.js), in data/showdown-series.json so a restart
@@ -383,6 +384,9 @@ const friends = new Friends(path.join(DATA_DIR, 'friends.json'), {
 });
 // Friend requests, removals and party invites per player: one a second, bursts of 20.
 const allowFriendAction = rateLimiter(1, 20);
+// Player cards per player: one a second, bursts of 10 (a card shows a
+// player's record to anyone: this bounds looking names up in bulk).
+const allowPlayerCard = rateLimiter(1, 10);
 // Leaderboard requests per player: one every 2 seconds, bursts of 5.
 const allowLeaderboard = rateLimiter(0.5, 5);
 const allowHttp = rateLimiter(20, 60);
@@ -846,7 +850,7 @@ function showdownTicket(req, nickname) {
   const userID = userFromRequest(req);
   if (userID) return tickets.peek({ userID });
   const ip = requestIp(req);
-  const mine = [...tickets.open.values()].filter((t) => t.ip === ip && t.map === SHOWDOWN.map);
+  const mine = tickets.fromIp(ip).filter((t) => t.map === SHOWDOWN.map);
   if (mine.length <= 1) return mine[0] || null;
   const nick = typeof nickname === 'string' ? nickname.trim().toLowerCase() : '';
   const named = nick ? mine.filter((t) => String(usernameOf(t.userID) || '').toLowerCase() === nick) : [];
@@ -1216,7 +1220,7 @@ function gauges() {
     accounts: Object.assign({ required: REQUIRE_ACCOUNT }, accounts.stats()),
     rateLimiterKeys: { http: allowHttp.size(), socket: allowSocket.size(), newProfile: allowNewProfile.size(),
       registerAttempt: allowRegisterAttempt.size(), register: allowRegister.size(), loginIp: allowLoginIp.size(),
-      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size() },
+      loginUser: allowLoginUser.size(), leaderboard: allowLeaderboard.size(), playerCard: allowPlayerCard.size() },
     saving: { profiles: profileStore.stats, sessions: sessions.store ? sessions.store.stats : null,
       accounts: accounts.store ? accounts.store.stats : null },
     stopping
@@ -1786,10 +1790,18 @@ function statusOf(userID) {
   return { state, label, lastSeen: state === 'offline' ? friends.peek(userID).seen : null };
 }
 
-// A player as friends and party lists show them.
+// A player as friends and party lists show them. `status` (what they are
+// doing now, when they were last seen) is only for their friends and party
+// (mayWatch): pushFriends and playerCard leave it out for anyone else.
 function friendEntry(userID) {
   return Object.assign({ username: usernameOf(userID) || 'Player' }, lobbyCard(userID), { status: statusOf(userID) });
 }
+function mayWatch(viewer, userID) {
+  if (viewer === userID || friends.areFriends(viewer, userID)) return true;
+  const p = friends.party(viewer);
+  return Boolean(p && p.members.includes(userID));
+}
+const withoutStatus = (e) => { const out = Object.assign({}, e); delete out.status; return out; };
 
 // entry: friendEntry, or a cached one (flushFriends).
 function partyView(userID, entry = friendEntry) {
@@ -1832,15 +1844,17 @@ function pushFriends(userID, entry) {
   const socket = socketsByUser.get(userID);
   if (!socket || !socket.connected) return;
   const me = friends.peek(userID);
+  // Friends and party members with their status; anyone else (requests) without.
+  const shown = (id) => (mayWatch(userID, id) ? entry(id) : withoutStatus(entry(id)));
   const list = me.friends.map(entry)
     .sort((a, b) => STATE_ORDER[a.status.state] - STATE_ORDER[b.status.state] || a.username.localeCompare(b.username));
   socket.emit('remaster-friends', {
     you: usernameOf(userID),
     friends: list,
-    incoming: me.incoming.map(entry),
-    outgoing: me.outgoing.map(entry),
-    party: partyView(userID, entry),
-    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: entry(i.from) })),
+    incoming: me.incoming.map(shown),
+    outgoing: me.outgoing.map(shown),
+    party: partyView(userID, shown),
+    invites: friends.invitesFor(userID).map((i) => ({ partyId: i.partyId, from: shown(i.from) })),
     maxParty: friends.limits.maxParty
   });
 }
@@ -1901,9 +1915,10 @@ function playerCard(userID, viewer) {
     memberSince: p.createdAt || null,
     showdown: p.showdown ? { won: p.showdown.won || 0, lost: p.showdown.lost || 0 } : { won: 0, lost: 0 },
     showdownTeams: showdownTeamsCard(p),
-    ranked: null,
-    status: statusOf(userID)
+    ranked: null
   });
+  // What they are doing now: for themselves, their friends and their party only.
+  if (viewer && mayWatch(viewer, userID)) card.status = statusOf(userID);
   const r = p.ranked;
   if (r && Number.isFinite(r.rating)) {
     const rating = Math.min(ranked.CONFIG.maxRating, r.rating);
@@ -2240,7 +2255,8 @@ io.on('connection', (socket) => {
     for (const id of new Set([me].concat(before))) sendFriends(id);
   });
   // A player's card: yours, or anyone's by username (no such player: found false).
-  friendAction('player-card', (me, msg) => {
+  friendAction('player-card', (me, msg, reply) => {
+    if (!allowPlayerCard(me)) return reply({ error: 'slow-down' });
     const id = msg.username === undefined ? me : target(msg);
     socket.emit('remaster-player-card', id ? Object.assign({ found: true }, playerCard(id, me))
       : { found: false, username: typeof msg.username === 'string' ? msg.username.slice(0, 40) : null });

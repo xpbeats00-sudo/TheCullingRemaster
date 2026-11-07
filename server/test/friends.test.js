@@ -309,6 +309,39 @@ function friendsWhen(socket, check, ms = 3000) {
       assert.strictEqual(c.ranked, null, "no ranked matches yet");
     });
 
+    await test("a stranger's card and a friend request show no live status or last seen", async () => {
+      const card = next(A.socket, "remaster-player-card");
+      A.socket.emit("player-card", { username: "Charlie_3" });
+      const c = await card;
+      assert.ok(c.found);
+      assert.strictEqual(c.relation, "none");
+      assert.ok(!("status" in c), "no status on a stranger's card: " + JSON.stringify(c.status));
+      const asked = friendsWhen(C.socket, (f) => f.incoming.length === 1);
+      assert.ok((await act(A, "friend-request", { username: "Charlie_3" })).ok);
+      const f = await asked;
+      assert.ok(!("status" in f.incoming[0]), "no status on a request");
+      const mine = friendsWhen(A.socket, (x) => x.outgoing.length === 1, 3000);
+      A.socket.emit("friends-get");
+      assert.ok(!("status" in (await mine).outgoing[0]), "nor on your own request");
+    });
+
+    await test("player cards are rate limited: one a second, bursts of 10", async () => {
+      await sleep(1100);
+      let cards = 0, slow = 0;
+      const onCard = () => cards++;
+      const onResult = (r) => { if (r.action === "player-card" && r.error === "slow-down") slow++; };
+      A.socket.on("remaster-player-card", onCard);
+      A.socket.on("remaster-friend-result", onResult);
+      for (let i = 0; i < 20; i++) A.socket.emit("player-card", { username: "bravo" });
+      await sleep(400);
+      A.socket.off("remaster-player-card", onCard);
+      A.socket.off("remaster-friend-result", onResult);
+      // (The per-address socket limit may drop some of the 20 as well: every
+      // test player connects from 127.0.0.1.)
+      assert.ok(cards >= 1 && cards <= 11, "cards: " + cards);
+      assert.ok(slow >= 1, "the rest refused: " + slow);
+    });
+
     await test("going offline: friends see it, with when they were last seen", async () => {
       const off = friendsWhen(A.socket, (f) => f.friends[0].status.state === "offline");
       B.socket.close();
