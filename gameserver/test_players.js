@@ -20,7 +20,8 @@ const out = arg("out");
 const count = parseInt(arg("count", "2"), 10);
 const queue = arg("queue", "ffa_jungle");
 const waitMs = parseInt(arg("wait-ms", "900000"), 10);
-const ioClient = require(path.join(arg("server-dir"), "node_modules", "socket.io-client"));
+// The backend checkout's own socket.io-client, else one on NODE_PATH (a worktree without node_modules).
+const ioClient = (() => { try { return require(path.join(arg("server-dir"), "node_modules", "socket.io-client")); } catch { return require("socket.io-client"); } })();
 
 function log(event, fields = {}) { console.log(JSON.stringify(Object.assign({ t: new Date().toISOString(), event }, fields))); }
 
