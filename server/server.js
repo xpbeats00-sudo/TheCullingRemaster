@@ -712,6 +712,8 @@ app.post('/api/matchresult', (req, res) => {
   }
   const s = p.stats;
   s.xp = Math.min(seasonXPCap(), s.xp + earned);
+  // What was really added (less than earned near the season cap).
+  const xpAdded = s.xp - startXP;
   const level = Math.min(SEASON.maxLevel, levelForXP(s.xp) || s.level);
   const levelled = Boolean(level && level !== s.level);
   if (levelled) {
@@ -719,15 +721,15 @@ app.post('/api/matchresult', (req, res) => {
     s.level = level;
   }
   if (!tooShort) careerMatch(userID, p, r, claim.ticket.mode);
-  p.lastMatch = Object.assign({ at: Date.now(), xpEarned: earned }, r);
+  p.lastMatch = Object.assign({ at: Date.now(), xpEarned: xpAdded }, r);
   saveProfiles();
-  log('match result', userID, JSON.stringify(r), `+${earned} XP (${startXP} -> ${s.xp}), +${credits} credits`);
+  log('match result', userID, JSON.stringify(r), `+${xpAdded} XP (${startXP} -> ${s.xp}), +${credits} credits`);
   const socket = socketsByUser.get(userID);
   if (socket) sendPlayer(socket, p);
   // A new level can unlock airdrops: the menu gets them without a restart.
   if (socket && levelled) socket.emit('entitlements-response', entitlements(p));
   setPresence(userID, 'menu');
-  send({ startXP, xpEarned: earned, stats: s, credits, ranked: rankedResult, showdown: null });
+  send({ startXP, xpEarned: xpAdded, stats: s, credits, ranked: rankedResult, showdown: null });
 });
 
 // A real match on the career: games, kills, wins, damage and time, overall and
@@ -802,6 +804,7 @@ function showdownMatchResult(send, claim, body, userID) {
     today.take(credits, earned);
     p.cullCredits += credits;
     st.xp = Math.min(seasonXPCap(), st.xp + earned);
+    earned = st.xp - startXP;                 // what was really added (near the season cap: less)
     const level = Math.min(SEASON.maxLevel, levelForXP(st.xp) || st.level);
     const levelled = Boolean(level && level !== st.level);
     if (levelled) { log('level', userID, st.level, '->', level); st.level = level; }

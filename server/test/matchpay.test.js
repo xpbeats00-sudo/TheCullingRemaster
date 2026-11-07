@@ -12,8 +12,8 @@ let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log("ok    " + name); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function withServer(vars, fn) {
-  const srv = startServer({ vars });
+async function withServer(vars, fn, profiles) {
+  const srv = startServer({ vars, profiles });
   let sock = null;
   try {
     await srv.ready();
@@ -184,6 +184,27 @@ async function showdown(srv, sock, rounds, body = {}, waitMs = 0) {
       assert.strictEqual(await round(1), true, "a round later");
       assert.strictEqual(await round(2), false, "right after the round before");
     });
+  });
+
+  // 100 XP below the season cap (the top of level 14: 79,749 XP).
+  const nearCap = { [A]: { userID: A, cullCredits: 100, premiumCurrency: 0, cardID: 0, economy: 1, owned: [],
+    stats: { xp: 79649, level: 14, kills: 0, wins: 0, gamesPlayed: 0, totalDamage: 0, minutesAlive: 0, funcEarned: 0, rank: 0 } } };
+
+  await test("xpEarned is the XP really added, near the season cap", async () => {
+    await withServer({}, async (srv, play) => {
+      const r = await play({ kills: 3, damage: 800, timeAlive: 0, victory: false });
+      assert.strictEqual(r.json.stats.xp, 79749);
+      assert.strictEqual(r.json.xpEarned, 100, "not the 1500 the match was worth");
+      assert.strictEqual(srv.profiles()[A].lastMatch.xpEarned, 100);
+    }, nearCap);
+  });
+
+  await test("and in a Showdown series", async () => {
+    await withServer({}, async (srv, play, sock) => {
+      const r = await showdown(srv, sock, 4);
+      assert.strictEqual(r.json.stats.xp, 79749);
+      assert.strictEqual(r.json.xpEarned, 100);
+    }, nearCap);
   });
 
   console.log("all %d matchpay tests passed", passed);
