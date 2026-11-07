@@ -70,6 +70,9 @@ class ConnectionTickets {
     return { ok: true, claims: c };
   }
 
+  // A ticket the game server checked itself (by its hash) is used up here too.
+  markUsed(id, expiresAt) { this.prune(); this.used.set(id, expiresAt); }
+
   // Every ticket of a match stops working (the match was cancelled or is over).
   revokeMatch(matchId) { this.revoked.set(matchId, this.now() + this.ttlMs); }
 

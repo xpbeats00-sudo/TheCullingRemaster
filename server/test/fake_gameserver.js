@@ -108,6 +108,7 @@ class FakeGameServer {
       if (this.dead || !this.assignment || this.assignment.matchId !== a.matchId) return;
       const r = await this.call("ready", { matchId: a.matchId });
       this.readyPosted = r.status === 200 ? Date.now() : null;
+      this.readyAnswer = r.json;
       this.events.push(["ready", r.status]);
     }, this.o.readyDelayMs);
   }

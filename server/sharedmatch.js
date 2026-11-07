@@ -23,7 +23,10 @@
 //    ClientCheckServerNonce and a client whose own differs quits (Victory.exe
 //    0x1401dce90 and 0x140233b00). Everyone in the match gets the same address
 //    and server nonce.
-// 4. The game server checks each ticket at PreLogin (verify-ticket), runs the
+// 4. The game server checks each ticket at PreLogin: locally, by the ticket's
+//    SHA-256 from its assignment (tickets, once running; also in the ready
+//    answer), then confirms the use (ticket-used: one use per ticket; the
+//    older verify-ticket round trip still works). It runs the
 //    match and posts one signed result for everyone; the backend pays and
 //    rates every player from it (sharedresults.js). The client HUD's own
 //    /api/matchresult for a shared match is ignored and logged.
@@ -40,6 +43,7 @@ const { Allocator, sign, safeEqualHex, loadSecret, parsePool, parsePorts, parseC
 const { ConnectionTickets } = require("./connticket");
 const { CoalescedJsonFile } = require("./store");
 
+const ticketHash = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
 const int = (v, d) => { const n = parseInt(v, 10); return Number.isInteger(n) ? n : d; };
 
 // Every setting, from the environment (documented in PARTY_MATCHMAKING_REWORK.md).
@@ -274,7 +278,21 @@ class SharedMatches {
     return { matchId: rec.matchId, playlist: rec.playlist, map: rec.map, mapIndex: rec.mapIndex, matchUrl: rec.matchUrl,
       teamSize: rec.teamSize, teamsCount: rec.teamsCount, field: rec.field, ranked: rec.ranked,
       players: teams.reduce((n, t) => n + t.players.length, 0), bots: this.botCount(rec), teams,
-      ticketTtlMs: this.cfg.ticketTtlMs, startsWithFists: true, serverNonce: rec.serverNonce };
+      ticketTtlMs: this.cfg.ticketTtlMs, startsWithFists: true, serverNonce: rec.serverNonce, tickets: this.ticketList(rec) };
+  }
+
+  // Once the match runs: every sent player's ticket as the game server
+  // checks it at PreLogin (its SHA-256, the ticket's id, the player and
+  // team), how long it stays good and whether it was used already.
+  ticketList(rec) {
+    if (rec.state !== "running") return [];
+    const out = [];
+    for (const [id, pl] of Object.entries(rec.players)) {
+      if (pl.state !== "sent" || !pl.ticketHash) continue;
+      out.push({ id: pl.ticketId, hash: pl.ticketHash, userID: id, team: pl.team,
+        expiresInMs: Math.max(0, (pl.ticketExpiresAt || 0) - this.now()), used: !!pl.joined });
+    }
+    return out;
   }
 
   // The server is ready: every player still here is sent in (same address,
@@ -299,6 +317,11 @@ class SharedMatches {
         const pl = rec.players[id];
         const t = this.tickets.issue({ matchId, userID: id, team: pl.team, serverId: rec.serverId });
         pl.ticketId = t.id;
+        // The game server checks a ticket locally, by its hash (the agent
+        // gets the match's hashes in its assignment): no backend round trip
+        // at PreLogin. The ticket itself goes only to its player.
+        pl.ticketHash = ticketHash(t.token);
+        pl.ticketExpiresAt = t.expiresAt;
         pl.state = "sent";
         this.requeues.delete(id);
         let out;
@@ -583,13 +606,19 @@ class SharedMatches {
       }
       case "ready": {
         const r = a.ready(serverId, matchId);
-        return r.error ? { status: 409, json: r } : { status: 200, json: r };
+        if (r.error) return { status: 409, json: r };
+        // The tickets are issued as the match goes running (onReady): the
+        // answer carries the assignment with them, so the server can let
+        // the first players in before its next heartbeat.
+        const rec = this.matches.get(matchId);
+        return { status: 200, json: rec && rec.serverId === serverId ? Object.assign({}, r, { assignment: this.assignment(rec) }) : r };
       }
       case "abort": {
         const r = a.abort(serverId, matchId, body.reason);
         return r.error ? { status: 409, json: r } : { status: 200, json: r };
       }
       case "verify-ticket": return this.verifyTicket(serverId, body);
+      case "ticket-used": return this.ticketUsed(serverId, body);
       case "result": return this.result(serverId, body);
       default: return { status: 404, json: { error: "unknown-action" } };
     }
@@ -625,12 +654,42 @@ class SharedMatches {
       team: pl.team, party: pl.party || null } };
   }
 
+  // The game server let a player in by its ticket's hash (checked locally at
+  // PreLogin): the ticket is used up here too and the player counts as
+  // joined. A ticket is good once: a second use, another player's ticket or
+  // one of another match is refused (the agent logs it).
+  ticketUsed(serverId, body) {
+    const matchId = typeof body.matchId === "string" ? body.matchId : "";
+    const rec = this.matches.get(matchId);
+    const hash = typeof body.hash === "string" ? body.hash.toLowerCase() : "";
+    const refuse = (error, extra = {}) => {
+      this.counters.ticketsRefused++;
+      this.event("ticket-refused", Object.assign({ matchId, serverId, error, local: true }, extra));
+      return { status: 403, json: { ok: false, error } };
+    };
+    if (!rec || rec.state !== "running" || rec.serverId !== serverId) return refuse("match-not-running");
+    if (!/^[0-9a-f]{64}$/.test(hash)) return refuse("malformed");
+    const entry = Object.entries(rec.players).find(([, pl]) => pl.ticketHash === hash);
+    if (!entry) return refuse("not-in-match");
+    const [userID, pl] = entry;
+    if (typeof body.userID === "string" && body.userID && body.userID !== userID) return refuse("wrong-user", { userID });
+    if (pl.state !== "sent") return refuse("not-in-match", { userID });
+    if (pl.joined || this.tickets.used.has(pl.ticketId)) return refuse("used", { userID });
+    if ((pl.ticketExpiresAt || 0) < this.now()) return refuse("expired", { userID });
+    this.tickets.markUsed(pl.ticketId, pl.ticketExpiresAt);
+    pl.joined = true;
+    this.counters.ticketsAccepted++;
+    this.event("ticket-accepted", { matchId, serverId, userID, team: pl.team, local: true });
+    this.save();
+    return { status: 200, json: { ok: true, userID, username: this.deps.usernameOf(userID) || null, team: pl.team, party: pl.party || null } };
+  }
+
   // The routes: POST /api/gameserver/<action>, signed. Registered only when shared matches are on.
   routes(app) {
     if (!this.allocator) return;
     app.post("/api/gameserver/:action", (req, res) => {
       const action = String(req.params.action);
-      if (!/^(register|heartbeat|ready|abort|verify-ticket|result)$/.test(action)) return res.status(404).json({ error: "unknown-action" });
+      if (!/^(register|heartbeat|ready|abort|verify-ticket|ticket-used|result)$/.test(action)) return res.status(404).json({ error: "unknown-action" });
       const auth = this.authenticate(req, action);
       if (auth.error) {
         this.event("request-refused", { action, serverId: String(req.headers["x-culling-server"] || "").slice(0, 40), error: auth.error });
@@ -684,4 +743,4 @@ class SharedMatches {
   stop() { if (this.allocator) this.allocator.stop(); }
 }
 
-module.exports = { SharedMatches, config, packTeams, groupsOf, MESSAGES };
+module.exports = { SharedMatches, config, packTeams, groupsOf, MESSAGES, ticketHash };

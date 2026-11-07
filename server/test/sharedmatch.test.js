@@ -335,6 +335,38 @@ function sharedVars(extra = {}) {
       assert.strictEqual(srv.profiles()[M.userID].stats.xp, xp, "no pay for a no-show");
     });
 
+    await test("local ticket checks: the server gets each ticket's hash (ready answer, heartbeats), never the ticket; ticket-used is one use", async () => {
+      clear(L, M);
+      const { ticketHash } = require("../sharedmatch");
+      const lr = waitFor(L, "match-ready"), mr = waitFor(M, "match-ready");
+      L.socket.emit("join-mm", { queueName: "ffa_jungle_coop2" });
+      const [a, b] = await Promise.all([lr, mr]);
+      const f = byAddress(a.gameServer);
+      // match-ready goes out while the server's ready call is answered: wait for that answer.
+      for (let i = 0; i < 80 && !(f.readyAnswer && f.readyAnswer.assignment && f.readyAnswer.assignment.matchId === a.matchId); i++) await sleep(25);
+      const ready = f.readyAnswer && f.readyAnswer.assignment;
+      assert.ok(ready && ready.matchId === a.matchId, "the ready answer carries the assignment: " + JSON.stringify(f.readyAnswer));
+      assert.deepStrictEqual(ready.tickets.map((t) => [t.userID, t.hash, t.team]).sort(),
+        [[L.userID, ticketHash(a.nonce), a.team], [M.userID, ticketHash(b.nonce), b.team]].sort());
+      assert.ok(ready.tickets.every((t) => t.expiresInMs > 0 && t.used === false && /^[0-9a-f]+$/.test(t.id)), JSON.stringify(ready.tickets));
+      assert.ok(!JSON.stringify(ready).includes(a.nonce) && !JSON.stringify(ready).includes(b.nonce), "never the tickets themselves");
+      const used = (hash, userID) => f.call("ticket-used", { matchId: a.matchId, hash, userID });
+      assert.strictEqual((await used(ticketHash(a.nonce), M.userID)).json.error, "wrong-user", "the leader's ticket for the member");
+      const ok = await used(ticketHash(a.nonce), L.userID);
+      assert.deepStrictEqual([ok.status, ok.json.ok, ok.json.userID, ok.json.team], [200, true, L.userID, a.team]);
+      assert.deepStrictEqual([(await used(ticketHash(a.nonce), L.userID)).json.error, (await used(ticketHash(a.nonce))).status], ["used", 403], "one use");
+      assert.strictEqual((await join(a, L.userID)).json.error, "used", "verify-ticket knows it was used");
+      assert.strictEqual((await used("ab".repeat(32))).json.error, "not-in-match", "a hash not of this match");
+      assert.strictEqual((await used("zz")).json.error, "malformed");
+      assert.strictEqual((await f.call("ticket-used", { matchId: "0000000000000000", hash: ticketHash(b.nonce) })).json.error, "match-not-running");
+      await sleep(700);    // heartbeats: the used one is flagged
+      assert.deepStrictEqual(f.assignment.tickets.map((t) => [t.userID, t.used]).sort(), [[L.userID, true], [M.userID, false]].sort());
+      assert.strictEqual((await used(ticketHash(b.nonce), M.userID)).status, 200);
+      const r = await f.result({ players: { [L.userID]: { joined: true }, [M.userID]: { joined: true } } });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.json));
+      assert.deepStrictEqual([r.json.paid, r.json.noShow], [2, []], "both joined through ticket-used");
+    });
+
     await test("Ranked Duos: the party's ranked matches are rated from the server's team placement", async () => {
       clear(L, M);
       const lr = waitFor(L, "match-ready"), mr = waitFor(M, "match-ready");
