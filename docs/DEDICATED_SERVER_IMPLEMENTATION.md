@@ -33,9 +33,20 @@ Players who join after the pods opened stand in pods that never open; in a real 
 
   **Without distinct IDs it fails, and real players aren't affected.** All the games on one PC share one Steam ID, so the host credited the kill and the death to the first record with that ID (another player's) and left both players' own records untouched. Real players each have their own ID. The scoreboard screen itself wasn't looked at, only its data. The host's own local player (NetHost) is in the match and on the scoreboard; a headless host (milestone 7) won't have one.
 
-  Not yet tested: ranged weapons, blocking and shoves, the kill feed and death screen, the end-of-match results, and a real player's mouse and keyboard. Calling only the weapon's `ServerStartPrimaryInput` RPC (0x14030e590) does nothing visible: on the host it only refreshes the weapon's speed values. |
+  Not yet tested: ranged weapons, blocking and shoves, the kill feed and death screen, and a real player's mouse and keyboard. Calling only the weapon's `ServerStartPrimaryInput` RPC (0x14030e590) does nothing visible: on the host it only refreshes the weapon's speed values. |
 | 5 | Loot, containers, airdrops, gas, weather | BLOCKED on 3 | |
-| 6 | Match flow and results from the host (`shared-match-backend`: allocator, tickets, server results) | BLOCKED on 3 | The backend side is built and tested against a stand-in (`PARTY_MATCHMAKING_REWORK.md`). |
+| 6 | Match flow and results from the host (`shared-match-backend`: allocator, tickets, server results) | **PARTIAL: the match ends and every game sees the result** (2026-11-06) | **The game's own end of match runs on the host and reaches both players.** The test (CULLING_NETPLAY_END=1, with the one-sided attack and `--distinct-ids`): 5 s after Player One kills Player Two, the host eliminates everyone else (14 to 16 bots and the host's own player) and stops holding the match open (the no-end flag +0x74d). The stock free-for-all check then ends the match:
+  - **match state** (AGameState::MatchState +0x440): InProgress to WaitingPostMatch on the host, and on both clients within 1 s;
+  - **winner:** Player One's record gets the winner flag (record +0x28 goes from 0x1 to 0x101, byte +0x29) and death order 18 (1st of 18);
+  - **scoreboard:** the same on all three games (1 alive, Player One 1 kill, Player Two dead and killed by Player One);
+  - **after the results:** the post-match phase lasts about 30 s. Then the host leaves the map, the listen socket closes, and both players' connections end within 1 s. All three games stay up, and no game crashed.
+
+  **Fixed on the way:** the host crashed 2 s after the match ended. My replication loop read a character's inventory from the host player's spectator pawn (a dead player's pawn is a smaller class), and passed the garbage to CallPreReplication as an actor. Every inventory, weapon and health read now checks the AShooterCharacter class first.
+
+  **Not done:**
+  - what the players see at the end (their end screen; desktop capture shows only the title art over the game windows);
+  - where the players go when the host leaves (their menu or an error);
+  - the backend side: posting the results, placement and XP to the server from the host (`shared-match-backend`), and a real pre-match phase that waits for the expected players instead of the no-end flag and PreLogin bypass. |
 | 7 | A headless host on the VPS (`-nullrhi`) | BLOCKED on 3 | |
 
 ## Milestone 3: how the host sends its world
@@ -82,7 +93,7 @@ The engine's send loop (`UNetDriver::ServerReplicateActors`) was compiled out, b
 6. Reads the host's trace.
 7. Stops only what it started, restores the exe, and writes `netplay_run.json`.
 
-Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`.
+Options: `--clients 2` starts a second player. `--distinct-ids` gives each game its own test Steam ID and name (`steam_settingsorce_steamid.txt` and `force_account_name.txt`, written just before each game starts and restored byte for byte after); kill credit needs it on one PC. Test switches (environment): `CULLING_NETPLAY_PREREP`, `_MOVE`, `_GIVE`, `_TELEPORT=1|2`, `_DAMAGE`, `_ATTACK`, `_ATTACK_ONE_SIDE`, `_END`. `--shots N` saves a desktop screenshot every N seconds after the joins.
 
 Two notes:
 - **The listen socket lives as long as the host's world.** A match that ends sends the game back to the menu, which closes the socket. That's why bots are on.

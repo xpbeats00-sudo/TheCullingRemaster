@@ -55,6 +55,16 @@ TEST_IDS = {"host": ("76561197960266901", "NetHost"), "client": ("76561197960266
             "client2": ("76561197960266903", "NetPlayerTwo")}
 
 
+def shot(path):
+    """The whole desktop as a PNG (System.Drawing)."""
+    ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+          "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
+          "$i=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+          "$g=[System.Drawing.Graphics]::FromImage($i);$g.CopyFromScreen($b.Left,$b.Top,0,0,$i.Size);"
+          "$i.Save('%s');" % path.replace("'", "''"))
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=60)
+
+
 def read_ids():
     return {f: (open(os.path.join(STEAM_SETTINGS, f), "rb").read() if os.path.exists(os.path.join(STEAM_SETTINGS, f)) else None)
             for f in ID_FILES}
@@ -171,6 +181,7 @@ def main():
     ap.add_argument("--no-client", action="store_true")
     ap.add_argument("--after-join", type=int, default=45)
     ap.add_argument("--clients", type=int, default=1, choices=(1, 2))
+    ap.add_argument("--shots", type=int, default=0, help="a desktop screenshot every N seconds after the joins")
     ap.add_argument("--distinct-ids", action="store_true", help="give each game its own test Steam ID and name")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -267,7 +278,16 @@ def main():
                     if not client2:
                         client2 = 0
                 if joins >= a.clients:
-                    time.sleep(a.after_join)
+                    if a.shots:
+                        # Desktop screenshots while the games run (the three windows sit side by side).
+                        t_end = time.time() + a.after_join
+                        k = 0
+                        while time.time() < t_end:
+                            time.sleep(min(a.shots, max(0, t_end - time.time())))
+                            shot(os.path.join(a.out, "shot%02d.png" % k))
+                            k += 1
+                    else:
+                        time.sleep(a.after_join)
                     break
             result["evidence"]["host_udp_at_end"] = udp_owners(PORT)[1]
             alive = victories()

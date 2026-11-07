@@ -660,6 +660,10 @@ static void scan_world(u8 *world, u8 *gm, u8 *gs, u32 now)
 #define R_CLS_PICKUP       0x303d00    /* AShooterWeapon::StaticClass getter (takes the package name) */
 #define R_PKG_VICTORY      0x2567aa0   /* L"/Script/Victory" */
 typedef u8 *(*class_fn)(const u16 *pkg);
+/* Fields past AActor (inventory, current weapon, health) are read only from
+ * AShooterCharacters: a dead player's spectator pawn is another, smaller
+ * class (reading them there crashed a client, and the host at match end). */
+static i32 is_character(u8 *obj);
 
 static i32 count_pickups(void *ctx)
 {
@@ -705,7 +709,7 @@ static i32 collect(u8 *world, u8 **out, u8 *kind)
             u8 *a = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
             if (!a)
                 continue;
-            if (pass) {
+            if (pass && is_character(a)) {
                 /* A character's inventory weapons go first, so that the
                  * character's Inventory and CurrentWeapon refer to weapons
                  * the client already has (in game, a reference sent before
@@ -723,6 +727,8 @@ static i32 collect(u8 *world, u8 **out, u8 *kind)
                     kind[n] = 1;
                     out[n++] = cur;
                 }
+                kind[n] = 2;
+            } else if (pass) {
                 kind[n] = 2;
             } else {
                 kind[n] = 0;
@@ -754,8 +760,8 @@ static u32 give_at;
 
 static i32 holds_class(u8 *pawn, u8 *cls)
 {
-    u8 **items = F(pawn, O_CH_INVENTORY, u8 **);
-    i32 k, ni = F(pawn, O_CH_INVENTORY + 8, i32);
+    u8 **items = is_character(pawn) ? F(pawn, O_CH_INVENTORY, u8 **) : 0;
+    i32 k, ni = items ? F(pawn, O_CH_INVENTORY + 8, i32) : 0;
     for (k = 0; items && k < ni && k < MAX_INVENTORY; k++)
         if (items[k] && F(items[k], O_OBJ_CLASS, u8 *) == cls)
             return 1;
@@ -768,7 +774,7 @@ static void host_give(u8 *world, u8 *remote, u32 now)
     u8 *data;
     i32 i, num;
     struct line l;
-    if (gave || !remote || !env_on(var, &give_state))
+    if (gave || !remote || !is_character(remote) || !env_on(var, &give_state))
         return;
     if (!give_at) { give_at = now + 10000; return; }
     if ((i32)(now - give_at) < 0)
@@ -779,7 +785,7 @@ static void host_give(u8 *world, u8 *remote, u32 now)
         u8 *p = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
         u8 **items;
         i32 k, ni;
-        if (!p || p == remote)
+        if (!p || p == remote || !is_character(p))
             continue;
         items = F(p, O_CH_INVENTORY, u8 **);
         ni = F(p, O_CH_INVENTORY + 8, i32);
@@ -1068,6 +1074,93 @@ static void trace_scoreboard(u8 *world, const char *tag)
     trace_end(&l);
 }
 
+/* CULLING_NETPLAY_END=1 (with the attack test): 5 s after the second
+ * joined player dies, the host eliminates every other character but the
+ * first joined player's (bots and the host's own player; ApplyDamage
+ * 10000), then stops holding its match open (the no-end flag), so the
+ * game's own free-for-all check ends it with that player the last one alive.
+ * Every game traces the match state (AGameState::MatchState, +0x440) and
+ * the winner. */
+#define O_GS_MATCH_STATE   0x440       /* AGameState::MatchState (FName) */
+#define REC_FLAGS          0x28        /* bIsAlive, then the record's other bools (bIsWinner among them) */
+static const u16 end_var[] = { 'C','U','L','L','I','N','G','_','N','E','T','P','L','A','Y','_','E','N','D',0 };
+static const u16 ms_waiting[] = { 'W','a','i','t','i','n','g','T','o','S','t','a','r','t',0 };
+static const u16 ms_progress[] = { 'I','n','P','r','o','g','r','e','s','s',0 };
+static const u16 ms_post[] = { 'W','a','i','t','i','n','g','P','o','s','t','M','a','t','c','h',0 };
+static const u16 ms_leaving[] = { 'L','e','a','v','i','n','g','M','a','p',0 };
+static i32 end_state = 1, end_phase;  /* 0 holding, 1 waiting, 2 released */
+static u32 end_at;
+static u64 state_names[4];
+
+/* 1 WaitingToStart, 2 InProgress, 3 WaitingPostMatch, 4 LeavingMap, 0 other, -1 no game state */
+static i32 match_state(u8 *world)
+{
+    u8 *gs = world ? F(world, O_W_GAMESTATE, u8 *) : 0;
+    i32 i;
+    if (!gs)
+        return -1;
+    for (i = 0; i < 4; i++) {
+        if (!state_names[i])
+            FN(R_FNAME, fname_fn)(&state_names[i], i == 0 ? ms_waiting : i == 1 ? ms_progress : i == 2 ? ms_post : ms_leaving, 1);
+        if ((u32)state_names[i] == F(gs, O_GS_MATCH_STATE, u32))
+            return i + 1;
+    }
+    return 0;
+}
+
+static u8 *record_of(u8 *world, u8 *ps)
+{
+    u8 *gs = world ? F(world, O_W_GAMESTATE, u8 *) : 0;
+    u8 *recs = gs ? F(gs, O_GS_RECORDS, u8 *) : 0;
+    i32 i, num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0;
+    for (i = 0; ps && recs && i < num; i++)
+        if (F(recs + (u64)i * REC_SIZE, REC_PS, u8 *) == ps)
+            return recs + (u64)i * REC_SIZE;
+    return 0;
+}
+
+static void host_end(u8 *world, u8 **conns, i32 nconn, u32 now)
+{
+    u8 *pc0 = nconn > 0 && conns[0] ? F(conns[0], O_CONN_PC, u8 *) : 0;
+    u8 *pc1 = nconn > 1 && conns[1] ? F(conns[1], O_CONN_PC, u8 *) : 0;
+    u8 *r0 = pc0 ? record_of(world, F(pc0, O_C_PLAYERSTATE, u8 *)) : 0;
+    u8 *r1 = pc1 ? record_of(world, F(pc1, O_C_PLAYERSTATE, u8 *)) : 0;
+    u8 *keep = pc0 ? F(pc0, O_C_PAWN, u8 *) : 0, *data;
+    struct line l;
+    i32 i, num, killed = 0;
+    if (!tp2_done || !env_on(end_var, &end_state))
+        return;
+    if (end_phase == 0 && r1 && !F(r1, REC_ALIVE, u8)) {
+        end_phase = 1;
+        end_at = now + 5000;
+    }
+    if (end_phase == 1 && (i32)(now - end_at) >= 0 && keep) {
+        data = F(world + O_W_PAWNS, 0, u8 *);
+        num = F(world + O_W_PAWNS, 8, i32);
+        for (i = 0; data && i < num; i++) {
+            u8 *p = (u8 *)FN(R_WEAK_GET, weak_get_fn)(data + (u64)i * 8);
+            if (p && p != keep && health_of(p) > 0) {
+                FN(R_APPLY_DAMAGE, apply_damage_fn)(p, 10000.0f, 0, 0, 0);
+                killed++;
+            }
+        }
+        end_phase = 2;
+        if (trace_begin(&l, "end-release")) {
+            kv(&l, "eliminated", (u64)killed, 0);
+            trace_end(&l);
+        }
+    }
+    if (trace_begin(&l, "end")) {
+        kv_s(&l, "phase", end_phase);
+        kv_s(&l, "match_state", match_state(world));
+        kv(&l, "p0_flags", r0 ? (u64)F(r0, REC_FLAGS, u32) : 0, 1);
+        kv(&l, "p1_flags", r1 ? (u64)F(r1, REC_FLAGS, u32) : 0, 1);
+        kv_s(&l, "p0_order", r0 ? F(r0, REC_DEATH_ORDER, i32) : -2);
+        kv_s(&l, "p1_order", r1 ? F(r1, REC_DEATH_ORDER, i32) : -2);
+        trace_end(&l);
+    }
+}
+
 static u32 watch_next;
 
 static void host_watch(u8 *world, u8 **conns, i32 nconn, u32 now)
@@ -1095,6 +1188,7 @@ static void host_watch(u8 *world, u8 **conns, i32 nconn, u32 now)
         trace_records(world, "records", pc0 ? F(pc0, O_C_PLAYERSTATE, u8 *) : 0, pc1 ? F(pc1, O_C_PLAYERSTATE, u8 *) : 0);
         trace_scoreboard(world, "scoreboard");
     }
+    host_end(world, conns, nconn, now);
 }
 
 static void host_teleport(u8 *remote, u32 now)
@@ -1332,7 +1426,7 @@ static void server_replicate(u8 *driver)
         if (st.remote_pawn && F(st.remote_pawn, O_A_ROOT, u8 *)) {
             u8 *root = F(st.remote_pawn, O_A_ROOT, u8 *);
             kv(&l, "remote_pawn", (u64)st.remote_pawn, 1);
-            kv(&l, "remote_inv", (u64)F(st.remote_pawn, O_CH_INVENTORY + 8, i32), 0);
+            kv(&l, "remote_inv", is_character(st.remote_pawn) ? (u64)F(st.remote_pawn, O_CH_INVENTORY + 8, i32) : 0, 0);
             kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
             kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
             kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
@@ -1359,14 +1453,15 @@ static void client_trace(u8 *driver)
     kv(&l, "channels", (u64)(F(conn + O_CONN_CHMAP, 0x08, i32) - F(conn + O_CONN_CHMAP, 0x34, i32)), 0);
     kv(&l, "pc", (u64)pc, 1);
     kv(&l, "pawn", (u64)mine, 1);
+    kv_s(&l, "match_state", match_state(world));
     kv_s(&l, "loot", pc ? count_pickups(pc) : -1);
     if (mine) {
-        u8 **items = F(mine, O_CH_INVENTORY, u8 **);
-        i32 k, ni = F(mine, O_CH_INVENTORY + 8, i32);
+        u8 **items = is_character(mine) ? F(mine, O_CH_INVENTORY, u8 **) : 0;
+        i32 k, ni = items ? F(mine, O_CH_INVENTORY + 8, i32) : 0;
         kv(&l, "inv", (u64)(ni < 0 ? 0 : ni), 0);
         for (k = 0; items && k < ni && k < 6; k++)
             kv(&l, "item_class", items[k] ? (u64)F(items[k], O_OBJ_CLASS, u8 *) : 0, 1);
-        kv(&l, "current", (u64)F(mine, O_CH_CURRENT, u8 *), 1);
+        kv(&l, "current", is_character(mine) ? (u64)F(mine, O_CH_CURRENT, u8 *) : 0, 1);
     }
     trace_end(&l);
     trace_scoreboard(world, "client-scoreboard");
@@ -1379,7 +1474,7 @@ static void client_trace(u8 *driver)
             continue;
         kv(&l, "pawn", (u64)p, 1);
         kv(&l, "mine", p == mine, 0);
-        kv(&l, "holding", F(p, O_CH_CURRENT, u8 *) != 0, 0);
+        kv(&l, "holding", is_character(p) && F(p, O_CH_CURRENT, u8 *) != 0, 0);
         kv_s(&l, "x", (i32)F(root, O_SC_LOCATION, float));
         kv_s(&l, "y", (i32)F(root, O_SC_LOCATION + 4, float));
         kv_s(&l, "z", (i32)F(root, O_SC_LOCATION + 8, float));
@@ -1503,8 +1598,10 @@ void np_tick_flush(void *driver, float dt)
          * left), so the test host holds it open. */
         u8 *world = F(driver, O_ND_WORLD, u8 *);
         u8 *gm = world ? F(world, O_WORLD_AUTH_GM, u8 *) : 0;
-        if (gm)
+        if (gm && end_phase < 2)
             F(gm, O_GM_NO_END, u8) = 1;
+        else if (gm && end_phase == 2 && F(gm, O_GM_NO_END, u8))
+            F(gm, O_GM_NO_END, u8) = 0;             /* released once (CULLING_NETPLAY_END) */
         server_replicate((u8 *)driver);
     } else if (driver && F(driver, O_ND_SERVERCONN, void *)) {
         client_move((u8 *)driver);
