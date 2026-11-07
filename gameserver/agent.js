@@ -540,6 +540,14 @@ function resultBody(text) {
       damage: Math.min(5000, Math.max(0, parseInt(f.damage, 10) || 0)),
       timeAlive: Math.min(sinceReady, Math.max(0, parseInt(f.alive_s, 10) || 0)) });
   }
+  // One winner, whatever the host says (an older host gave everyone alive at
+  // the time limit placement 1, which the backend refuses): the player with
+  // the game's winner flag (else the first) keeps 1st, the others 2nd.
+  const firsts = players.filter((p) => p.joined && p.placement === 1);
+  if ((assignment.teamSize || 1) === 1 && firsts.length > 1) {
+    const keep = firsts.find((p) => (byUser.get(p.userID) || {}).winner === "1") || firsts[0];
+    for (const p of firsts) if (p !== keep) p.placement = 2;
+  }
   const body = { matchId: assignment.matchId, duration: sinceReady, players };
   if ((assignment.teamSize || 1) > 1) {
     // Team placement: the host's (its rank among all the match's teams, bots'
@@ -551,6 +559,13 @@ function resultBody(text) {
       const team = players.find((p) => p.userID === userID).team;
       const tp = parseInt(f.team_placement, 10);
       if (tp > 0) hostPlace.set(team, Math.min(teamsCount, tp));
+    }
+    const won = [...hostPlace.entries()].filter(([, pl]) => pl === 1).map(([team]) => team);
+    if (won.length > 1) {
+      // One winning team: the one with the game's winner flag (else the first).
+      const keep = won.find((team) => [...byUser].some(([userID, f]) => f.winner === "1"
+        && players.find((p) => p.userID === userID).team === team)) || won[0];
+      for (const team of won) if (team !== keep) hostPlace.set(team, 2);
     }
     if (hostPlace.size) {
       body.teams = [...hostPlace.entries()].map(([team, placement]) => ({ team, placement, outcome: placement === 1 ? "won" : "out" }));

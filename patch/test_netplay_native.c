@@ -566,6 +566,60 @@ static int scenario_listen(char **v)
     return 0;
 }
 
+/* M2: the match ends at its time limit with several alive. Exactly one
+ * winner: the game's winner flag 1st, the other living after it, the dead
+ * after them. argv: tickets A, B, C and their users; "teams" for Duos. */
+static int scenario_timelimit(char **v)
+{
+    int teams = !strcmp(v[6], "teams");
+    u8 *c[3], *p[3], *r[3], *bot = new_ps(4), *rbot, *cl[3];
+    char buf[3200], want[200], *s;
+    int i, firsts = 0;
+    listen_world(7777);
+    for (i = 0; i < 3; i++) {
+        c[i] = new_conn();
+        p[i] = new_ps(0);
+        CHECK(strcmp(login(c[i], v[2 * i], steam_of(v[2 * i + 1])), "") == 0);
+        give_pc(c[i], p[i]);
+        cl[i] = c[i];
+    }
+    set_conns(cl, 3);
+    {
+        u8 *list[4];
+        list[0] = p[0]; list[1] = p[1]; list[2] = p[2]; list[3] = bot;
+        set_players(list, 4);
+    }
+    for (i = 0; i < 3; i++)
+        r[i] = add_record(p[i], steam_of(v[2 * i + 1]), 0);
+    rbot = add_record(bot, "bot", 0);
+    tick();
+    tick();
+    /* The time limit: A (the game's winner) and B alive, C dead first, the bot alive. */
+    F(r[0], 0x29, u8) = 1;
+    F(r[2], 0x28, u8) = 0; F(r[2], 0x5c, i32) = 1;
+    (void)rbot;
+    set_state(N_POST);
+    tick();
+    CHECK(read_file("result.txt", buf, sizeof(buf)) > 0);
+    printf("      %s", buf);
+    for (s = buf; (s = strstr(s, teams ? " team_placement=1 " : " placement=1 ")) != 0; s++)
+        firsts++;
+    _snprintf(want, sizeof(want), "user=%s placement=1 ", v[1]);
+    CHECK(strstr(buf, want) != 0);
+    _snprintf(want, sizeof(want), "user=%s placement=2 ", v[3]);
+    CHECK(strstr(buf, want) != 0);
+    _snprintf(want, sizeof(want), "user=%s placement=4 ", v[5]);
+    CHECK(strstr(buf, want) != 0);
+    if (teams) {
+        /* Teams 1, 2, 3 (one player each, the bot on team 1 with A): A's team won; B's, alive, 2nd; C's 3rd. */
+        CHECK(strstr(buf, " team=1 team_placement=1 ") && strstr(buf, " team=2 team_placement=2 ") && strstr(buf, " team=3 team_placement=3 "));
+    }
+    CHECK(firsts == 1);
+    printf("ok    the time limit with several alive: the winner 1st, the other living 2nd, the dead last; one winner%s\n",
+           teams ? " team" : "");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -575,6 +629,8 @@ int main(int argc, char **argv)
         return scenario_tickets(argv + 2);
     if (!strcmp(argv[1], "players") && argc >= 7)
         return scenario_players(argv + 2);
+    if (!strcmp(argv[1], "timelimit") && argc >= 9)
+        return scenario_timelimit(argv + 2);
     if (!strcmp(argv[1], "listen") && argc >= 3)
         return scenario_listen(argv + 2);
     if (!strcmp(argv[1], "leaver") && argc >= 6)

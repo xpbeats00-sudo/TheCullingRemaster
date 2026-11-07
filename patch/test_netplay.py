@@ -529,6 +529,11 @@ def test_native():
         print("native: the listen port (H3)")
         run_scenario(exe, "listen", ["free"], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_PORT": "7790"}, ctl)
         run_scenario(exe, "listen", ["taken"], {"CULLING_NETPLAY_PREMATCH": "2", "CULLING_NETPLAY_PORT": "7790"}, ctl)
+        print("native: two or more alive at the time limit (M2)")
+        tc2, uc = ta.replace("v1.", "v1.t"), "steam:76561197960266904"
+        for mode, env in (("solo", {}), ("teams", {"CULLING_NETPLAY_TEAMSIZE": "2"})):
+            run_scenario(exe, "timelimit", [ta, ua, tb, ub, tc2, uc, mode], dict({"CULLING_NETPLAY_PREMATCH": "3"}, **env), ctl,
+                         [(ta, 1, ua), (tb, 2, ub), (tc2, 3, uc)])
         print("native: pass")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

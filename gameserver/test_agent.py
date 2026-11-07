@@ -485,6 +485,21 @@ def scripted():
         backend.cancel = None
         print("ok    a cancelled match: its host stopped")
 
+        # An older host's result with two players at placement 1 (both alive at the time limit): one winner posted.
+        mid8 = "8888888888888888"
+        backend.match(mid8)
+        until(lambda: any(c[1].get("matchId") == mid8 for c in backend.of("ready")), 15, "ready")
+        mdir8 = os.path.join(ag5.ctl, mid8)
+        with open(os.path.join(mdir8, "result.txt"), "w", newline="\n") as f:
+            f.write("field=16\nelapsed=1500\nplayer n=1 user=%s placement=1 order=0 kills=1 damage=90 alive_s=1490 winner=0 alive=1\n"
+                    "player n=2 user=%s placement=1 order=0 kills=2 damage=120 alive_s=1490 winner=1 alive=1\n" % USERIDS)
+        open(os.path.join(mdir8, "result.done"), "w").write("1")
+        ag5.event("result", pred=lambda e: e.get("matchId") == mid8 and e.get("status") == 200)
+        body = [c[1] for c in backend.of("result") if c[1].get("matchId") == mid8][-1]
+        place = {p["userID"]: p["placement"] for p in body["players"]}
+        assert place == {USERIDS[0]: 2, USERIDS[1]: 1}, place
+        print("ok    two at placement 1 from the host: the one with the winner flag posted 1st, the other 2nd")
+
         # A failing backend is asked less and less often (no 200 ms hammering), and again as usual once it answers.
         backend.heartbeat_status = 503
         t0 = time.time()

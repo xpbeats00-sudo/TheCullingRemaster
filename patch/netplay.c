@@ -1886,7 +1886,12 @@ static i32 team_placement(u8 *world, i32 team)
         last[k] = -1;
     for (i = 0; recs && i < num; i++) {
         u8 *r = recs + (u64)i * REC_SIZE;
-        i32 tm = F(r, REC_TEAM, i32), o = F(r, REC_ALIVE, u8) || F(r, REC_WINNER, u8) ? 0x7fffffff : F(r, REC_DEATH_ORDER, i32);
+        /* The game's winner last of all; then any team still alive (at the
+         * time limit), each its own rank by its number; then the dead by
+         * death order. Two teams alive used to tie for 1st, a result the
+         * backend refuses (two winners). */
+        i32 tm = F(r, REC_TEAM, i32);
+        i32 o = F(r, REC_WINNER, u8) ? 0x7fffffff : F(r, REC_ALIVE, u8) ? 0x7fff0000 + (MAX_TEAMS - tm) : F(r, REC_DEATH_ORDER, i32);
         if (tm > 0 && tm <= MAX_TEAMS && o > last[tm])
             last[tm] = o;
     }
@@ -1933,10 +1938,35 @@ static i32 record_place(u8 *world, u8 *r)
     if (F(r, REC_WINNER, u8))
         return 1;
     if (!F(r, REC_ALIVE, u8))
-        return order <= 0 || order > num ? 1 : num + 1 - order;
+        return order <= 0 || order > num ? (num > 1 ? num : 2) : num + 1 - order;
     for (i = 0; recs && i < num; i++)
         alive += F(recs + (u64)i * REC_SIZE, REC_ALIVE, u8) != 0;
     return alive > 0 ? alive : 1;
+}
+
+/* A record's placement at the end. The winner by the game's own flag first
+ * (with the host's player taken out of the contestants, the game gave the
+ * winner a death order that tied with a bot's: in game 2 of 15); anyone
+ * else still alive (the time limit) after it, in record order; the dead by
+ * death order (records + 1 - order). Only one record can be 1st: two alive
+ * at the time limit used to both be 1st, which the backend refuses. */
+static i32 final_place(u8 *world, u8 *r)
+{
+    u8 *gs = F(world, O_W_GAMESTATE, u8 *);
+    u8 *recs = gs ? F(gs, O_GS_RECORDS, u8 *) : 0;
+    i32 num = gs ? F(gs, O_GS_RECORDS + 8, i32) : 0, order = F(r, REC_DEATH_ORDER, i32), i, place = 1, winner = 0;
+    if (F(r, REC_WINNER, u8))
+        return 1;
+    if (!F(r, REC_ALIVE, u8))
+        return order <= 0 || order > num ? (num > 1 ? num : 2) : num + 1 - order;
+    for (i = 0; recs && i < num; i++) {
+        u8 *x = recs + (u64)i * REC_SIZE;
+        if (F(x, REC_WINNER, u8))
+            winner = 1;
+        else if (x < r && F(x, REC_ALIVE, u8))
+            place++;
+    }
+    return place + winner;
 }
 
 static void ctl_track_joins(u8 *driver, u8 *world)
@@ -2052,12 +2082,7 @@ static void ctl_result(u8 *driver, u8 *world)
             continue;
         }
         order = F(r, REC_DEATH_ORDER, i32);
-        placement = order <= 0 || order > num ? 1 : num + 1 - order;
-        /* The winner by the game's own flag: with the host's player taken
-         * out of the contestants, the game gave the winner a death order
-         * that tied with a bot's (in game: 2 of 15). */
-        if (F(r, REC_WINNER, u8))
-            placement = 1;
+        placement = final_place(world, r);
         q = put_str(q, " placement=");
         q = put_dec(q, placement);
         q = put_str(q, " order=");
