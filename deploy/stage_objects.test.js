@@ -68,7 +68,29 @@ function publish(version, files) {
     tm.build.gate = "passed";
     fs.writeFileSync(path.join(pub, "manifest.json"), JSON.stringify(tm));
     await stage(pub, upd, () => {}, { allowRemovals: true });
-    console.log("stage_objects: all 10 checks passed");
+    // --manifest: the publish stages from the manifest it verified (a TEMP copy), not the release folder's,
+    // which a rebuild on the build PC can replace mid-publish.
+    publish("7", { "Victory/a.pak": A });
+    const verified = path.join(t, "verified-manifest.json");
+    fs.copyFileSync(path.join(pub, "manifest.json"), verified);
+    const E = Buffer.from("rebuilt E");
+    publish("8", { "Victory/a.pak": A, "Victory/e.pak": E });                // the folder's manifest changes after the check
+    n = await stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified });
+    assert.deepStrictEqual([n.reused, n.uploaded], [1, 0], "staged release 7's objects, not the rebuilt folder's");
+    assert.strictEqual(plan(pub, upd, () => {}, { allowRemovals: true, manifest: verified }).to, "7");
+    // --sig: the manifest must match its signature (the launcher's release key, or the one given).
+    const keys = crypto.generateKeyPairSync("ed25519");
+    const sigFile = path.join(t, "verified-manifest.json.sig");
+    fs.writeFileSync(sigFile, crypto.sign(null, fs.readFileSync(verified), keys.privateKey).toString("base64"));
+    await stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified, sig: sigFile, publicKey: keys.publicKey });
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified, sig: sigFile }), /signature/,
+      "not the launcher's release key");
+    fs.writeFileSync(verified, fs.readFileSync(path.join(pub, "manifest.json")));          // altered after signing
+    await assert.rejects(stage(pub, upd, () => {}, { allowRemovals: true, manifest: verified, sig: sigFile, publicKey: keys.publicKey }), /signature/);
+    const cliM = spawnSync(process.execPath, [path.join(__dirname, "stage_objects.js"), "--plan", "--allow-removals", "--manifest", verified, "--sig", sigFile, pub, upd], { encoding: "utf8" });
+    assert.strictEqual(cliM.status, 1, "the command line checks the signature too: " + cliM.stdout + cliM.stderr);
+    assert.match(cliM.stderr, /signature/);
+    console.log("stage_objects: all 12 checks passed");
   } finally {
     fs.rmSync(t, { recursive: true, force: true });
   }

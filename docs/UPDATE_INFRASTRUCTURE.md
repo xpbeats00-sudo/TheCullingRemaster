@@ -144,7 +144,7 @@ On the VPS, over Remote Desktop with the build PC's C: drive shared, run from th
 
 Use the second form only when step 2 below lists removals you expect. Either runs `deploy/publish_release.ps1 -Release \\tsclient\C\Culling\releases\1.4.0\publish`:
 
-1. **Signature check** with the launcher's key. An unsigned or altered release is refused.
+1. **Signature check** with the launcher's key, of a copy of the manifest and its `.sig` taken once into TEMP. An unsigned or altered release is refused. Every later step reads that verified copy (`stage_objects.js --manifest ... --sig ...`), never the release folder's manifest, so a rebuild on the build PC mid-publish can't change what is staged. Only one publish runs at a time (`C:\culling\publish.lock`); a second one is refused before it does anything.
 2. **The plan** (`deploy/stage_objects.js --plan`): what changes against the live release and what will upload. It **refuses**:
    - a release with no files;
    - a release whose `build.gate` isn't `passed` (a test build);
@@ -155,8 +155,8 @@ Use the second form only when step 2 below lists removals you expect. Either run
    - otherwise: copied from the build PC and checked against its SHA-256.
 
    Objects are never overwritten. (Tested by `deploy/stage_objects.test.js` and `deploy/publish.test.js`.)
-4. **The setup** is copied to the website's download folder from the staged setup object.
-5. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
+4. **Swap-in:** the signature, then the manifest, each swapped in whole. A launcher that reads between the two retries once.
+5. **The setup** is copied to the website's download folder from the staged setup object, only now that the release is live (a publish that fails earlier leaves the website as it was; a failure here is reported as `PUBLISH FAILED AFTER GOING LIVE`).
 6. **Checks** over HTTPS (`deploy/check_published.js`), including that the live manifest's version is the one just published.
 
 **How it ends (docs/SERVER_AUDIT_2.md, D1 and D2).** The window's last lines are one of:

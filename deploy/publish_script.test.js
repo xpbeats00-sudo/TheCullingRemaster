@@ -65,6 +65,36 @@ try {
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(updates, "manifest.json"), "utf8")).version, "1.3.9", "untouched");
   });
 
+  test("a second publish while one runs is refused, and touches nothing", () => {
+    const updates = path.join(root, "updates");
+    fs.mkdirSync(updates, { recursive: true });
+    fs.writeFileSync(path.join(updates, "manifest.json"), JSON.stringify({ version: "1.3.9", files: [] }));
+    const fd = fs.openSync(path.join(root, "publish.lock"), "w");          // the publish already running holds it
+    let r;
+    try {
+      r = publish(release("1.3.11"));
+    } finally {
+      fs.closeSync(fd);
+    }
+    assert.strictEqual(r.status, 1, r.out);
+    assert.match(r.out, /PUBLISH FAILED: nothing was published \(1\.3\.9 is still live\): another publish is running/);
+    assert.doesNotMatch(r.out, /== Signature/, "stopped before anything");
+    // Once it is over, the next publish gets past the lock (to the signature check, here).
+    const again = publish(release("1.3.11"));
+    assert.match(again.out, /== Signature/, again.out);
+    assert.ok(!fs.existsSync(path.join(root, "publish.lock")), "the lock goes when the publish ends");
+  });
+
+  test("every stage step uses the manifest that was verified, and the website changes only after going live", () => {
+    const ps = fs.readFileSync(path.join(__dirname, "publish_release.ps1"), "utf8").replace(/\r\n/g, "\n");
+    const calls = ps.split("\n").filter((l) => /stage_objects\.js/.test(l) && /Invoke-Node/.test(l));
+    assert.strictEqual(calls.length, 3, calls.join("\n"));
+    for (const c of calls) assert.match(c, /--manifest \$stagedManifest --sig \$stagedSig/, c);
+    const goLive = ps.indexOf("Step 'Go live'"), website = ps.indexOf("Step 'Website setup'"), check = ps.indexOf("Step 'Check");
+    assert.ok(goLive > 0 && website > goLive && check > website, "Go live, then the website, then the check");
+    assert.ok(ps.indexOf("$live = $true") < website, "a website failure reports the release as live");
+  });
+
   test("logs are kept to the newest 30", () => {
     for (let i = 0; i < 35; i++) fs.writeFileSync(path.join(logs, `publish-20200101-0000${String(i).padStart(2, "0")}.log`), "old");
     publish(path.join(t, "nowhere"));
