@@ -1760,10 +1760,18 @@ static void host_teleport(u8 *remote, u32 now)
     }
 }
 
+/* The pass's actor list, kept off the stack: with it there the frame was
+ * 0x1038 bytes, more than a page, and the blob has no stack probes
+ * (build_netplay.py MAX_FRAME). Through a pointer, as join_table(). */
+struct rep_list { u8 *actors[MAX_REP]; u8 kind[MAX_REP]; };
+static struct rep_list rep_store;
+__declspec(noinline) static struct rep_list *rep_list(void) { return &rep_store; }
+
 static void server_replicate(u8 *driver)
 {
-    u8 *actors[MAX_REP];
-    u8 kind[MAX_REP];
+    struct rep_list *rl = rep_list();
+    u8 **actors = rl->actors;
+    u8 *kind = rl->kind;
     u8 *world = F(driver, O_ND_WORLD, u8 *);
     u8 **conns = F(driver, O_ND_CLIENTS, u8 **);
     i32 nconn = F(driver, O_ND_CLIENTS + 8, i32), n, i, c, live = 0;

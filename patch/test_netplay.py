@@ -155,6 +155,18 @@ def test_blob_is_position_independent():
     print("blob: pass (%d bytes, position independent, up to date)" % len(blob))
 
 
+def test_stack_frames():
+    # No stack probes in the blob (/Gs1000000, no __chkstk): every function's
+    # frame, from its unwind data, stays under a page.
+    frames = build_netplay.build_frames()
+    assert len(frames) >= 10, "unwind data for %d functions only" % len(frames)
+    name, size = max(frames.items(), key=lambda kv: kv[1])
+    assert size < build_netplay.MAX_FRAME, "%s takes 0x%x bytes of stack" % (name, size)
+    # The parser itself: a frame known from the source (ctl_result's 3200-byte buffer) is seen.
+    assert any(f >= 3200 for f in frames.values()), sorted(frames.items(), key=lambda kv: -kv[1])[:3]
+    print("stack frames: pass (%d functions, the largest %s 0x%x < 0x%x)" % (len(frames), name, size, build_netplay.MAX_FRAME))
+
+
 def _dir64_relocs(data, off, size):
     """Set of RVAs with an IMAGE_REL_BASED_DIR64 entry in the .reloc data at off."""
     out, p, end = set(), off, off + size
@@ -390,6 +402,7 @@ def test_real_exe(path):
 
 if __name__ == "__main__":
     test_blob_is_position_independent()
+    test_stack_frames()
     test_trampolines()
     test_stand_in()
     if len(sys.argv) > 1:
