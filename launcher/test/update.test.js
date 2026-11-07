@@ -704,6 +704,43 @@ async function test(name, fn) { await fn(); passed++; console.log("ok    " + nam
       assert.ok(read(r, "Victory/scanned.pak").equals(f1));
     });
 
+    await test("a journal whose backup folder leaves .remaster is dropped, not followed", async () => {
+      const r = path.join(tmp, "bad-hold");
+      release("bh", "1.0.0", { "Victory/x.bin": Buffer.from("x1"), "Victory/y.bin": Buffer.from("y1") });
+      await install("bh", r);
+      const Y2 = Buffer.from("y2");
+      const staged = path.join(r, ".remaster", "staging", "Victory", "y.bin");
+      fs.mkdirSync(path.dirname(staged), { recursive: true });
+      fs.writeFileSync(staged, Y2);
+      const outside = path.join(tmp, "bad-hold-outside");
+      for (const hold of ["../../bad-hold-outside", "backup/../../../bad-hold-outside", "..\\..\\bad-hold-outside", "replaced", "backup-X", "staging", 7]) {
+        fs.writeFileSync(path.join(r, ".remaster", "journal.json"), JSON.stringify({
+          version: "2.0.0", from: "1.0.0", hold, obsolete: [], oldRecords: {},
+          files: [{ path: "Victory/y.bin", sha256: sha(Y2), size: 2, hadOld: true }]
+        }));
+        assert.strictEqual(sync.recover(r), false, "not recovered: " + hold);
+        assert.ok(!fs.existsSync(path.join(r, ".remaster", "journal.json")), "the bad journal is gone: " + hold);
+        assert.ok(!fs.existsSync(outside), "nothing moved outside: " + hold);
+        assert.ok(read(r, "Victory/y.bin").equals(Buffer.from("y1")), "the installed file stays: " + hold);
+      }
+      assert.strictEqual(sync.installedVersion(r), "1.0.0");
+      assert.deepStrictEqual(await sync.plan(await get("bh"), r), [], "the install still checks out");
+    });
+
+    await test("a last-commit record whose backup folder leaves .remaster can't be restored from", async () => {
+      const r = path.join(tmp, "bad-last");
+      await install("v1", r);
+      await install("v2", r);
+      const lastFile = path.join(r, ".remaster", "last-commit.json");
+      const last = JSON.parse(fs.readFileSync(lastFile, "utf8"));
+      last.hold = "../..";
+      fs.writeFileSync(lastFile, JSON.stringify(last));
+      assert.strictEqual(sync.previousVersion(r), null, "nothing to restore is offered");
+      assert.throws(() => sync.rollback(r), /damaged/);
+      assert.strictEqual(sync.installedVersion(r), "1.1.0", "the install is untouched");
+      assert.ok(read(r, "Victory/c.ini").equals(C2));
+    });
+
     console.log("all %d update tests passed", passed);
   } finally {
     server.close();

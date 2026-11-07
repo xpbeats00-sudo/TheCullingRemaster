@@ -141,8 +141,22 @@ const stateDir = (gameRoot) => path.join(gameRoot, STATE_DIR);
 // Where a file is staged; its path was checked by targetPath first.
 const stagedPath = (gameRoot, rel) => path.join(stateDir(gameRoot), "staging", ...rel.split("/"));
 // Where a commit keeps the files it replaces: the journal names the folder
-// (journals of the first launchers didn't: "backup").
-const holdDir = (gameRoot, journal) => path.join(stateDir(gameRoot), ...String(journal.hold || "backup").split("/"));
+// (journals of the first launchers didn't: "backup"). The journal is read
+// back from disk, so the name must be one a commit writes (backup,
+// backup-<id> or replaced/<id>) and stay inside .remaster: a damaged or
+// planted journal can't move the game's files anywhere else.
+const HOLD_RX = /^(backup|backup-[0-9a-z]+|replaced\/[0-9a-z]+)$/;
+function holdDir(gameRoot, journal) {
+  const hold = journal.hold === undefined ? "backup" : journal.hold;
+  const base = stateDir(gameRoot);
+  if (typeof hold === "string" && HOLD_RX.test(hold)) {
+    const dir = path.join(base, ...hold.split("/"));
+    const root = path.resolve(base);
+    if (path.resolve(dir).startsWith(root.endsWith(path.sep) ? root : root + path.sep)) return dir;
+  }
+  throw new SyncError("the update journal names an unsafe backup folder: " + JSON.stringify(hold), "journal");
+}
+const validHold = (gameRoot, journal) => { try { holdDir(gameRoot, journal); return true; } catch { return false; } };
 const holdPath = (gameRoot, journal, rel) => path.join(holdDir(gameRoot, journal), ...rel.split("/"));
 // A same-version repair keeps the files it replaced (a player's own edits)
 // here, the newest repair only, up to this many bytes.
@@ -778,8 +792,12 @@ function removeEmptyDirs(dir) {
 
 // Finishes a commit a crash interrupted (start-up, and before any plan).
 function recover(gameRoot) {
-  const journal = readJson(path.join(stateDir(gameRoot), JOURNAL_FILE));
+  const file = path.join(stateDir(gameRoot), JOURNAL_FILE);
+  const journal = readJson(file);
   if (!journal || !Array.isArray(journal.files)) return false;
+  // Not a journal a commit wrote: nothing it names is moved. The next plan
+  // checks every file against the release as usual.
+  if (!validHold(gameRoot, journal)) { fs.rmSync(file, { force: true }); return false; }
   commitFiles(gameRoot, journal);
   finishCommit(gameRoot, loadState(gameRoot), journal);
   return true;
@@ -839,6 +857,7 @@ function rollback(gameRoot) {
   recover(gameRoot);
   const last = readJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE));
   if (!last || !last.from) throw new SyncError("there is no previous version to restore");
+  if (!validHold(gameRoot, last)) throw new SyncError("the record of the last update is damaged (it names an unsafe backup folder): the previous version can't be restored");
   const state = loadState(gameRoot);
   // Each file put back is noted in last-commit.json, so a restore that stops
   // part-way (a locked file) can simply be run again.
@@ -876,7 +895,7 @@ function rollback(gameRoot) {
 // The version rollback() would restore, or null.
 function previousVersion(gameRoot) {
   const last = readJson(path.join(stateDir(gameRoot), LAST_COMMIT_FILE));
-  return last && last.from ? last.from : null;
+  return last && last.from && validHold(gameRoot, last) ? last.from : null;
 }
 
 // ---------------------------------------------------------------- apply
