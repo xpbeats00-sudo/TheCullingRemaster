@@ -540,4 +540,16 @@ test("TRIO with the server down: an error, and the tile works again (hasClickBut
   assert.ok(last(), "the second click connects");
 });
 
+// ---------------------------------------------------------------- purchases
+test("a refused purchase says why (purchase-fail's reason); none known: the stock 'Purchase failed.'", () => {
+  reset();
+  const s = signIn();
+  modals.length = 0;
+  fire(s, "purchase-fail", { reason: "not-enough-credits" });
+  assert.ok(modals.some((m) => m.title == "Purchase failed. You don't have enough credits."), JSON.stringify(modals.map((m) => m.title)));
+  modals.length = 0;
+  fire(s, "purchase-fail", {});
+  assert.ok(modals.some((m) => m.title == "Purchase failed."));
+});
+
 console.log("all %d ClientWeb connection tests passed", passed);

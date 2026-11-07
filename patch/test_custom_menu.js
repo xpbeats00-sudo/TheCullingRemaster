@@ -27,7 +27,8 @@ const spans = {};
 const items = [];
 const page = element();
 page.querySelectorAll = () => items;
-function $() { return { text: noop, html: noop, remove: noop, append: noop }; }
+const pageText = [];
+function $(sel) { return { text: (t) => { if (t !== undefined) pageText.push([sel, t]); }, html: noop, remove: noop, append: noop }; }
 $.get = noop; $.ajax = noop; $.extend = Object.assign; $.Deferred = () => ({ resolve: () => ({ promise: noop }) });
 function BaseMenuScreen() {}
 ["OnCreation", "OnShow", "OnHide", "OnClosed", "OnMouseClicked", "SetNewActiveMenu"].forEach((n) => { BaseMenuScreen.prototype[n] = noop; });
@@ -58,6 +59,15 @@ let passed = 0;
 function test(name, fn) { sent.length = 0; modals.length = 0; calls.length = 0; fn(); passed++; console.log("ok    " + name); }
 const stock = {};
 for (const [key, value] of ctx.REMASTER_CUSTOM_MODS) stock[key] = value;
+
+test("a login answer that isn't JSON: logged to the console, never written into the build-version line", () => {
+  const failures = [];
+  ctx.ProcessLoginFailure = (b) => failures.push(b.errorCode);
+  pageText.length = 0;
+  ctx.LoginResponseFromEngine("<html>502 Bad Gateway</html>", () => { throw new Error("not called"); });
+  assert.deepStrictEqual(failures, ["invalid_server_json"]);
+  assert.deepStrictEqual(pageText.filter((t) => /build-version/.test(t[0])), []);
+});
 
 let screen;
 test("the screen shows the stock values and sends the full set", () => {

@@ -1349,13 +1349,23 @@ function CloseConnectingModal(succeeded)
   }
 }
 
-function ClosePurchasingModal(succeeded)
+// Remaster: why the server refused a purchase (server.js purchase-entitlement).
+var REMASTER_PURCHASE_REASONS = {
+  "not-enough-credits": "You don't have enough credits.",
+  "ranked-reward": "This is a ranked reward: reach its tier in Ranked to unlock it.",
+  "unknown-item": "This item can't be bought."
+};
+
+// reason: the server's purchase-fail { reason } (or its message), if any.
+function ClosePurchasingModal(succeeded, reason)
 {
   PopModalByID("Purchasing");
 
+  var why = succeeded ? "" : (reason && REMASTER_PURCHASE_REASONS.hasOwnProperty(reason) ? REMASTER_PURCHASE_REASONS[reason]
+    : (typeof reason == "string" && reason ? reason : ""));
   var modalArgs = {
     options: ["OK"],
-    title: (succeeded ? "Purchase successful." : "Purchase failed."),
+    title: (succeeded ? "Purchase successful." : "Purchase failed." + (why ? " " + why : "")),
     modalID: "Purchase Result",
     needInput: false,
     hideOptions:true
@@ -1364,7 +1374,7 @@ function ClosePurchasingModal(succeeded)
 
   setTimeout(function () {
     PopModalByID("Purchase Result");
-  }, 800);
+  }, why ? 3000 : 800);
 
   if (succeeded) {
     engine.call("TriggerPurchaseCompleted");
@@ -1605,9 +1615,9 @@ function BindClientwebEvents(deferred) {
     engine.call("NotifyEntitlementUnlocked", purchaseData.itemAddData.typeId);
   });
   socketConnection.on("purchase-fail", function (msg) {
-	  console.log("Failed purchase failed notification");
+	  console.log("Failed purchase failed notification: " + (msg && msg.reason));
 
-    ClosePurchasingModal(false);
+    ClosePurchasingModal(false, msg && (msg.reason || msg.message));
   });
   socketConnection.on("auth-response", function () {
 
