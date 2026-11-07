@@ -162,8 +162,9 @@ const MODES = Object.keys(TEAM);
   });
 
   await test("old profiles: Solo-only profiles migrate cleanly; malformed team records are repaired", () => {
+    // (processed as today's list: an older object is converted when read, ranked.test.js.)
     const p = { ranked: { season: R.CONFIG.season.id, rating: 1234, mmr: 1200, matches: 9, wins: 2, peakRating: 1250, peakTier: "Hunter",
-      pending: null, processed: {}, history: [], tiersReached: { Scrapper: 1 } } };
+      pending: null, processed: [], history: [], tiersReached: { Scrapper: 1 } } };
     const solo = JSON.stringify(p.ranked);
     const all = R.summaries(p);
     assert.deepStrictEqual(Object.keys(all), ["solo", "duo", "trio", "quad"]);

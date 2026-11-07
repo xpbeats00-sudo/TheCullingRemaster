@@ -49,8 +49,12 @@ const CONFIG = {
   // no tier above Hunter can be reached or rewarded yet. Raise as the season
   // matures (and botMaxRating with it).
   maxRating: 1399,
-  historyLength: 50,
-  processedLength: 100,    // match IDs remembered against duplicate results
+  // Kept per mode on the profile, which is serialized whole on every save
+  // (performance review P5): the last 20 matches (the Ranked screen shows 10)
+  // and the last 20 scored match IDs (a result can only be for the pending
+  // match, so a few are plenty against duplicates).
+  historyLength: 20,
+  processedLength: 20,     // match IDs remembered against duplicate results
   // Season 1; the seasons after it follow back to back with the same length
   // (seasonAt). CONFIG.season is always the current one.
   firstSeason: { id: 'S1', name: 'Season 1', start: '2026-11-01T00:00:00Z', end: '2027-02-01T00:00:00Z' },
@@ -198,7 +202,7 @@ function blank() {
     peakRating: CONFIG.startRating,
     peakTier: tierFor(CONFIG.startRating).name,
     pending: null,
-    processed: {},
+    processed: [],
     history: [],
     tiersReached: {}
   };
@@ -236,9 +240,12 @@ function ensure(profile, now = Date.now(), mode = 'solo', grant = null, opts = {
     r = profile.rankedTeams[id];
   }
   // Fields a hand-edited or imported record may lack.
-  if (!isRecord(r.processed)) r.processed = {};
+  // The scored match IDs, oldest first: one bounded list (records saved
+  // before kept an object of ID -> when; its most recent IDs are kept).
+  if (!Array.isArray(r.processed)) r.processed = isRecord(r.processed) ? Object.keys(r.processed).slice(-CONFIG.processedLength) : [];
   if (!isRecord(r.tiersReached)) r.tiersReached = {};
   if (!Array.isArray(r.history)) r.history = [];
+  if (r.history.length > CONFIG.historyLength) r.history.length = CONFIG.historyLength;
   if (!Number.isFinite(r.rating)) r.rating = CONFIG.startRating;
   if (!Number.isFinite(r.mmr)) r.mmr = r.rating;
   if (!Number.isInteger(r.matches) || r.matches < 0) r.matches = 0;
@@ -309,17 +316,13 @@ function apply(r, match, result, now, grant, mode = 'solo') {
     timeAlive: result.timeAlive || 0,
     rewards
   };
-  // Processed match IDs -> when. Only the ID matters (the entry itself is in
+  // The scored match IDs: only the ID matters (the entry itself is in
   // history); profiles from before stored a full copy of every entry here,
   // forever, which made a ranked veteran's profile ~75 KB and every save of
   // profiles.json slower. Only recent IDs need remembering: a result can only
   // be for the pending match.
-  r.processed[match.id] = now;
-  const ids = Object.keys(r.processed);
-  for (let i = 0; i < ids.length; i++) {
-    if (i < ids.length - CONFIG.processedLength) delete r.processed[ids[i]];
-    else if (typeof r.processed[ids[i]] === 'object') r.processed[ids[i]] = r.processed[ids[i]].at || now;
-  }
+  r.processed.push(match.id);
+  if (r.processed.length > CONFIG.processedLength) r.processed.splice(0, r.processed.length - CONFIG.processedLength);
   r.history.unshift(entry);
   r.history.length = Math.min(r.history.length, CONFIG.historyLength);
   return entry;
@@ -368,7 +371,7 @@ function finishMatch(profile, result, now = Date.now(), grant, mode = 'solo') {
 }
 
 function finishPending(r, result, now, grant, mode) {
-  if (result.matchId && Object.prototype.hasOwnProperty.call(r.processed, result.matchId)) {
+  if (result.matchId && r.processed.includes(result.matchId)) {
     const entry = r.history.find((h) => h.matchId === result.matchId) || { matchId: result.matchId };
     return { entry, duplicate: true };
   }

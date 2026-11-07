@@ -1131,7 +1131,7 @@ function sanitizeProfile(raw, userID) {
     // Rating changes in the history can be negative; everything else not.
     const r = cleanValue(src, false);
     r.history = Array.isArray(src.history) ? src.history.slice(0, 50).map((h) => cleanValue(h, true)) : [];
-    if (!isPlainObject(r.processed)) r.processed = {};
+    if (!Array.isArray(r.processed) && !isPlainObject(r.processed)) r.processed = [];
     if (!isPlainObject(r.tiersReached)) r.tiersReached = {};
     // A match left running on another server can't be finished here.
     r.pending = null;

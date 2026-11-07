@@ -221,5 +221,35 @@ test('a result for a match pending at the rollover is scored into the old season
   assert.deepStrictEqual([p.ranked.season, p.ranked.matches, p.ranked.pending], ['S2', 0, null], 'the new season starts fresh');
 });
 
+// Performance review P5: every profile is serialized whole on each save; a
+// ranked veteran's record (50 history entries and 100 match IDs per mode) was
+// most of it.
+test('history keeps the last 20 matches and the match IDs are one bounded list', () => {
+  const p = profile();
+  let lastId = null;
+  for (let i = 0; i < 45; i++) {
+    const { match } = R.startMatch(p, 1000 + i);
+    R.finishMatch(p, { matchId: match.id, placement: 9 }, 1000 + i);
+    lastId = match.id;
+  }
+  assert.strictEqual(p.ranked.history.length, 20);
+  assert.ok(Array.isArray(p.ranked.processed), 'a list');
+  assert.strictEqual(p.ranked.processed.length, 20);
+  assert.strictEqual(R.finishMatch(p, { matchId: lastId, placement: 1 }).duplicate, true, 'the last result still counts once');
+});
+
+test('a record saved with processed as an object is converted, its recent IDs kept', () => {
+  const p = profile();
+  R.ensure(p);
+  p.ranked.processed = {};
+  for (let i = 0; i < 30; i++) p.ranked.processed['rk-' + i] = 1000 + i;
+  R.ensure(p);
+  assert.ok(Array.isArray(p.ranked.processed));
+  assert.deepStrictEqual([p.ranked.processed.length, p.ranked.processed[19]], [20, 'rk-29']);
+  p.ranked.processed.push('x');
+  p.ranked.pending = null;
+  assert.strictEqual(R.finishMatch(p, { matchId: 'rk-29', placement: 1 }).duplicate, true);
+});
+
 if (failures) { console.log(failures + ' failing'); process.exit(1); }
 console.log('all ranked tests passed');
