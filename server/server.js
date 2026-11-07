@@ -1656,10 +1656,13 @@ function launchMatch(socket, queue, map, shared = {}) {
     saveProfiles();
   }
   const matchId = shared.matchId || newMatchId();
+  // The match-ready's nonce, kept on the ticket: match-declined names it.
+  const nonce = crypto.randomBytes(8).toString('hex');
   // The ticket says which match this is: its map, its mode, the ranked match
   // it scores (only that ranked match is finished by its result), and the
   // shared record (match, lobby, party).
   tickets.start(socket.userID, socketIp(socket), {
+    nonce,
     map: showdown ? SHOWDOWN.map : Object.prototype.hasOwnProperty.call(MAPS, map) ? map : 'jungle',
     mode,
     ranked: rankedId,
@@ -1683,7 +1686,7 @@ function launchMatch(socket, queue, map, shared = {}) {
     'match', matchId, shared.partyId ? 'party ' + shared.partyId : '', sky ? 'weather ' + sky.preset + ' seed ' + sky.seed : '');
   socket.emit('match-ready', {
     gameServer: answer,
-    nonce: crypto.randomBytes(8).toString('hex'),
+    nonce,
     serverNonce: crypto.randomBytes(8).toString('hex'),
     // The shared record. Each player's match still runs on their own PC with
     // AI contestants (and an AI teammate in Duo): netplay is false.
@@ -1702,10 +1705,15 @@ function launchMatch(socket, queue, map, shared = {}) {
 // match-ready (match-declined). Within DECLINE_WINDOW_MS of the match-ready
 // and with no result yet, the match is closed: its ticket, and its pending
 // ranked match without any penalty (it was never played); friends see the
-// player back in the menu. Returns whether a match was closed.
-function declineMatch(userID, why) {
+// player back in the menu. Returns whether a match was closed. `nonce`: the
+// match-ready's (match-declined sends it): only that match is closed; without
+// one (older menus, leave-mm), the player's latest. The window holds either
+// way, so a match being played can never be declined (a way out of a ranked
+// loss).
+function declineMatch(userID, why, nonce = null) {
   const t = tickets.peek({ userID });
   if (!t || Date.now() - t.startedAt > DECLINE_WINDOW_MS) return false;
+  if (typeof nonce === 'string' && nonce && t.nonce && nonce !== t.nonce) return false;
   tickets.cancel(userID, t.id);
   if (t.ranked && ranked.cancelMatch(getProfile(userID), ranked.modeId(t.rankedMode), t.ranked)) saveProfiles();
   setPresence(userID, 'menu');
@@ -2096,7 +2104,10 @@ io.on('connection', (socket) => {
     setPresence(me, 'menu');
   });
   // The menu ignored a match-ready (the player had asked to leave).
-  on('match-declined', () => { declineMatch(socket.userID, 'match-declined'); });
+  // Payload: { nonce: the match-ready's nonce, queueName } (nonce may be missing).
+  on('match-declined', (msg) => {
+    declineMatch(socket.userID, 'match-declined', msg && typeof msg === 'object' ? shortString(msg.nonce, 64, null) : null);
+  });
   // Showdown: leave the series from the menu (the next round isn't played).
   on('showdown-leave', () => {
     const series = showdowns.leave(socket.userID);
@@ -2342,10 +2353,11 @@ io.on('connection', (socket) => {
     }
     const map = custom.mapIndex(socket.lobby.mapName);
     const gameServer = custom.gameServer(socket.lobby.mapName, socket.lobby.mods);
-    tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom' });
+    const nonce = crypto.randomBytes(8).toString('hex');
+    tickets.start(socket.userID, socketIp(socket), { map: custom.MAP_KEYS[map], mode: 'custom', nonce });
     setPresence(socket.userID, 'match', { mode: 'custom' });
     log('match-ready ->', socket.userID, gameServer);
-    socket.emit('match-ready', { gameServer, nonce: crypto.randomBytes(8).toString('hex'),
+    socket.emit('match-ready', { gameServer, nonce,
       serverNonce: crypto.randomBytes(8).toString('hex') });
   });
 

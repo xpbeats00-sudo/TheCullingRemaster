@@ -36,9 +36,10 @@ const tickets = (srv) => { try { return JSON.parse(fs.readFileSync(path.join(srv
 async function rankedMatch(srv, sock) {
   const ready = next(sock, "match-ready");
   sock.emit("join-mm", { queueName: "ranked_ffa_jungle" });
-  await ready;
+  const m = await ready;
   assert.ok(srv.profiles()[A].ranked.pending, "a ranked match is pending");
   assert.strictEqual(tickets(srv).length, 1, "a ticket is open");
+  return m;
 }
 
 (async () => {
@@ -57,14 +58,39 @@ async function rankedMatch(srv, sock) {
     });
   });
 
-  await test("match-declined does the same", async () => {
+  await test("match-declined with the match-ready's nonce does the same", async () => {
     await withServer({}, async (srv, sock) => {
-      await rankedMatch(srv, sock);
-      sock.emit("match-declined");
+      const m = await rankedMatch(srv, sock);
+      sock.emit("match-declined", { nonce: m.nonce, queueName: "ranked_ffa_jungle" });
       await sleep(200);
       assert.strictEqual(srv.profiles()[A].ranked.pending, null);
       assert.strictEqual(srv.profiles()[A].ranked.matches, 0);
       assert.strictEqual(tickets(srv).length, 0);
+    });
+  });
+
+  await test("match-declined for another match-ready's nonce changes nothing; without a nonce, the latest match", async () => {
+    await withServer({}, async (srv, sock) => {
+      await rankedMatch(srv, sock);
+      sock.emit("match-declined", { nonce: "0123456789abcdef", queueName: "ranked_ffa_jungle" });
+      await sleep(200);
+      assert.ok(srv.profiles()[A].ranked.pending, "not that match");
+      assert.strictEqual(tickets(srv).length, 1);
+      sock.emit("match-declined", { queueName: "ranked_ffa_jungle" });
+      await sleep(200);
+      assert.strictEqual(srv.profiles()[A].ranked.pending, null, "older menus send no nonce");
+      assert.strictEqual(tickets(srv).length, 0);
+    });
+  });
+
+  await test("match-declined after the 15 s window is ignored, nonce or not (no way out of a ranked loss)", async () => {
+    await withServer({ CULLING_DECLINE_WINDOW_MS: "300" }, async (srv, sock) => {
+      const m = await rankedMatch(srv, sock);
+      await sleep(500);
+      sock.emit("match-declined", { nonce: m.nonce, queueName: "ranked_ffa_jungle" });
+      await sleep(200);
+      assert.ok(srv.profiles()[A].ranked.pending, "still pending");
+      assert.strictEqual(tickets(srv).length, 1);
     });
   });
 
